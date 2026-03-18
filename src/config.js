@@ -14,6 +14,8 @@ const corsOrigins = (process.env.CLIENT_URLS || '')
   .map((origin) => normalizeOrigin(origin))
   .filter(Boolean);
 
+//  data
+
 const config = {
   port: process.env.PORT || 5500,
   supabaseUrl:
