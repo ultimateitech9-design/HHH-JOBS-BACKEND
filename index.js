@@ -138,6 +138,8 @@ app.get('/api/version', (req, res) => {
   res.json({ version: '2.0.0', name: 'HHH Jobs API', environment: config.nodeEnv });
 });
 
+mountRoute('/assets', safeRequireRoute('./src/routes/assets', 'assets'));
+
 if (shouldUseUpstreamProxy) {
   app.use('/', createProxyMiddleware({
     target: upstreamApiBaseUrl,
