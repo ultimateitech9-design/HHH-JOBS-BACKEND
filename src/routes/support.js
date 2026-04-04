@@ -13,6 +13,24 @@ router.use(requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_
 // Stats
 // =============================================
 router.get('/stats', asyncHandler(async (req, res) => {
+  if (!supabase) {
+    res.send({
+      status: true,
+      stats: {
+        totalTickets: 0,
+        openTickets: 0,
+        pendingTickets: 0,
+        resolvedTickets: 0,
+        escalatedTickets: 0,
+        liveChats: 0,
+        complaints: 0,
+        feedbackItems: 0,
+        avgResolutionHours: 0
+      }
+    });
+    return;
+  }
+
   const [
     totalTickets,
     openTickets,
