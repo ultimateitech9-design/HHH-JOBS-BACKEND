@@ -10,7 +10,7 @@ const { normalizeEmail, asyncHandler } = require('../utils/helpers');
 const { requireAuth } = require('../middleware/auth');
 const { logAudit, getClientIp } = require('../services/audit');
 const { sendOtpEmail, sendPasswordResetEmail } = require('../services/email');
-const { resolveOAuthRedirectUri } = require('../utils/oauth');
+const { getOriginFromUrl, resolveClientAppUrl, resolveOAuthRedirectUri } = require('../utils/oauth');
 const {
   isStudentPortalRole,
   isAuthSignupRole,
@@ -44,6 +44,24 @@ const toOptionalText = (value) => {
   const text = String(value ?? '').trim();
   return text || null;
 };
+const buildOtpEmailWarning = ({ sent, reason }) => {
+  if (sent) return undefined;
+
+  const lower = String(reason || '').toLowerCase();
+  if (
+    lower.includes('username and password')
+    || lower.includes('invalid login')
+    || lower.includes('login failed')
+    || lower.includes('authentication')
+    || lower.includes('535')
+    || lower.includes('534')
+  ) {
+    return 'Sender Gmail login failed. Recheck GMAIL_EMAIL and GMAIL_APP_PASSWORD in backend .env, and make sure you are using a Google App Password.';
+  }
+
+  if (reason === 'smtp_not_configured') return undefined;
+  return `OTP email could not be sent (${reason}). Check your SMTP settings or resend OTP from the verification screen.`;
+};
 
 const OAUTH_ALLOWED_ROLES = new Set([ROLES.STUDENT, ROLES.HR, ROLES.RETIRED_EMPLOYEE]);
 const OAUTH_PROVIDERS = {
@@ -73,10 +91,33 @@ const OAUTH_PROVIDERS = {
   }
 };
 
-const getSafeClientAppUrl = () => config.oauthClientUrl || config.corsOrigins[0] || 'http://localhost:5173';
+const getSafeClientAppUrl = (clientAppUrl = '') => clientAppUrl || config.oauthClientUrl || config.corsOrigins[0] || 'http://localhost:5173';
 
-const buildOAuthClientRedirectUrl = ({ token, user, redirectTo, error }) => {
-  const redirectUrl = new URL('/oauth/callback', getSafeClientAppUrl());
+const getAllowedClientAppUrls = () => [
+  config.oauthClientUrl,
+  ...config.corsOrigins
+].filter(Boolean);
+
+const readRequestedClientAppUrl = (req) => {
+  const queryClientUrl = String(req?.query?.clientUrl || req?.query?.client_url || '').trim();
+  if (queryClientUrl) return queryClientUrl;
+
+  if (typeof req?.get !== 'function') return '';
+
+  const requestOrigin = String(req.get('origin') || '').trim();
+  if (requestOrigin) return requestOrigin;
+
+  return getOriginFromUrl(req.get('referer'));
+};
+
+const resolveRequestedClientAppUrl = (req, fallbackClientAppUrl = '') => resolveClientAppUrl({
+  requestedClientAppUrl: readRequestedClientAppUrl(req),
+  fallbackClientAppUrl: fallbackClientAppUrl || getSafeClientAppUrl(),
+  allowedOrigins: getAllowedClientAppUrls()
+});
+
+const buildOAuthClientRedirectUrl = ({ token, user, redirectTo, error, clientAppUrl }) => {
+  const redirectUrl = new URL('/oauth/callback', getSafeClientAppUrl(clientAppUrl));
   const fragmentParams = new URLSearchParams();
 
   if (token) {
@@ -99,8 +140,8 @@ const buildOAuthClientRedirectUrl = ({ token, user, redirectTo, error }) => {
   return redirectUrl.toString();
 };
 
-const createOAuthState = ({ provider, role }) => jwt.sign(
-  { provider, role, nonce: crypto.randomUUID() },
+const createOAuthState = ({ provider, role, clientAppUrl = '' }) => jwt.sign(
+  { provider, role, clientAppUrl, nonce: crypto.randomUUID() },
   config.jwtSecret,
   { expiresIn: '10m' }
 );
@@ -250,8 +291,8 @@ const createLocalRoleProfile = (role, userId, reqBody = {}) => {
   });
 };
 
-const redirectOAuthFailure = (res, message) => {
-  res.redirect(buildOAuthClientRedirectUrl({ error: message }));
+const redirectOAuthFailure = (res, message, clientAppUrl) => {
+  res.redirect(buildOAuthClientRedirectUrl({ error: message, clientAppUrl }));
 };
 
 const getResolvedOAuthConfig = ({ req, providerKey, provider }) => {
@@ -309,8 +350,9 @@ router.get('/oauth/:provider/start', asyncHandler(async (req, res) => {
 
   const requestedRole = String(req.query.role || ROLES.STUDENT).trim().toLowerCase();
   const role = OAUTH_ALLOWED_ROLES.has(requestedRole) ? requestedRole : ROLES.STUDENT;
+  const clientAppUrl = resolveRequestedClientAppUrl(req);
 
-  const state = createOAuthState({ provider: providerKey, role });
+  const state = createOAuthState({ provider: providerKey, role, clientAppUrl });
   const authorizeUrl = new URL(provider.authorizeUrl);
   authorizeUrl.searchParams.set('client_id', oauthConfig.clientId);
   authorizeUrl.searchParams.set('redirect_uri', oauthConfig.redirectUri);
@@ -368,8 +410,14 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
     return;
   }
 
+  const clientAppUrl = resolveClientAppUrl({
+    requestedClientAppUrl: decodedState?.clientAppUrl,
+    fallbackClientAppUrl: getSafeClientAppUrl(),
+    allowedOrigins: getAllowedClientAppUrls()
+  });
+
   if (!decodedState || decodedState.provider !== providerKey) {
-    redirectOAuthFailure(res, 'Invalid OAuth state');
+    redirectOAuthFailure(res, 'Invalid OAuth state', clientAppUrl);
     return;
   }
 
@@ -383,7 +431,7 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
       oauthConfig
     });
   } catch (error) {
-    redirectOAuthFailure(res, error.message || 'Unable to fetch OAuth profile');
+    redirectOAuthFailure(res, error.message || 'Unable to fetch OAuth profile', clientAppUrl);
     return;
   }
 
@@ -399,7 +447,7 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
     authUser = result.user;
     created = result.created;
   } catch (error) {
-    redirectOAuthFailure(res, error.message || 'Unable to sign in with OAuth');
+    redirectOAuthFailure(res, error.message || 'Unable to sign in with OAuth', clientAppUrl);
     return;
   }
 
@@ -420,7 +468,7 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
     .single();
 
   if (updateError) {
-    redirectOAuthFailure(res, updateError.message || 'Unable to finalize OAuth login');
+    redirectOAuthFailure(res, updateError.message || 'Unable to finalize OAuth login', clientAppUrl);
     return;
   }
 
@@ -452,7 +500,8 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
   res.redirect(buildOAuthClientRedirectUrl({
     token,
     user: mapPublicUser(authUser),
-    redirectTo
+    redirectTo,
+    clientAppUrl
   }));
 }));
 
@@ -585,25 +634,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
 
   // Send OTP via email (falls back to console.log when SMTP not configured)
   const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-
-  const buildEmailWarning = ({ sent, reason }) => {
-    if (sent) return undefined;
-    const lower = String(reason || '').toLowerCase();
-    if (
-      lower.includes('username and password')
-      || lower.includes('invalid login')
-      || lower.includes('login failed')
-      || lower.includes('authentication')
-      || lower.includes('535')
-      || lower.includes('534')
-    ) {
-      return 'Sender Gmail login failed. Recheck GMAIL_EMAIL and GMAIL_APP_PASSWORD in backend .env, and make sure you are using a Google App Password.';
-    }
-    if (reason === 'smtp_not_configured') return undefined;
-    return `OTP email could not be sent (${reason}). Check your SMTP settings or resend OTP after logging in.`;
-  };
-
-  const emailWarning = buildEmailWarning(emailResult);
+  const emailWarning = buildOtpEmailWarning(emailResult);
 
   await logAudit({
     userId: userRow.id,
@@ -914,21 +945,6 @@ router.post('/login', asyncHandler(async (req, res) => {
     return;
   }
 
-  const loginTimestamp = new Date().toISOString();
-  if (supabase) {
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({ last_login_at: loginTimestamp })
-      .eq('id', userRow.id);
-
-    if (updateError) {
-      sendSupabaseError(res, updateError);
-      return;
-    }
-  } else {
-    authStore.updateUserById(userRow.id, { last_login_at: loginTimestamp });
-  }
-
   let publicUser = userRow;
   if (isStudentPortalRole(userRow.role) && !publicUser.date_of_birth) {
     if (supabase) {
@@ -946,6 +962,71 @@ router.post('/login', asyncHandler(async (req, res) => {
         publicUser = { ...publicUser, date_of_birth: studentProfile.date_of_birth };
       }
     }
+  }
+
+  if (!userRow.is_email_verified) {
+    const otpCode = generateOtp();
+    const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
+
+    if (supabase) {
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({
+          otp_code: otpCode,
+          otp_expires_at: otpExpiresAt
+        })
+        .eq('id', userRow.id);
+
+      if (updateError) {
+        sendSupabaseError(res, updateError);
+        return;
+      }
+    } else {
+      authStore.updateUserById(userRow.id, {
+        otp_code: otpCode,
+        otp_expires_at: otpExpiresAt
+      });
+    }
+
+    const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+    const emailWarning = buildOtpEmailWarning(emailResult);
+
+    await logAudit({
+      userId: userRow.id,
+      action: AUDIT_ACTIONS.OTP_SENT,
+      entityType: 'user',
+      entityId: userRow.id,
+      details: { email, source: 'login' },
+      ipAddress: getClientIp(req)
+    });
+
+    res.send({
+      status: true,
+      user: {
+        ...mapPublicUser(publicUser),
+        dateOfBirth: publicUser.date_of_birth || null
+      },
+      requiresOtpVerification: true,
+      redirectTo: '/verify-otp',
+      otp: (exposeOtpForLocalTesting || !emailResult.sent) ? otpCode : undefined,
+      emailWarning
+    });
+    return;
+  }
+
+  const loginTimestamp = new Date().toISOString();
+  if (supabase) {
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ last_login_at: loginTimestamp })
+      .eq('id', userRow.id);
+
+    if (updateError) {
+      sendSupabaseError(res, updateError);
+      return;
+    }
+  } else {
+    authStore.updateUserById(userRow.id, { last_login_at: loginTimestamp });
   }
 
   await logAudit({

@@ -5,6 +5,13 @@ const requireActiveUser = (req, res, next) => {
     res.status(403).send({ status: false, message: `Your account is ${req.user.status}. Contact admin.` });
     return;
   }
+
+  const isEmailVerified = req.user.isEmailVerified ?? req.user.is_email_verified;
+  if (isEmailVerified === false) {
+    res.status(403).send({ status: false, message: 'Verify your email before accessing dashboard features.' });
+    return;
+  }
+
   next();
 };
 

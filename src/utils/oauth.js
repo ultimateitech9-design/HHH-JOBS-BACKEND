@@ -1,4 +1,5 @@
 const LOCAL_HOST_PATTERN = /^(localhost|127\.0\.0\.1)(:\d+)?$/i;
+const ALLOWED_CLIENT_PROTOCOLS = new Set(['http:', 'https:']);
 
 const normalizeUrl = (value) => String(value || '').trim().replace(/\/+$/, '');
 
@@ -42,6 +43,11 @@ const parseUrl = (value) => {
   }
 };
 
+const getOriginFromUrl = (value) => {
+  const parsed = parseUrl(value);
+  return parsed ? normalizeUrl(parsed.origin) : '';
+};
+
 const isLoopbackUrl = (value) => {
   const parsed = parseUrl(value);
   return Boolean(parsed && LOCAL_HOST_PATTERN.test(parsed.host));
@@ -51,6 +57,43 @@ const isTrustedHttpsUrl = (value) => {
   const parsed = parseUrl(value);
   if (!parsed) return false;
   return parsed.protocol === 'https:' && !LOCAL_HOST_PATTERN.test(parsed.host);
+};
+
+const isAllowedClientAppUrl = (value, allowedOrigins = []) => {
+  const parsed = parseUrl(value);
+  if (!parsed || !ALLOWED_CLIENT_PROTOCOLS.has(parsed.protocol)) return false;
+
+  const normalizedOrigin = normalizeUrl(parsed.origin);
+  if (!normalizedOrigin) return false;
+
+  const normalizedAllowedOrigins = allowedOrigins
+    .map((origin) => normalizeUrl(origin))
+    .filter(Boolean);
+
+  return normalizedAllowedOrigins.includes(normalizedOrigin) || isLoopbackUrl(normalizedOrigin);
+};
+
+const resolveClientAppUrl = ({
+  requestedClientAppUrl,
+  fallbackClientAppUrl,
+  allowedOrigins = []
+}) => {
+  const normalizedAllowedOrigins = [...new Set(
+    allowedOrigins
+      .map((origin) => normalizeUrl(origin))
+      .filter(Boolean)
+  )];
+  const requestedOrigin = getOriginFromUrl(requestedClientAppUrl);
+  if (requestedOrigin && isAllowedClientAppUrl(requestedOrigin, normalizedAllowedOrigins)) {
+    return requestedOrigin;
+  }
+
+  const fallbackOrigin = getOriginFromUrl(fallbackClientAppUrl) || normalizeUrl(fallbackClientAppUrl);
+  if (fallbackOrigin && isAllowedClientAppUrl(fallbackOrigin, normalizedAllowedOrigins)) {
+    return fallbackOrigin;
+  }
+
+  return normalizedAllowedOrigins[0] || fallbackOrigin || '';
 };
 
 const resolveOAuthRedirectUri = ({
@@ -88,8 +131,11 @@ const resolveOAuthRedirectUri = ({
 
 module.exports = {
   buildOAuthRedirectUri,
+  getOriginFromUrl,
   getRequestOrigin,
   isLoopbackUrl,
+  isAllowedClientAppUrl,
   isTrustedHttpsUrl,
+  resolveClientAppUrl,
   resolveOAuthRedirectUri
 };

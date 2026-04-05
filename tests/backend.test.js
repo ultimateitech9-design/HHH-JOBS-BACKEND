@@ -185,6 +185,39 @@ test('core constants stay stable', () => {
   assert.equal(PRICING_PLAN_SLUGS.FREE, 'free');
 });
 
+test('requireActiveUser blocks unverified email sessions', () => {
+  delete require.cache[rolesMiddlewarePath];
+  const { requireActiveUser } = require('../src/middleware/roles');
+
+  const req = {
+    user: {
+      status: 'active',
+      isEmailVerified: false
+    }
+  };
+  const res = {
+    statusCode: 200,
+    body: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    send(payload) {
+      this.body = payload;
+      return this;
+    }
+  };
+
+  let nextCalled = false;
+  requireActiveUser(req, res, () => {
+    nextCalled = true;
+  });
+
+  assert.equal(nextCalled, false);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body?.message, 'Verify your email before accessing dashboard features.');
+});
+
 test('support, sales, data entry, and super admin dashboards serve the portal contracts', async () => {
   const supportRouter = loadRoute('../src/routes/support', ROLES.SUPPORT);
   const salesRouter = loadRoute('../src/routes/sales', ROLES.SALES);

@@ -6,6 +6,7 @@ const emailPath = require.resolve('../src/services/email');
 const indexPath = require.resolve('../index');
 const nodemailerPath = require.resolve('nodemailer');
 const oauthUtilsPath = require.resolve('../src/utils/oauth');
+const authStorePath = require.resolve('../src/mock/authStore');
 
 const ORIGINAL_ENV = {
   JWT_SECRET: process.env.JWT_SECRET,
@@ -136,6 +137,40 @@ test('oauth redirect resolver uses the local backend callback for localhost requ
   clearModule(oauthUtilsPath);
 });
 
+test('client app resolver accepts allowed local and production frontend URLs', () => {
+  clearModule(oauthUtilsPath);
+  const { resolveClientAppUrl } = require('../src/utils/oauth');
+
+  assert.equal(
+    resolveClientAppUrl({
+      requestedClientAppUrl: 'http://localhost:5173/login',
+      fallbackClientAppUrl: 'https://hhh-jobs.com',
+      allowedOrigins: ['https://hhh-jobs.com', 'https://www.hhh-jobs.com']
+    }),
+    'http://localhost:5173'
+  );
+
+  assert.equal(
+    resolveClientAppUrl({
+      requestedClientAppUrl: 'https://www.hhh-jobs.com/sign-up',
+      fallbackClientAppUrl: 'https://hhh-jobs.com',
+      allowedOrigins: ['https://hhh-jobs.com', 'https://www.hhh-jobs.com']
+    }),
+    'https://www.hhh-jobs.com'
+  );
+
+  assert.equal(
+    resolveClientAppUrl({
+      requestedClientAppUrl: 'https://evil.example.com/oauth/callback',
+      fallbackClientAppUrl: 'https://hhh-jobs.com',
+      allowedOrigins: ['https://hhh-jobs.com', 'https://www.hhh-jobs.com']
+    }),
+    'https://hhh-jobs.com'
+  );
+
+  clearModule(oauthUtilsPath);
+});
+
 test('email helper uses config-backed SMTP settings without sending network traffic', async () => {
   process.env.SMTP_HOST = 'smtp.example.com';
   process.env.SMTP_PORT = '587';
@@ -215,6 +250,83 @@ test('app bootstrap is import-safe and serves health plus CORS headers', async (
     assert.equal(versionBody.version, '2.0.0');
   } finally {
     await new Promise((resolve) => server.close(resolve));
+    clearModule(indexPath);
+    clearModule(configPath);
+    restoreEnv();
+  }
+});
+
+test('login keeps unverified local users in OTP verification flow', async () => {
+  process.env.JWT_SECRET = 'test-secret';
+  process.env.SUPABASE_URL = '';
+  process.env.NEXT_PUBLIC_SUPABASE_URL = '';
+  process.env.EXPO_PUBLIC_SUPABASE_URL = '';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = '';
+  process.env.SUPABASE_SERVICE_KEY = '';
+  process.env.SUPABASE_SECRET_KEY = '';
+  process.env.CORS_ORIGINS = 'http://localhost:5173';
+  process.env.CLIENT_URLS = '';
+  process.env.FRONTEND_URL = '';
+  process.env.OAUTH_CLIENT_URL = '';
+
+  clearModule(authStorePath);
+  clearModule(configPath);
+  clearModule(indexPath);
+  const { app } = require('../index');
+
+  const server = app.listen(0);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const signupResp = await fetch(`${baseUrl}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Pending User',
+        email: 'pending.user@example.com',
+        mobile: '+919876543210',
+        password: 'Password123!',
+        role: 'student'
+      })
+    });
+    const signupBody = await signupResp.json();
+
+    assert.equal(signupResp.status, 201);
+    assert.equal(signupBody.requiresOtpVerification, true);
+    assert.equal(typeof signupBody.otp, 'string');
+
+    const loginResp = await fetch(`${baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'pending.user@example.com',
+        password: 'Password123!'
+      })
+    });
+    const loginBody = await loginResp.json();
+
+    assert.equal(loginResp.status, 200);
+    assert.equal(loginBody.requiresOtpVerification, true);
+    assert.equal(loginBody.redirectTo, '/verify-otp');
+    assert.equal('token' in loginBody, false);
+    assert.equal(typeof loginBody.otp, 'string');
+
+    const verifyResp = await fetch(`${baseUrl}/auth/verify-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'pending.user@example.com',
+        otp: loginBody.otp
+      })
+    });
+    const verifyBody = await verifyResp.json();
+
+    assert.equal(verifyResp.status, 200);
+    assert.equal(verifyBody.status, true);
+    assert.equal(typeof verifyBody.token, 'string');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    clearModule(authStorePath);
     clearModule(indexPath);
     clearModule(configPath);
     restoreEnv();
