@@ -78,7 +78,7 @@ test('config resolves updated env aliases and normalizes origins', () => {
   restoreEnv();
 });
 
-test('oauth redirect resolver uses the local backend callback for localhost requests', () => {
+test('oauth redirect resolver prefers trusted HTTPS callbacks for LinkedIn', () => {
   clearModule(oauthUtilsPath);
   const { resolveOAuthRedirectUri } = require('../src/utils/oauth');
 
@@ -110,7 +110,7 @@ test('oauth redirect resolver uses the local backend callback for localhost requ
       explicitLocalRedirectUri: 'http://127.0.0.1:6001/auth/oauth/linkedin/callback',
       requireTrustedHttps: true
     }),
-    ''
+    'https://hhh-jobs-backend.onrender.com/auth/oauth/linkedin/callback'
   );
 
   assert.equal(
@@ -125,6 +125,17 @@ test('oauth redirect resolver uses the local backend callback for localhost requ
 
   assert.equal(
     resolveOAuthRedirectUri({
+      req: deployedRequest,
+      providerKey: 'linkedin',
+      explicitRedirectUri: '',
+      explicitLocalRedirectUri: '',
+      requireTrustedHttps: true
+    }),
+    'https://hhh-jobs-backend.onrender.com/auth/oauth/linkedin/callback'
+  );
+
+  assert.equal(
+    resolveOAuthRedirectUri({
       req: localRequest,
       providerKey: 'linkedin',
       explicitRedirectUri: 'https://hhh-jobs-backend.onrender.com/auth/oauth/linkedin/callback',
@@ -132,6 +143,40 @@ test('oauth redirect resolver uses the local backend callback for localhost requ
       requireTrustedHttps: true
     }),
     'https://abc123.ngrok-free.app/auth/oauth/linkedin/callback'
+  );
+
+  clearModule(oauthUtilsPath);
+});
+
+test('linkedin authorize redirect resolver uses exact registered app roots', () => {
+  clearModule(oauthUtilsPath);
+  const { resolveLinkedInAppRedirectUri } = require('../src/utils/oauth');
+
+  assert.equal(
+    resolveLinkedInAppRedirectUri({
+      requestedClientAppUrl: 'http://localhost:5173/login',
+      fallbackClientAppUrl: 'https://hhh-jobs.com',
+      explicitRedirectUri: 'https://hhh-jobs-backend.onrender.com/auth/oauth/linkedin/callback'
+    }),
+    'http://localhost:5173/'
+  );
+
+  assert.equal(
+    resolveLinkedInAppRedirectUri({
+      requestedClientAppUrl: 'https://www.hhh-jobs.com/sign-up',
+      fallbackClientAppUrl: 'https://hhh-jobs.com',
+      explicitRedirectUri: 'https://hhh-jobs-backend.onrender.com/auth/oauth/linkedin/callback'
+    }),
+    'https://hhh-jobs.com/'
+  );
+
+  assert.equal(
+    resolveLinkedInAppRedirectUri({
+      requestedClientAppUrl: '',
+      fallbackClientAppUrl: '',
+      explicitRedirectUri: 'https://hhh-jobs-backend.onrender.com/auth/oauth/linkedin/callback'
+    }),
+    'https://hhh-jobs-backend.onrender.com/auth/oauth/linkedin/callback'
   );
 
   clearModule(oauthUtilsPath);

@@ -10,7 +10,12 @@ const { normalizeEmail, asyncHandler } = require('../utils/helpers');
 const { requireAuth } = require('../middleware/auth');
 const { logAudit, getClientIp } = require('../services/audit');
 const { sendOtpEmail, sendPasswordResetEmail } = require('../services/email');
-const { getOriginFromUrl, resolveClientAppUrl, resolveOAuthRedirectUri } = require('../utils/oauth');
+const {
+  getOriginFromUrl,
+  resolveClientAppUrl,
+  resolveLinkedInAppRedirectUri,
+  resolveOAuthRedirectUri
+} = require('../utils/oauth');
 const {
   isStudentPortalRole,
   isAuthSignupRole,
@@ -140,8 +145,8 @@ const buildOAuthClientRedirectUrl = ({ token, user, redirectTo, error, clientApp
   return redirectUrl.toString();
 };
 
-const createOAuthState = ({ provider, role, clientAppUrl = '' }) => jwt.sign(
-  { provider, role, clientAppUrl, nonce: crypto.randomUUID() },
+const createOAuthState = ({ provider, role, clientAppUrl = '', redirectUri = '' }) => jwt.sign(
+  { provider, role, clientAppUrl, redirectUri, nonce: crypto.randomUUID() },
   config.jwtSecret,
   { expiresIn: '10m' }
 );
@@ -295,6 +300,40 @@ const redirectOAuthFailure = (res, message, clientAppUrl) => {
   res.redirect(buildOAuthClientRedirectUrl({ error: message, clientAppUrl }));
 };
 
+const sendOAuthFailure = ({ res, message, clientAppUrl = '', responseMode = 'redirect', statusCode = 400 }) => {
+  if (responseMode === 'json') {
+    res.status(statusCode).send({ status: false, message });
+    return;
+  }
+
+  redirectOAuthFailure(res, message, clientAppUrl);
+};
+
+const sendOAuthSuccess = ({ res, token, user, redirectTo, clientAppUrl = '', responseMode = 'redirect' }) => {
+  if (responseMode === 'json') {
+    res.send({
+      status: true,
+      token,
+      user,
+      redirectTo
+    });
+    return;
+  }
+
+  res.redirect(buildOAuthClientRedirectUrl({
+    token,
+    user,
+    redirectTo,
+    clientAppUrl
+  }));
+};
+
+const getOAuthConfigErrorMessage = (providerKey) => (
+  providerKey === 'linkedin'
+    ? 'LinkedIn OAuth is not configured correctly. Recheck the app client credentials and registered redirect URL.'
+    : `OAuth is not configured for provider "${providerKey}".`
+);
+
 const getResolvedOAuthConfig = ({ req, providerKey, provider }) => {
   const clientConfig = provider.getClientConfig();
   const requiresTrustedHttpsRedirect = providerKey === 'linkedin';
@@ -311,94 +350,36 @@ const getResolvedOAuthConfig = ({ req, providerKey, provider }) => {
   };
 };
 
-router.get('/providers', (req, res) => {
-  const providers = [];
-  const googleConfig = getResolvedOAuthConfig({ req, providerKey: 'google', provider: OAUTH_PROVIDERS.google });
-  const linkedinConfig = getResolvedOAuthConfig({ req, providerKey: 'linkedin', provider: OAUTH_PROVIDERS.linkedin });
-
-  if (googleConfig.clientId && googleConfig.clientSecret && googleConfig.redirectUri) {
-    providers.push('google');
+const resolveAuthorizeRedirectUri = ({ providerKey, oauthConfig, clientAppUrl = '' }) => {
+  if (providerKey !== 'linkedin') {
+    return oauthConfig.redirectUri;
   }
 
-  if (linkedinConfig.clientId && linkedinConfig.clientSecret && linkedinConfig.redirectUri) {
-    providers.push('linkedin');
-  }
+  return resolveLinkedInAppRedirectUri({
+    requestedClientAppUrl: clientAppUrl,
+    fallbackClientAppUrl: config.oauthClientUrl || getSafeClientAppUrl(),
+    explicitRedirectUri: oauthConfig.redirectUri,
+    explicitLocalRedirectUri: oauthConfig.localRedirectUri
+  });
+};
 
-  res.send({ status: true, providers });
-});
-
-router.get('/oauth/:provider/start', asyncHandler(async (req, res) => {
-  if (!requireConfiguredAuthBackend(res)) return;
-
-  const providerKey = String(req.params.provider || '').trim().toLowerCase();
-  const provider = OAUTH_PROVIDERS[providerKey];
-  if (!provider) {
-    res.status(400).send({ status: false, message: 'Unsupported OAuth provider' });
-    return;
-  }
-
+const completeOAuthFlow = async ({
+  req,
+  res,
+  providerKey,
+  provider,
+  code,
+  state,
+  responseMode = 'redirect'
+}) => {
   const oauthConfig = getResolvedOAuthConfig({ req, providerKey, provider });
-  if (!oauthConfig.clientId || !oauthConfig.clientSecret || !oauthConfig.redirectUri) {
-    res.status(500).send({
-      status: false,
-      message: providerKey === 'linkedin'
-        ? 'LinkedIn OAuth local testing requires an HTTPS callback URL registered in the LinkedIn app settings.'
-        : `OAuth is not configured for provider "${providerKey}".`
-    });
-    return;
-  }
-
-  const requestedRole = String(req.query.role || ROLES.STUDENT).trim().toLowerCase();
-  const role = OAUTH_ALLOWED_ROLES.has(requestedRole) ? requestedRole : ROLES.STUDENT;
-  const clientAppUrl = resolveRequestedClientAppUrl(req);
-
-  const state = createOAuthState({ provider: providerKey, role, clientAppUrl });
-  const authorizeUrl = new URL(provider.authorizeUrl);
-  authorizeUrl.searchParams.set('client_id', oauthConfig.clientId);
-  authorizeUrl.searchParams.set('redirect_uri', oauthConfig.redirectUri);
-  authorizeUrl.searchParams.set('response_type', 'code');
-  authorizeUrl.searchParams.set('scope', provider.scopes);
-  authorizeUrl.searchParams.set('state', state);
-
-  if (providerKey === 'google') {
-    authorizeUrl.searchParams.set('access_type', 'offline');
-    authorizeUrl.searchParams.set('prompt', 'select_account');
-  }
-
-  res.redirect(authorizeUrl.toString());
-}));
-
-router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
-  if (!requireConfiguredAuthBackend(res)) return;
-
-  const providerKey = String(req.params.provider || '').trim().toLowerCase();
-  const provider = OAUTH_PROVIDERS[providerKey];
-  if (!provider) {
-    redirectOAuthFailure(res, 'Unsupported OAuth provider');
-    return;
-  }
-
-  const oauthConfig = getResolvedOAuthConfig({ req, providerKey, provider });
-  if (!oauthConfig.clientId || !oauthConfig.clientSecret || !oauthConfig.redirectUri) {
-    redirectOAuthFailure(
+  if (!oauthConfig.clientId || !oauthConfig.clientSecret) {
+    sendOAuthFailure({
       res,
-      providerKey === 'linkedin'
-        ? 'LinkedIn OAuth local testing requires an HTTPS callback URL registered in the LinkedIn app settings.'
-        : `OAuth is not configured for provider "${providerKey}".`
-    );
-    return;
-  }
-
-  const providerError = String(req.query.error_description || req.query.error || '').trim();
-  if (providerError) {
-    redirectOAuthFailure(res, providerError);
-    return;
-  }
-
-  const code = String(req.query.code || '').trim();
-  const state = String(req.query.state || '').trim();
-  if (!code || !state) {
-    redirectOAuthFailure(res, 'Missing OAuth code or state');
+      message: getOAuthConfigErrorMessage(providerKey),
+      responseMode,
+      statusCode: 500
+    });
     return;
   }
 
@@ -406,7 +387,11 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
   try {
     decodedState = jwt.verify(state, config.jwtSecret);
   } catch (error) {
-    redirectOAuthFailure(res, 'OAuth session expired. Please try again.');
+    sendOAuthFailure({
+      res,
+      message: 'OAuth session expired. Please try again.',
+      responseMode
+    });
     return;
   }
 
@@ -417,7 +402,24 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
   });
 
   if (!decodedState || decodedState.provider !== providerKey) {
-    redirectOAuthFailure(res, 'Invalid OAuth state', clientAppUrl);
+    sendOAuthFailure({
+      res,
+      message: 'Invalid OAuth state',
+      clientAppUrl,
+      responseMode
+    });
+    return;
+  }
+
+  const effectiveRedirectUri = String(decodedState.redirectUri || oauthConfig.redirectUri || '').trim();
+  if (!effectiveRedirectUri) {
+    sendOAuthFailure({
+      res,
+      message: getOAuthConfigErrorMessage(providerKey),
+      clientAppUrl,
+      responseMode,
+      statusCode: 500
+    });
     return;
   }
 
@@ -428,10 +430,18 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
     oauthProfile = await getOAuthProfileFromCode({
       provider,
       code,
-      oauthConfig
+      oauthConfig: {
+        ...oauthConfig,
+        redirectUri: effectiveRedirectUri
+      }
     });
   } catch (error) {
-    redirectOAuthFailure(res, error.message || 'Unable to fetch OAuth profile', clientAppUrl);
+    sendOAuthFailure({
+      res,
+      message: error.message || 'Unable to fetch OAuth profile',
+      clientAppUrl,
+      responseMode
+    });
     return;
   }
 
@@ -447,7 +457,12 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
     authUser = result.user;
     created = result.created;
   } catch (error) {
-    redirectOAuthFailure(res, error.message || 'Unable to sign in with OAuth', clientAppUrl);
+    sendOAuthFailure({
+      res,
+      message: error.message || 'Unable to sign in with OAuth',
+      clientAppUrl,
+      responseMode
+    });
     return;
   }
 
@@ -468,7 +483,12 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
     .single();
 
   if (updateError) {
-    redirectOAuthFailure(res, updateError.message || 'Unable to finalize OAuth login', clientAppUrl);
+    sendOAuthFailure({
+      res,
+      message: updateError.message || 'Unable to finalize OAuth login',
+      clientAppUrl,
+      responseMode
+    });
     return;
   }
 
@@ -497,12 +517,159 @@ router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
   const token = createAuthToken(authUser);
   const redirectTo = getRoleRedirectPath(authUser.role);
 
-  res.redirect(buildOAuthClientRedirectUrl({
+  sendOAuthSuccess({
+    res,
     token,
     user: mapPublicUser(authUser),
     redirectTo,
+    clientAppUrl,
+    responseMode
+  });
+};
+
+router.get('/providers', (req, res) => {
+  const providers = [];
+  const clientAppUrl = resolveRequestedClientAppUrl(req);
+  const googleConfig = getResolvedOAuthConfig({ req, providerKey: 'google', provider: OAUTH_PROVIDERS.google });
+  const linkedinConfig = getResolvedOAuthConfig({ req, providerKey: 'linkedin', provider: OAUTH_PROVIDERS.linkedin });
+  const googleAuthorizeRedirectUri = resolveAuthorizeRedirectUri({
+    providerKey: 'google',
+    oauthConfig: googleConfig,
     clientAppUrl
-  }));
+  });
+  const linkedinAuthorizeRedirectUri = resolveAuthorizeRedirectUri({
+    providerKey: 'linkedin',
+    oauthConfig: linkedinConfig,
+    clientAppUrl
+  });
+
+  if (googleConfig.clientId && googleConfig.clientSecret && googleAuthorizeRedirectUri) {
+    providers.push('google');
+  }
+
+  if (linkedinConfig.clientId && linkedinConfig.clientSecret && linkedinAuthorizeRedirectUri) {
+    providers.push('linkedin');
+  }
+
+  res.send({ status: true, providers });
+});
+
+router.get('/oauth/:provider/start', asyncHandler(async (req, res) => {
+  if (!requireConfiguredAuthBackend(res)) return;
+
+  const providerKey = String(req.params.provider || '').trim().toLowerCase();
+  const provider = OAUTH_PROVIDERS[providerKey];
+  if (!provider) {
+    res.status(400).send({ status: false, message: 'Unsupported OAuth provider' });
+    return;
+  }
+
+  const oauthConfig = getResolvedOAuthConfig({ req, providerKey, provider });
+
+  const requestedRole = String(req.query.role || ROLES.STUDENT).trim().toLowerCase();
+  const role = OAUTH_ALLOWED_ROLES.has(requestedRole) ? requestedRole : ROLES.STUDENT;
+  const clientAppUrl = resolveRequestedClientAppUrl(req);
+  const authorizeRedirectUri = resolveAuthorizeRedirectUri({
+    providerKey,
+    oauthConfig,
+    clientAppUrl
+  });
+
+  if (!oauthConfig.clientId || !oauthConfig.clientSecret || !authorizeRedirectUri) {
+    res.status(500).send({
+      status: false,
+      message: getOAuthConfigErrorMessage(providerKey)
+    });
+    return;
+  }
+
+  const state = createOAuthState({ provider: providerKey, role, clientAppUrl, redirectUri: authorizeRedirectUri });
+  const authorizeUrl = new URL(provider.authorizeUrl);
+  authorizeUrl.searchParams.set('client_id', oauthConfig.clientId);
+  authorizeUrl.searchParams.set('redirect_uri', authorizeRedirectUri);
+  authorizeUrl.searchParams.set('response_type', 'code');
+  authorizeUrl.searchParams.set('scope', provider.scopes);
+  authorizeUrl.searchParams.set('state', state);
+
+  if (providerKey === 'google') {
+    authorizeUrl.searchParams.set('access_type', 'offline');
+    authorizeUrl.searchParams.set('prompt', 'select_account');
+  }
+
+  res.redirect(authorizeUrl.toString());
+}));
+
+router.get('/oauth/:provider/callback', asyncHandler(async (req, res) => {
+  if (!requireConfiguredAuthBackend(res)) return;
+
+  const providerKey = String(req.params.provider || '').trim().toLowerCase();
+  const provider = OAUTH_PROVIDERS[providerKey];
+  if (!provider) {
+    redirectOAuthFailure(res, 'Unsupported OAuth provider');
+    return;
+  }
+
+  const oauthConfig = getResolvedOAuthConfig({ req, providerKey, provider });
+  if (!oauthConfig.clientId || !oauthConfig.clientSecret) {
+    sendOAuthFailure({
+      res,
+      message: getOAuthConfigErrorMessage(providerKey),
+      responseMode: 'redirect',
+      statusCode: 500
+    });
+    return;
+  }
+
+  const providerError = String(req.query.error_description || req.query.error || '').trim();
+  if (providerError) {
+    redirectOAuthFailure(res, providerError);
+    return;
+  }
+
+  const code = String(req.query.code || '').trim();
+  const state = String(req.query.state || '').trim();
+  if (!code || !state) {
+    redirectOAuthFailure(res, 'Missing OAuth code or state');
+    return;
+  }
+
+  await completeOAuthFlow({
+    req,
+    res,
+    providerKey,
+    provider,
+    code,
+    state,
+    responseMode: 'redirect'
+  });
+}));
+
+router.post('/oauth/:provider/exchange', asyncHandler(async (req, res) => {
+  if (!requireConfiguredAuthBackend(res)) return;
+
+  const providerKey = String(req.params.provider || '').trim().toLowerCase();
+  const provider = OAUTH_PROVIDERS[providerKey];
+  if (!provider) {
+    res.status(400).send({ status: false, message: 'Unsupported OAuth provider' });
+    return;
+  }
+
+  const code = String(req.body?.code || '').trim();
+  const state = String(req.body?.state || '').trim();
+  if (!code || !state) {
+    res.status(400).send({ status: false, message: 'Missing OAuth code or state' });
+    return;
+  }
+
+  await completeOAuthFlow({
+    req,
+    res,
+    providerKey,
+    provider,
+    code,
+    state,
+    responseMode: 'json'
+  });
 }));
 
 router.post('/signup', asyncHandler(async (req, res) => {

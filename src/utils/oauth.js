@@ -73,6 +73,29 @@ const isAllowedClientAppUrl = (value, allowedOrigins = []) => {
   return normalizedAllowedOrigins.includes(normalizedOrigin) || isLoopbackUrl(normalizedOrigin);
 };
 
+const resolveLinkedInAppRedirectUri = ({
+  requestedClientAppUrl,
+  fallbackClientAppUrl,
+  explicitRedirectUri,
+  explicitLocalRedirectUri
+}) => {
+  const requestedOrigin = getOriginFromUrl(requestedClientAppUrl);
+  if (requestedOrigin && isLoopbackUrl(requestedOrigin)) {
+    return `${requestedOrigin}/`;
+  }
+
+  const fallbackOrigin = getOriginFromUrl(fallbackClientAppUrl);
+  if (fallbackOrigin) {
+    return `${fallbackOrigin}/`;
+  }
+
+  if (requestedOrigin) {
+    return `${requestedOrigin}/`;
+  }
+
+  return normalizeUrl(explicitRedirectUri) || normalizeUrl(explicitLocalRedirectUri);
+};
+
 const resolveClientAppUrl = ({
   requestedClientAppUrl,
   fallbackClientAppUrl,
@@ -107,15 +130,22 @@ const resolveOAuthRedirectUri = ({
   const isLocalRequest = LOCAL_HOST_PATTERN.test(host);
   const normalizedRedirectUri = normalizeUrl(explicitRedirectUri);
   const normalizedLocalRedirectUri = normalizeUrl(explicitLocalRedirectUri);
+  const derivedRedirectUri = buildOAuthRedirectUri({ req, providerKey });
 
   if (requireTrustedHttps) {
     if (isLocalRequest) {
-      return isTrustedHttpsUrl(normalizedLocalRedirectUri) ? normalizedLocalRedirectUri : '';
+      return isTrustedHttpsUrl(normalizedLocalRedirectUri)
+        ? normalizedLocalRedirectUri
+        : (isTrustedHttpsUrl(normalizedRedirectUri) ? normalizedRedirectUri : '');
     }
 
     return isTrustedHttpsUrl(normalizedRedirectUri)
       ? normalizedRedirectUri
-      : (isTrustedHttpsUrl(normalizedLocalRedirectUri) ? normalizedLocalRedirectUri : '');
+      : (
+          isTrustedHttpsUrl(derivedRedirectUri)
+            ? derivedRedirectUri
+            : (isTrustedHttpsUrl(normalizedLocalRedirectUri) ? normalizedLocalRedirectUri : '')
+        );
   }
 
   if (isLocalRequest) {
@@ -136,6 +166,7 @@ module.exports = {
   isLoopbackUrl,
   isAllowedClientAppUrl,
   isTrustedHttpsUrl,
+  resolveLinkedInAppRedirectUri,
   resolveClientAppUrl,
   resolveOAuthRedirectUri
 };
