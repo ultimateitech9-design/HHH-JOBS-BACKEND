@@ -462,3 +462,75 @@ test('signup reuses existing unverified email instead of blocking with already r
     restoreEnv();
   }
 });
+
+test('signup returns a soft login redirect for already verified emails instead of a 409', async () => {
+  process.env.JWT_SECRET = 'test-secret';
+  process.env.SUPABASE_URL = '';
+  process.env.NEXT_PUBLIC_SUPABASE_URL = '';
+  process.env.EXPO_PUBLIC_SUPABASE_URL = '';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = '';
+  process.env.SUPABASE_SERVICE_KEY = '';
+  process.env.SUPABASE_SECRET_KEY = '';
+  process.env.CORS_ORIGINS = 'http://localhost:5173';
+  process.env.CLIENT_URLS = '';
+  process.env.FRONTEND_URL = '';
+  process.env.OAUTH_CLIENT_URL = '';
+
+  clearModule(authStorePath);
+  clearModule(configPath);
+  clearModule(indexPath);
+  const { app } = require('../index');
+
+  const server = app.listen(0);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const signupResp = await fetch(`${baseUrl}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Verified User',
+        email: 'verified.user@example.com',
+        mobile: '+919876543210',
+        password: 'Password123!',
+        role: 'student'
+      })
+    });
+    const signupBody = await signupResp.json();
+
+    const verifyResp = await fetch(`${baseUrl}/auth/verify-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'verified.user@example.com',
+        otp: signupBody.otp
+      })
+    });
+
+    assert.equal(verifyResp.status, 200);
+
+    const retrySignupResp = await fetch(`${baseUrl}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Verified User Again',
+        email: 'verified.user@example.com',
+        mobile: '+919812345678',
+        password: 'Password456!',
+        role: 'student'
+      })
+    });
+    const retrySignupBody = await retrySignupResp.json();
+
+    assert.equal(retrySignupResp.status, 200);
+    assert.equal(retrySignupBody.alreadyRegistered, true);
+    assert.equal(retrySignupBody.redirectTo, '/login');
+    assert.match(retrySignupBody.message, /login/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    clearModule(authStorePath);
+    clearModule(indexPath);
+    clearModule(configPath);
+    restoreEnv();
+  }
+});

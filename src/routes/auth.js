@@ -830,13 +830,22 @@ router.post('/signup', asyncHandler(async (req, res) => {
 
   if (existingUser) {
     if (existingUser.is_email_verified) {
-      res.status(409).send({ status: false, message: 'Email already registered' });
+      res.send({
+        status: true,
+        alreadyRegistered: true,
+        requiresOtpVerification: false,
+        redirectTo: '/login',
+        message: 'Email already registered. Please login instead.'
+      });
       return;
     }
 
     if (normalizeRoleValue(existingUser.role) !== normalizeRoleValue(role)) {
-      res.status(409).send({
-        status: false,
+      res.send({
+        status: true,
+        roleConflict: true,
+        requiresOtpVerification: true,
+        redirectTo: '/verify-otp',
         message: `This email is already pending verification as ${existingUser.role}. Complete OTP verification or login with the same role.`
       });
       return;
