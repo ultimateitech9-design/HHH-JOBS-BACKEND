@@ -279,6 +279,56 @@ test('email helper uses config-backed SMTP settings without sending network traf
   restoreEnv();
 });
 
+test('email helper retries Gmail with secure transport when the primary SMTP connection times out', async () => {
+  process.env.SMTP_HOST = 'smtp.gmail.com';
+  process.env.SMTP_PORT = '587';
+  process.env.SMTP_SECURE = 'false';
+  process.env.SMTP_USER = 'otp@example.com';
+  process.env.SMTP_PASS = 'app-pass';
+  process.env.EMAIL_FROM = 'noreply@example.com';
+  process.env.OTP_FROM_NAME = 'HHH Jobs';
+
+  const transportAttempts = [];
+  require.cache[nodemailerPath] = {
+    id: nodemailerPath,
+    filename: nodemailerPath,
+    loaded: true,
+    exports: {
+      createTransport: (options) => ({
+        options,
+        sendMail: async () => {
+          transportAttempts.push(options);
+
+          if (options.port === 587) {
+            throw new Error('Connection timeout');
+          }
+
+          return { messageId: 'gmail-fallback-ok' };
+        }
+      })
+    }
+  };
+
+  clearModule(configPath);
+  clearModule(emailPath);
+  const { sendOtpEmail } = require('../src/services/email');
+
+  const result = await sendOtpEmail({ to: 'user@example.com', otp: '654321', expiresInMinutes: 10 });
+
+  assert.deepEqual(result, { sent: true });
+  assert.equal(transportAttempts.length, 2);
+  assert.equal(transportAttempts[0].port, 587);
+  assert.equal(transportAttempts[0].secure, false);
+  assert.equal(transportAttempts[1].port, 465);
+  assert.equal(transportAttempts[1].secure, true);
+  assert.equal(transportAttempts[1].service, 'gmail');
+
+  delete require.cache[nodemailerPath];
+  clearModule(emailPath);
+  clearModule(configPath);
+  restoreEnv();
+});
+
 test('app bootstrap is import-safe and serves health plus CORS headers', async () => {
   process.env.JWT_SECRET = 'test-secret';
   process.env.SUPABASE_URL = '';

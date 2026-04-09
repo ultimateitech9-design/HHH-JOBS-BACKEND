@@ -13,31 +13,89 @@ const BRAND = normalizeText(process.env.OTP_FROM_NAME) || 'HHH Jobs';
 const EMAIL_CONNECTION_TIMEOUT_MS = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 8000;
 const EMAIL_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 8000;
 const EMAIL_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 10000;
+const SMTP_HOST_LOWER = SMTP_HOST.toLowerCase();
+const IS_GMAIL_SMTP = SMTP_HOST_LOWER === 'smtp.gmail.com' || SMTP_HOST_LOWER === 'gmail';
 
 const isEmailConfigured = () =>
   Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
 
-const createTransporter = () => {
-  if (!isEmailConfigured()) return null;
+const buildTransportOptions = ({ host, port, secure, service = '' } = {}) => ({
+  ...(service ? { service } : {}),
+  ...(host ? { host } : {}),
+  port,
+  secure,
+  requireTLS: !secure,
+  name: 'hhh-jobs.com',
+  connectionTimeout: EMAIL_CONNECTION_TIMEOUT_MS,
+  greetingTimeout: EMAIL_GREETING_TIMEOUT_MS,
+  socketTimeout: EMAIL_SOCKET_TIMEOUT_MS,
+  tls: {
+    servername: host || SMTP_HOST || 'smtp.gmail.com',
+    minVersion: 'TLSv1.2'
+  },
+  auth: {
+    user: SMTP_USER,
+    pass: SMTP_PASS
+  }
+});
+
+const getTransportPlans = () => {
+  if (!isEmailConfigured()) return [];
+
+  const plans = [
+    buildTransportOptions({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_SECURE
+    })
+  ];
+
+  if (IS_GMAIL_SMTP && (SMTP_PORT !== 465 || !SMTP_SECURE)) {
+    plans.push(buildTransportOptions({
+      host: 'smtp.gmail.com',
+      service: 'gmail',
+      port: 465,
+      secure: true
+    }));
+  }
+
+  return plans;
+};
+
+const createTransporter = (options) => {
+  if (!options) return null;
 
   return nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE,
-    connectionTimeout: EMAIL_CONNECTION_TIMEOUT_MS,
-    greetingTimeout: EMAIL_GREETING_TIMEOUT_MS,
-    socketTimeout: EMAIL_SOCKET_TIMEOUT_MS,
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS
-    }
+    ...options
   });
 };
 
-const sendOtpEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
-  const transporter = createTransporter();
+const sendEmailWithFallback = async (message) => {
+  const transportPlans = getTransportPlans();
 
-  if (!transporter) {
+  if (transportPlans.length === 0) {
+    return { sent: false, reason: 'smtp_not_configured' };
+  }
+
+  let lastError = null;
+
+  for (const transportOptions of transportPlans) {
+    const transporter = createTransporter(transportOptions);
+
+    try {
+      await transporter.sendMail(message);
+      return { sent: true };
+    } catch (error) {
+      lastError = error;
+      console.error('[EMAIL ERROR]', error.message);
+    }
+  }
+
+  return { sent: false, reason: lastError?.message || 'email_send_failed' };
+};
+
+const sendOtpEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
+  if (!isEmailConfigured()) {
     console.log(`[OTP EMAIL - NOT CONFIGURED] To: ${to} | OTP: ${otp} | Expires in: ${expiresInMinutes} min`);
     console.log('  -> Set SMTP_HOST/SMTP_USER/SMTP_PASS or GMAIL_EMAIL/GMAIL_APP_PASSWORD in .env to enable real email delivery.');
     return { sent: false, reason: 'smtp_not_configured' };
@@ -102,25 +160,17 @@ const sendOtpEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
 
   const text = `Your ${BRAND} verification code is: ${otp}\n\nThis code expires in ${expiresInMinutes} minutes.\n\nIf you didn't request this, ignore this email.`;
 
-  try {
-    await transporter.sendMail({
-      from: FROM_ADDRESS.includes('<') ? FROM_ADDRESS : `"${BRAND}" <${FROM_ADDRESS}>`,
-      to,
-      subject,
-      text,
-      html
-    });
-    return { sent: true };
-  } catch (error) {
-    console.error('[EMAIL ERROR]', error.message);
-    return { sent: false, reason: error.message };
-  }
+  return sendEmailWithFallback({
+    from: FROM_ADDRESS.includes('<') ? FROM_ADDRESS : `"${BRAND}" <${FROM_ADDRESS}>`,
+    to,
+    subject,
+    text,
+    html
+  });
 };
 
 const sendPasswordResetEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
-  const transporter = createTransporter();
-
-  if (!transporter) {
+  if (!isEmailConfigured()) {
     console.log(`[PASSWORD RESET EMAIL - NOT CONFIGURED] To: ${to} | OTP: ${otp}`);
     return { sent: false, reason: 'smtp_not_configured' };
   }
@@ -170,19 +220,13 @@ const sendPasswordResetEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
 </html>
   `.trim();
 
-  try {
-    await transporter.sendMail({
-      from: FROM_ADDRESS.includes('<') ? FROM_ADDRESS : `"${BRAND}" <${FROM_ADDRESS}>`,
-      to,
-      subject,
-      text: `Your ${BRAND} password reset code: ${otp} (expires in ${expiresInMinutes} min)`,
-      html
-    });
-    return { sent: true };
-  } catch (error) {
-    console.error('[EMAIL ERROR]', error.message);
-    return { sent: false, reason: error.message };
-  }
+  return sendEmailWithFallback({
+    from: FROM_ADDRESS.includes('<') ? FROM_ADDRESS : `"${BRAND}" <${FROM_ADDRESS}>`,
+    to,
+    subject,
+    text: `Your ${BRAND} password reset code: ${otp} (expires in ${expiresInMinutes} min)`,
+    html
+  });
 };
 
 module.exports = { sendOtpEmail, sendPasswordResetEmail, isEmailConfigured };
