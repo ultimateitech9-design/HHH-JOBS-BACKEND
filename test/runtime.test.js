@@ -397,3 +397,68 @@ test('login keeps unverified local users in OTP verification flow', async () => 
     restoreEnv();
   }
 });
+
+test('signup reuses existing unverified email instead of blocking with already registered', async () => {
+  process.env.JWT_SECRET = 'test-secret';
+  process.env.SUPABASE_URL = '';
+  process.env.NEXT_PUBLIC_SUPABASE_URL = '';
+  process.env.EXPO_PUBLIC_SUPABASE_URL = '';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = '';
+  process.env.SUPABASE_SERVICE_KEY = '';
+  process.env.SUPABASE_SECRET_KEY = '';
+  process.env.CORS_ORIGINS = 'http://localhost:5173';
+  process.env.CLIENT_URLS = '';
+  process.env.FRONTEND_URL = '';
+  process.env.OAUTH_CLIENT_URL = '';
+
+  clearModule(authStorePath);
+  clearModule(configPath);
+  clearModule(indexPath);
+  const { app } = require('../index');
+
+  const server = app.listen(0);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const firstSignupResp = await fetch(`${baseUrl}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Retry User',
+        email: 'retry.user@example.com',
+        mobile: '+919876543210',
+        password: 'Password123!',
+        role: 'student'
+      })
+    });
+    const firstSignupBody = await firstSignupResp.json();
+
+    assert.equal(firstSignupResp.status, 201);
+    assert.equal(firstSignupBody.requiresOtpVerification, true);
+
+    const retrySignupResp = await fetch(`${baseUrl}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Retry User Updated',
+        email: 'retry.user@example.com',
+        mobile: '+919812345678',
+        password: 'Password456!',
+        role: 'student'
+      })
+    });
+    const retrySignupBody = await retrySignupResp.json();
+
+    assert.equal(retrySignupResp.status, 200);
+    assert.equal(retrySignupBody.requiresOtpVerification, true);
+    assert.equal(retrySignupBody.redirectTo, '/verify-otp');
+    assert.equal(typeof retrySignupBody.otp, 'string');
+    assert.match(retrySignupBody.message, /pending verification/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    clearModule(authStorePath);
+    clearModule(indexPath);
+    clearModule(configPath);
+    restoreEnv();
+  }
+});

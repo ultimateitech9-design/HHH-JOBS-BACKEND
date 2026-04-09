@@ -9,7 +9,7 @@ const { mapPublicUser } = require('../utils/mappers');
 const { normalizeEmail, asyncHandler } = require('../utils/helpers');
 const { requireAuth } = require('../middleware/auth');
 const { logAudit, getClientIp } = require('../services/audit');
-const { sendOtpEmail, sendPasswordResetEmail } = require('../services/email');
+const { sendOtpEmail, sendPasswordResetEmail, isEmailConfigured } = require('../services/email');
 const {
   getOriginFromUrl,
   resolveClientAppUrl,
@@ -85,6 +85,107 @@ const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
   return normalizedFlow === 'password_reset'
     ? 'Unable to send password reset OTP right now. Please try again in a moment.'
     : 'Unable to send OTP right now. Please try again in a moment.';
+};
+
+const dispatchAsync = (task) => {
+  const schedule = typeof setImmediate === 'function'
+    ? setImmediate
+    : (callback) => setTimeout(callback, 0);
+  schedule(() => {
+    Promise.resolve()
+      .then(task)
+      .catch((error) => {
+        console.error('[ASYNC TASK ERROR]', error?.message || error);
+      });
+  });
+};
+
+const sendOtpEmailInBackground = ({ to, otp, flow = 'signup' }) => {
+  dispatchAsync(async () => {
+    const emailResult = await sendOtpEmail({ to, otp, expiresInMinutes: OTP_EXPIRY_MINUTES });
+    if (!emailResult.sent) {
+      console.error(`[OTP EMAIL BACKGROUND ERROR][${flow}] ${to}: ${emailResult.reason}`);
+    }
+  });
+};
+
+const sendPasswordResetEmailInBackground = ({ to, otp }) => {
+  dispatchAsync(async () => {
+    const emailResult = await sendPasswordResetEmail({ to, otp, expiresInMinutes: OTP_EXPIRY_MINUTES });
+    if (!emailResult.sent) {
+      console.error(`[PASSWORD RESET EMAIL BACKGROUND ERROR] ${to}: ${emailResult.reason}`);
+    }
+  });
+};
+
+const buildDeferredOtpWarning = () => (
+  isEmailConfigured()
+    ? ''
+    : buildOtpEmailWarning({ sent: false, reason: 'smtp_not_configured' })
+);
+
+const normalizeRoleValue = (role) => String(role || '').trim().toLowerCase();
+
+const upsertSignupProfile = async ({ userId, role, reqBody = {} }) => {
+  if (supabase) {
+    if (role === ROLES.HR) {
+      const profilePayload = {
+        user_id: userId,
+        company_name: reqBody?.companyName || null,
+        location: reqBody?.location || null,
+        about: reqBody?.about || null
+      };
+      const { data: existingProfile, error: lookupError } = await supabase
+        .from('hr_profiles')
+        .select('id')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (lookupError) throw lookupError;
+
+      if (existingProfile?.id) {
+        const { error } = await supabase
+          .from('hr_profiles')
+          .update(profilePayload)
+          .eq('id', existingProfile.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('hr_profiles').insert(profilePayload);
+        if (error) throw error;
+      }
+      return;
+    }
+
+    if (isStudentPortalRole(role)) {
+      const profilePayload = {
+        user_id: userId,
+        date_of_birth: reqBody?.dateOfBirth || null
+      };
+      const { data: existingProfile, error: lookupError } = await supabase
+        .from('student_profiles')
+        .select('id')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (lookupError) throw lookupError;
+
+      if (existingProfile?.id) {
+        const { error } = await supabase
+          .from('student_profiles')
+          .update(profilePayload)
+          .eq('id', existingProfile.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('student_profiles').insert(profilePayload);
+        if (error) throw error;
+      }
+    }
+    return;
+  }
+
+  const profileRole = isStudentPortalRole(role) ? ROLES.STUDENT : role;
+  const existingProfile = authStore.getProfileByRole(profileRole, userId);
+  if (!existingProfile) {
+    createLocalRoleProfile(role, userId, reqBody || {});
+  }
 };
 
 
@@ -724,12 +825,22 @@ router.post('/signup', asyncHandler(async (req, res) => {
     : requestedRole;
 
   const existingUser = supabase
-    ? (await supabase.from('users').select('id').eq('email', email).maybeSingle()).data
+    ? (await supabase.from('users').select('*').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
 
   if (existingUser) {
-    res.status(409).send({ status: false, message: 'Email already registered' });
-    return;
+    if (existingUser.is_email_verified) {
+      res.status(409).send({ status: false, message: 'Email already registered' });
+      return;
+    }
+
+    if (normalizeRoleValue(existingUser.role) !== normalizeRoleValue(role)) {
+      res.status(409).send({
+        status: false,
+        message: `This email is already pending verification as ${existingUser.role}. Complete OTP verification or login with the same role.`
+      });
+      return;
+    }
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
@@ -738,9 +849,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
 
   let userRow;
   if (supabase) {
-    const { data: insertedUser, error: userInsertError } = await supabase
-      .from('users')
-      .insert({
+    const userPayload = {
         name,
         email,
         mobile,
@@ -754,15 +863,35 @@ router.post('/signup', asyncHandler(async (req, res) => {
         is_email_verified: false,
         otp_code: otpCode,
         otp_expires_at: otpExpiresAt
-      })
-      .select('*')
-      .single();
+      };
 
-    if (userInsertError) {
-      sendSupabaseError(res, userInsertError);
-      return;
+    if (existingUser) {
+      const { data: updatedUser, error: userUpdateError } = await supabase
+        .from('users')
+        .update(userPayload)
+        .eq('id', existingUser.id)
+        .select('*')
+        .single();
+
+      if (userUpdateError) {
+        sendSupabaseError(res, userUpdateError);
+        return;
+      }
+      userRow = updatedUser;
+    } else {
+      const { data: insertedUser, error: userInsertError } = await supabase
+        .from('users')
+        .insert(userPayload)
+        .select('*')
+        .single();
+
+      if (userInsertError) {
+        sendSupabaseError(res, userInsertError);
+        return;
+      }
+      userRow = insertedUser;
     }
-    userRow = insertedUser;
+
     if (isStudentPortalRole(role)) {
       userRow = {
         ...userRow,
@@ -770,37 +899,14 @@ router.post('/signup', asyncHandler(async (req, res) => {
       };
     }
 
-    if (role === ROLES.HR) {
-      const { error: profileError } = await supabase
-        .from('hr_profiles')
-        .insert({
-          user_id: userRow.id,
-          company_name: req.body?.companyName || null,
-          location: req.body?.location || null,
-          about: req.body?.about || null
-        });
-
-      if (profileError) {
-        sendSupabaseError(res, profileError);
-        return;
-      }
-    }
-
-    if (isStudentPortalRole(role)) {
-      const { error: profileError } = await supabase
-        .from('student_profiles')
-        .insert({
-          user_id: userRow.id,
-          date_of_birth: req.body?.dateOfBirth || null
-        });
-
-      if (profileError) {
-        sendSupabaseError(res, profileError);
-        return;
-      }
+    try {
+      await upsertSignupProfile({ userId: userRow.id, role, reqBody: req.body || {} });
+    } catch (profileError) {
+      sendSupabaseError(res, profileError);
+      return;
     }
   } else {
-    userRow = authStore.createUser({
+    const userPayload = {
       name,
       email,
       mobile,
@@ -815,13 +921,15 @@ router.post('/signup', asyncHandler(async (req, res) => {
       otp_code: otpCode,
       otp_expires_at: otpExpiresAt,
       date_of_birth: isStudentPortalRole(role) ? req.body?.dateOfBirth || null : null
-    });
-    createLocalRoleProfile(role, userRow.id, req.body || {});
+    };
+    userRow = existingUser
+      ? authStore.updateUserById(existingUser.id, userPayload)
+      : authStore.createUser(userPayload);
+    await upsertSignupProfile({ userId: userRow.id, role, reqBody: req.body || {} });
   }
 
-  // Send OTP via email (falls back to console.log when SMTP not configured)
-  const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-  const emailWarning = buildOtpEmailWarning(emailResult);
+  sendOtpEmailInBackground({ to: email, otp: otpCode, flow: existingUser ? 'signup-retry' : 'signup' });
+  const emailWarning = buildDeferredOtpWarning();
 
   await logAudit({
     userId: userRow.id,
@@ -834,7 +942,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
 
   const token = createAuthToken(userRow);
 
-  res.status(201).send({
+  res.status(existingUser ? 200 : 201).send({
     status: true,
     token,
     user: {
@@ -844,7 +952,10 @@ router.post('/signup', asyncHandler(async (req, res) => {
     requiresOtpVerification: true,
     redirectTo: '/verify-otp',
     otp: exposeOtpForLocalTesting ? otpCode : undefined,
-    emailWarning
+    emailWarning,
+    message: existingUser
+      ? 'Signup already exists but email is pending verification. A fresh OTP has been generated.'
+      : 'Signup successful. Continue to OTP verification.'
   });
 }));
 
@@ -1192,24 +1303,8 @@ router.post('/login', asyncHandler(async (req, res) => {
       });
     }
 
-    const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-    const emailWarning = buildOtpEmailWarning(emailResult);
-
-    if (!emailResult.sent) {
-      res.status(200).send({
-        status: true,
-        requiresOtpVerification: true,
-        redirectTo: '/verify-otp',
-        user: {
-          ...mapPublicUser(publicUser),
-          dateOfBirth: publicUser.date_of_birth || null
-        },
-        otp: exposeOtpForLocalTesting ? otpCode : undefined,
-        message: buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'login' }),
-        emailWarning
-      });
-      return;
-    }
+    sendOtpEmailInBackground({ to: email, otp: otpCode, flow: 'login' });
+    const emailWarning = buildDeferredOtpWarning();
 
     await logAudit({
       userId: userRow.id,
@@ -1229,7 +1324,8 @@ router.post('/login', asyncHandler(async (req, res) => {
       requiresOtpVerification: true,
       redirectTo: '/verify-otp',
       otp: exposeOtpForLocalTesting ? otpCode : undefined,
-      emailWarning
+      emailWarning,
+      message: 'Email verification is still pending. Continue to the OTP screen.'
     });
     return;
   }
