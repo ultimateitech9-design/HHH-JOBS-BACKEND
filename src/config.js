@@ -22,6 +22,8 @@ const parseEnvList = (...values) => {
 
 const smtpUser = normalizeText(process.env.SMTP_USER || process.env.GMAIL_EMAIL);
 const smtpFromName = normalizeText(process.env.OTP_FROM_NAME) || 'HHH Jobs';
+const smtpPort = Number(process.env.SMTP_PORT) || 587;
+const smtpSecureEnv = String(process.env.SMTP_SECURE || '').trim().toLowerCase();
 
 // Support both CORS_ORIGINS (documented in .env) and legacy CLIENT_URLS
 const corsOrigins = parseEnvList(
@@ -85,8 +87,8 @@ const config = {
 
   // ── Email / SMTP ──────────────────────────────────────────────────────────────
   smtpHost: normalizeText(process.env.SMTP_HOST) || 'smtp.gmail.com',
-  smtpPort: Number(process.env.SMTP_PORT) || 587,
-  smtpSecure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
+  smtpPort,
+  smtpSecure: smtpSecureEnv ? smtpSecureEnv === 'true' : smtpPort === 465,
   smtpUser,
   smtpPass: process.env.SMTP_PASS || normalizeGmailAppPassword(process.env.GMAIL_APP_PASSWORD),
   smtpFrom: normalizeText(process.env.SMTP_FROM || process.env.EMAIL_FROM) || (smtpUser ? `${smtpFromName} <${smtpUser}>` : `${smtpFromName} <no-reply@hhh-jobs.com>`),

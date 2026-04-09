@@ -31,6 +31,7 @@ const requireConfiguredAuthBackend = (res) => {
   return ensureServerConfig(res);
 };
 const exposeOtpForLocalTesting = hasLocalAuthFallback();
+const shouldFailOnOtpDeliveryError = !exposeOtpForLocalTesting;
 
 const createAuthToken = (user) => jwt.sign(
   {
@@ -66,6 +67,40 @@ const buildOtpEmailWarning = ({ sent, reason }) => {
 
   if (reason === 'smtp_not_configured') return undefined;
   return `OTP email could not be sent (${reason}). Check your SMTP settings or resend OTP from the verification screen.`;
+};
+
+const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
+  const normalizedFlow = String(flow || 'verification').trim().toLowerCase();
+
+  if (reason === 'smtp_not_configured') {
+    return normalizedFlow === 'password_reset'
+      ? 'Password reset email service is not configured. Add SMTP_USER and SMTP_PASS, or GMAIL_EMAIL and GMAIL_APP_PASSWORD, on the backend.'
+      : 'OTP email service is not configured on the backend. Add SMTP_USER and SMTP_PASS, or GMAIL_EMAIL and GMAIL_APP_PASSWORD, in production.';
+  }
+
+  const warning = buildOtpEmailWarning({ sent: false, reason });
+  if (warning) return warning;
+
+  return normalizedFlow === 'password_reset'
+    ? 'Unable to send password reset OTP right now. Please try again in a moment.'
+    : 'Unable to send OTP right now. Please try again in a moment.';
+};
+
+const cleanupPendingSignup = async ({ userId, role }) => {
+  if (!supabase || !userId) return;
+
+  if (role === ROLES.HR) {
+    const { error } = await supabase.from('hr_profiles').delete().eq('user_id', userId);
+    if (error) throw error;
+  }
+
+  if (isStudentPortalRole(role)) {
+    const { error } = await supabase.from('student_profiles').delete().eq('user_id', userId);
+    if (error) throw error;
+  }
+
+  const { error } = await supabase.from('users').delete().eq('id', userId);
+  if (error) throw error;
 };
 
 const OAUTH_ALLOWED_ROLES = new Set([ROLES.STUDENT, ROLES.HR, ROLES.RETIRED_EMPLOYEE]);
@@ -801,6 +836,21 @@ router.post('/signup', asyncHandler(async (req, res) => {
 
   // Send OTP via email (falls back to console.log when SMTP not configured)
   const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+
+  if (!emailResult.sent && shouldFailOnOtpDeliveryError) {
+    try {
+      await cleanupPendingSignup({ userId: userRow.id, role });
+    } catch (cleanupError) {
+      console.error('[SIGNUP CLEANUP ERROR]', cleanupError.message);
+    }
+
+    res.status(502).send({
+      status: false,
+      message: buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'signup' })
+    });
+    return;
+  }
+
   const emailWarning = buildOtpEmailWarning(emailResult);
 
   await logAudit({
@@ -823,7 +873,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
     },
     requiresOtpVerification: true,
     redirectTo: '/verify-otp',
-    otp: (exposeOtpForLocalTesting || !emailResult.sent) ? otpCode : undefined,
+    otp: exposeOtpForLocalTesting ? otpCode : undefined,
     emailWarning
   });
 }));
@@ -863,7 +913,15 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
     authStore.updateUserById(user.id, { otp_code: otpCode, otp_expires_at: otpExpiresAt });
   }
 
-  await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+  const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+
+  if (!emailResult.sent && shouldFailOnOtpDeliveryError) {
+    res.status(502).send({
+      status: false,
+      message: buildOtpDeliveryFailureMessage({ reason: emailResult.reason })
+    });
+    return;
+  }
 
   await logAudit({
     userId: user.id,
@@ -1010,7 +1068,16 @@ router.post('/forgot-password', asyncHandler(async (req, res) => {
     authStore.updateUserById(user.id, { otp_code: otpCode, otp_expires_at: otpExpiresAt });
   }
 
-  await sendPasswordResetEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+  const emailResult = await sendPasswordResetEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+
+  if (!emailResult.sent && shouldFailOnOtpDeliveryError) {
+    res.status(200).send({
+      status: true,
+      deliveryFailed: true,
+      message: buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'password_reset' })
+    });
+    return;
+  }
 
   res.send({
     status: true,
@@ -1158,6 +1225,21 @@ router.post('/login', asyncHandler(async (req, res) => {
     const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
     const emailWarning = buildOtpEmailWarning(emailResult);
 
+    if (!emailResult.sent && shouldFailOnOtpDeliveryError) {
+      res.status(502).send({
+        status: false,
+        requiresOtpVerification: true,
+        redirectTo: '/verify-otp',
+        user: {
+          ...mapPublicUser(publicUser),
+          dateOfBirth: publicUser.date_of_birth || null
+        },
+        message: buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'login' }),
+        emailWarning
+      });
+      return;
+    }
+
     await logAudit({
       userId: userRow.id,
       action: AUDIT_ACTIONS.OTP_SENT,
@@ -1175,7 +1257,7 @@ router.post('/login', asyncHandler(async (req, res) => {
       },
       requiresOtpVerification: true,
       redirectTo: '/verify-otp',
-      otp: (exposeOtpForLocalTesting || !emailResult.sent) ? otpCode : undefined,
+      otp: exposeOtpForLocalTesting ? otpCode : undefined,
       emailWarning
     });
     return;

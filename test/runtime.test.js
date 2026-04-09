@@ -78,6 +78,23 @@ test('config resolves updated env aliases and normalizes origins', () => {
   restoreEnv();
 });
 
+test('config enables secure SMTP automatically for port 465 when SMTP_SECURE is unset', () => {
+  process.env.SMTP_HOST = 'smtp.example.com';
+  process.env.SMTP_PORT = '465';
+  delete process.env.SMTP_SECURE;
+  process.env.SMTP_USER = 'otp@example.com';
+  process.env.SMTP_PASS = 'app-pass';
+
+  clearModule(configPath);
+  const config = require('../src/config');
+
+  assert.equal(config.smtpPort, 465);
+  assert.equal(config.smtpSecure, true);
+
+  clearModule(configPath);
+  restoreEnv();
+});
+
 test('oauth redirect resolver prefers trusted HTTPS callbacks for LinkedIn', () => {
   clearModule(oauthUtilsPath);
   const { resolveOAuthRedirectUri } = require('../src/utils/oauth');
