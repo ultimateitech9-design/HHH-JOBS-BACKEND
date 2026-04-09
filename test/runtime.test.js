@@ -299,7 +299,7 @@ test('email helper retries Gmail with secure transport when the primary SMTP con
         sendMail: async () => {
           transportAttempts.push(options);
 
-          if (options.port === 587) {
+          if (options.port === 465) {
             throw new Error('Connection timeout');
           }
 
@@ -317,11 +317,11 @@ test('email helper retries Gmail with secure transport when the primary SMTP con
 
   assert.deepEqual(result, { sent: true });
   assert.equal(transportAttempts.length, 2);
-  assert.equal(transportAttempts[0].port, 587);
-  assert.equal(transportAttempts[0].secure, false);
-  assert.equal(transportAttempts[1].port, 465);
-  assert.equal(transportAttempts[1].secure, true);
-  assert.equal(transportAttempts[1].service, 'gmail');
+  assert.equal(transportAttempts[0].port, 465);
+  assert.equal(transportAttempts[0].secure, true);
+  assert.equal(transportAttempts[0].service, 'gmail');
+  assert.equal(transportAttempts[1].port, 587);
+  assert.equal(transportAttempts[1].secure, false);
 
   delete require.cache[nodemailerPath];
   clearModule(emailPath);

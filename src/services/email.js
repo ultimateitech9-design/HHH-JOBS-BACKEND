@@ -42,13 +42,7 @@ const buildTransportOptions = ({ host, port, secure, service = '' } = {}) => ({
 const getTransportPlans = () => {
   if (!isEmailConfigured()) return [];
 
-  const plans = [
-    buildTransportOptions({
-      host: SMTP_HOST,
-      port: SMTP_PORT,
-      secure: SMTP_SECURE
-    })
-  ];
+  const plans = [];
 
   if (IS_GMAIL_SMTP && (SMTP_PORT !== 465 || !SMTP_SECURE)) {
     plans.push(buildTransportOptions({
@@ -58,6 +52,12 @@ const getTransportPlans = () => {
       secure: true
     }));
   }
+
+  plans.push(buildTransportOptions({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE
+  }));
 
   return plans;
 };
