@@ -359,6 +359,8 @@ test('login keeps unverified local users in OTP verification flow', async () => 
     assert.equal(signupResp.status, 201);
     assert.equal(signupBody.requiresOtpVerification, true);
     assert.equal(typeof signupBody.otp, 'string');
+    assert.equal(signupBody.deliveryFailed, true);
+    assert.match(String(signupBody.emailWarning || ''), /otp|email/i);
 
     const loginResp = await fetch(`${baseUrl}/auth/login`, {
       method: 'POST',
@@ -375,6 +377,8 @@ test('login keeps unverified local users in OTP verification flow', async () => 
     assert.equal(loginBody.redirectTo, '/verify-otp');
     assert.equal('token' in loginBody, false);
     assert.equal(typeof loginBody.otp, 'string');
+    assert.equal(loginBody.deliveryFailed, true);
+    assert.match(String(loginBody.emailWarning || ''), /otp|email/i);
 
     const verifyResp = await fetch(`${baseUrl}/auth/verify-otp`, {
       method: 'POST',

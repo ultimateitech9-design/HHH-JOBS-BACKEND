@@ -87,37 +87,6 @@ const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
     : 'Unable to send OTP right now. Please try again in a moment.';
 };
 
-const dispatchAsync = (task) => {
-  const schedule = typeof setImmediate === 'function'
-    ? setImmediate
-    : (callback) => setTimeout(callback, 0);
-  schedule(() => {
-    Promise.resolve()
-      .then(task)
-      .catch((error) => {
-        console.error('[ASYNC TASK ERROR]', error?.message || error);
-      });
-  });
-};
-
-const sendOtpEmailInBackground = ({ to, otp, flow = 'signup' }) => {
-  dispatchAsync(async () => {
-    const emailResult = await sendOtpEmail({ to, otp, expiresInMinutes: OTP_EXPIRY_MINUTES });
-    if (!emailResult.sent) {
-      console.error(`[OTP EMAIL BACKGROUND ERROR][${flow}] ${to}: ${emailResult.reason}`);
-    }
-  });
-};
-
-const sendPasswordResetEmailInBackground = ({ to, otp }) => {
-  dispatchAsync(async () => {
-    const emailResult = await sendPasswordResetEmail({ to, otp, expiresInMinutes: OTP_EXPIRY_MINUTES });
-    if (!emailResult.sent) {
-      console.error(`[PASSWORD RESET EMAIL BACKGROUND ERROR] ${to}: ${emailResult.reason}`);
-    }
-  });
-};
-
 const buildDeferredOtpWarning = () => (
   isEmailConfigured()
     ? ''
@@ -937,8 +906,10 @@ router.post('/signup', asyncHandler(async (req, res) => {
     await upsertSignupProfile({ userId: userRow.id, role, reqBody: req.body || {} });
   }
 
-  sendOtpEmailInBackground({ to: email, otp: otpCode, flow: existingUser ? 'signup-retry' : 'signup' });
-  const emailWarning = buildDeferredOtpWarning();
+  const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+  const emailWarning = emailResult.sent
+    ? ''
+    : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'signup' }) || buildDeferredOtpWarning());
 
   await logAudit({
     userId: userRow.id,
@@ -961,6 +932,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
     requiresOtpVerification: true,
     redirectTo: '/verify-otp',
     otp: exposeOtpForLocalTesting ? otpCode : undefined,
+    deliveryFailed: !emailResult.sent,
     emailWarning,
     message: existingUser
       ? 'Signup already exists but email is pending verification. A fresh OTP has been generated.'
@@ -1312,8 +1284,10 @@ router.post('/login', asyncHandler(async (req, res) => {
       });
     }
 
-    sendOtpEmailInBackground({ to: email, otp: otpCode, flow: 'login' });
-    const emailWarning = buildDeferredOtpWarning();
+    const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+    const emailWarning = emailResult.sent
+      ? ''
+      : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'login' }) || buildDeferredOtpWarning());
 
     await logAudit({
       userId: userRow.id,
@@ -1333,6 +1307,7 @@ router.post('/login', asyncHandler(async (req, res) => {
       requiresOtpVerification: true,
       redirectTo: '/verify-otp',
       otp: exposeOtpForLocalTesting ? otpCode : undefined,
+      deliveryFailed: !emailResult.sent,
       emailWarning,
       message: 'Email verification is still pending. Continue to the OTP screen.'
     });
