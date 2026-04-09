@@ -10,6 +10,9 @@ const SMTP_USER = config.smtpUser || '';
 const SMTP_PASS = config.smtpPass || '';
 const FROM_ADDRESS = config.smtpFrom || 'noreply@hhhjobs.com';
 const BRAND = normalizeText(process.env.OTP_FROM_NAME) || 'HHH Jobs';
+const EMAIL_CONNECTION_TIMEOUT_MS = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 8000;
+const EMAIL_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 8000;
+const EMAIL_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 10000;
 
 const isEmailConfigured = () =>
   Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
@@ -21,6 +24,9 @@ const createTransporter = () => {
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: SMTP_SECURE,
+    connectionTimeout: EMAIL_CONNECTION_TIMEOUT_MS,
+    greetingTimeout: EMAIL_GREETING_TIMEOUT_MS,
+    socketTimeout: EMAIL_SOCKET_TIMEOUT_MS,
     auth: {
       user: SMTP_USER,
       pass: SMTP_PASS

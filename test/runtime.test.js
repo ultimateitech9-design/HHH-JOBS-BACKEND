@@ -269,6 +269,9 @@ test('email helper uses config-backed SMTP settings without sending network traf
   assert.equal(sentMail[0].message.from, '"HHH Jobs" <noreply@example.com>');
   assert.equal(sentMail[0].message.to, 'user@example.com');
   assert.equal(sentMail[0].options.host, 'smtp.example.com');
+  assert.equal(sentMail[0].options.connectionTimeout, 8000);
+  assert.equal(sentMail[0].options.greetingTimeout, 8000);
+  assert.equal(sentMail[0].options.socketTimeout, 10000);
 
   delete require.cache[nodemailerPath];
   clearModule(emailPath);

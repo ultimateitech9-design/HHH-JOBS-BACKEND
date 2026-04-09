@@ -31,7 +31,6 @@ const requireConfiguredAuthBackend = (res) => {
   return ensureServerConfig(res);
 };
 const exposeOtpForLocalTesting = hasLocalAuthFallback();
-const shouldFailOnOtpDeliveryError = !exposeOtpForLocalTesting;
 
 const createAuthToken = (user) => jwt.sign(
   {
@@ -65,7 +64,9 @@ const buildOtpEmailWarning = ({ sent, reason }) => {
     return 'Sender Gmail login failed. Recheck GMAIL_EMAIL and GMAIL_APP_PASSWORD in backend .env, and make sure you are using a Google App Password.';
   }
 
-  if (reason === 'smtp_not_configured') return undefined;
+  if (reason === 'smtp_not_configured') {
+    return 'OTP email service is not configured right now. Continue to the verification screen, and use resend once SMTP is fixed.';
+  }
   return `OTP email could not be sent (${reason}). Check your SMTP settings or resend OTP from the verification screen.`;
 };
 
@@ -86,22 +87,6 @@ const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
     : 'Unable to send OTP right now. Please try again in a moment.';
 };
 
-const cleanupPendingSignup = async ({ userId, role }) => {
-  if (!supabase || !userId) return;
-
-  if (role === ROLES.HR) {
-    const { error } = await supabase.from('hr_profiles').delete().eq('user_id', userId);
-    if (error) throw error;
-  }
-
-  if (isStudentPortalRole(role)) {
-    const { error } = await supabase.from('student_profiles').delete().eq('user_id', userId);
-    if (error) throw error;
-  }
-
-  const { error } = await supabase.from('users').delete().eq('id', userId);
-  if (error) throw error;
-};
 
 const OAUTH_ALLOWED_ROLES = new Set([ROLES.STUDENT, ROLES.HR, ROLES.RETIRED_EMPLOYEE]);
 const OAUTH_PROVIDERS = {
@@ -836,21 +821,6 @@ router.post('/signup', asyncHandler(async (req, res) => {
 
   // Send OTP via email (falls back to console.log when SMTP not configured)
   const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-
-  if (!emailResult.sent && shouldFailOnOtpDeliveryError) {
-    try {
-      await cleanupPendingSignup({ userId: userRow.id, role });
-    } catch (cleanupError) {
-      console.error('[SIGNUP CLEANUP ERROR]', cleanupError.message);
-    }
-
-    res.status(502).send({
-      status: false,
-      message: buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'signup' })
-    });
-    return;
-  }
-
   const emailWarning = buildOtpEmailWarning(emailResult);
 
   await logAudit({
@@ -915,7 +885,7 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
 
   const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
 
-  if (!emailResult.sent && shouldFailOnOtpDeliveryError) {
+  if (!emailResult.sent) {
     res.status(502).send({
       status: false,
       message: buildOtpDeliveryFailureMessage({ reason: emailResult.reason })
@@ -1070,7 +1040,7 @@ router.post('/forgot-password', asyncHandler(async (req, res) => {
 
   const emailResult = await sendPasswordResetEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
 
-  if (!emailResult.sent && shouldFailOnOtpDeliveryError) {
+  if (!emailResult.sent) {
     res.status(200).send({
       status: true,
       deliveryFailed: true,
@@ -1225,15 +1195,16 @@ router.post('/login', asyncHandler(async (req, res) => {
     const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
     const emailWarning = buildOtpEmailWarning(emailResult);
 
-    if (!emailResult.sent && shouldFailOnOtpDeliveryError) {
-      res.status(502).send({
-        status: false,
+    if (!emailResult.sent) {
+      res.status(200).send({
+        status: true,
         requiresOtpVerification: true,
         redirectTo: '/verify-otp',
         user: {
           ...mapPublicUser(publicUser),
           dateOfBirth: publicUser.date_of_birth || null
         },
+        otp: exposeOtpForLocalTesting ? otpCode : undefined,
         message: buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'login' }),
         emailWarning
       });
