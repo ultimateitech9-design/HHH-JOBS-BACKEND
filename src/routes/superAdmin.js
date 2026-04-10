@@ -7,7 +7,7 @@ const { asyncHandler } = require('../utils/helpers');
 
 const router = express.Router();
 
-router.use(requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN));
+router.use(requireAuth, requireActiveUser, requireRole(ROLES.SUPER_ADMIN));
 
 // =============================================
 // Dashboard

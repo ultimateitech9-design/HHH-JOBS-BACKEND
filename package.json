@@ -7,7 +7,8 @@
     "build": "echo \"No build step required\"",
     "start": "node index.js",
     "test": "node --test",
-    "dev": "node scripts/dev.js"
+    "dev": "node scripts/dev.js",
+    "create:super-admin": "node scripts/create-super-admin.js"
   },
   "keywords": [],
   "author": "",
