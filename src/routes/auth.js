@@ -16,6 +16,7 @@ const {
   resolveLinkedInAppRedirectUri,
   resolveOAuthRedirectUri
 } = require('../utils/oauth');
+const { syncHhhCandidateToEimager } = require('../services/eimagerSync');
 const {
   isStudentPortalRole,
   isAuthSignupRole,
@@ -585,6 +586,14 @@ const completeOAuthFlow = async ({
   authUser = updatedUser;
 
   if (created) {
+    try {
+      await syncHhhCandidateToEimager({ user: authUser, profile: authUser });
+    } catch (error) {
+      console.warn(`[eimager-sync] OAuth candidate sync failed for ${authUser.email}: ${error.message}`);
+    }
+  }
+
+  if (created) {
     await logAudit({
       userId: authUser.id,
       action: AUDIT_ACTIONS.SIGNUP,
@@ -906,6 +915,14 @@ router.post('/signup', asyncHandler(async (req, res) => {
     await upsertSignupProfile({ userId: userRow.id, role, reqBody: req.body || {} });
   }
 
+  let syncWarning = '';
+  try {
+    await syncHhhCandidateToEimager({ user: userRow, profile: userRow });
+  } catch (error) {
+    syncWarning = `Emaiger sync pending: ${error.message}`;
+    console.warn(`[eimager-sync] Signup candidate sync failed for ${email}: ${error.message}`);
+  }
+
   const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
   const emailWarning = emailResult.sent
     ? ''
@@ -934,6 +951,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
     otp: exposeOtpForLocalTesting ? otpCode : undefined,
     deliveryFailed: !emailResult.sent,
     emailWarning,
+    syncWarning,
     message: existingUser
       ? 'Signup already exists but email is pending verification. A fresh OTP has been generated.'
       : 'Signup successful. Continue to OTP verification.'

@@ -9,6 +9,7 @@ const defaultOrigins = [
 
 const normalizeOrigin = (origin) => String(origin || '').trim().replace(/\/+$/, '');
 const normalizeText = (value) => String(value || '').trim();
+const normalizeUrl = (value) => normalizeText(value).replace(/\/+$/, '');
 const normalizeGmailAppPassword = (value) => String(value || '').replace(/\s+/g, '');
 const parseEnvList = (...values) => {
   const list = values
@@ -92,6 +93,13 @@ const config = {
   smtpUser,
   smtpPass: process.env.SMTP_PASS || normalizeGmailAppPassword(process.env.GMAIL_APP_PASSWORD),
   smtpFrom: normalizeText(process.env.SMTP_FROM || process.env.EMAIL_FROM) || (smtpUser ? `${smtpFromName} <${smtpUser}>` : `${smtpFromName} <no-reply@hhh-jobs.com>`),
+
+  // ── Emaiger sync ─────────────────────────────────────────────────────────────
+  eimagerSyncUrl: normalizeUrl(process.env.EIMAGER_SYNC_URL),
+  eimagerSyncSecret: process.env.EIMAGER_SYNC_SECRET || '',
+  eimagerSyncTimeoutMs: Number(process.env.EIMAGER_SYNC_TIMEOUT_MS) > 0
+    ? Number(process.env.EIMAGER_SYNC_TIMEOUT_MS)
+    : 10000,
 
   // ── Admin ─────────────────────────────────────────────────────────────────────
   adminEmails: (process.env.ADMIN_EMAILS || '')

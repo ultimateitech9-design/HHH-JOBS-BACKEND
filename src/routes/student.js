@@ -8,6 +8,7 @@ const { isValidUuid, toArray, asyncHandler, stripUndefined } = require('../utils
 const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
 const { extractResumeText } = require('../utils/resumeExtraction');
 const { extractStudentProfileFromResume } = require('../utils/studentResumeProfileImport');
+const { syncHhhCandidateToEimager } = require('../services/eimagerSync');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -545,7 +546,15 @@ router.put('/profile', asyncHandler(async (req, res) => {
   const user = await getStudentUserRow(targetUserId, res);
   if (!user) return;
 
-  res.send({ status: true, profile: mergeProfileWithUser(data, user) });
+  const mergedProfile = mergeProfileWithUser(data, user);
+
+  try {
+    await syncHhhCandidateToEimager({ user, profile: mergedProfile });
+  } catch (error) {
+    console.warn(`[eimager-sync] Student profile sync failed for ${targetUserId}: ${error.message}`);
+  }
+
+  res.send({ status: true, profile: mergedProfile });
 }));
 
 router.post('/profile/import-resume', asyncHandler(async (req, res) => {
