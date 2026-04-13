@@ -10,9 +10,9 @@ const SMTP_USER = config.smtpUser || '';
 const SMTP_PASS = config.smtpPass || '';
 const FROM_ADDRESS = config.smtpFrom || 'noreply@hhhjobs.com';
 const BRAND = normalizeText(process.env.OTP_FROM_NAME) || 'HHH Jobs';
-const EMAIL_CONNECTION_TIMEOUT_MS = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 20000;
-const EMAIL_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 20000;
-const EMAIL_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 25000;
+const EMAIL_CONNECTION_TIMEOUT_MS = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 10000;
+const EMAIL_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 10000;
+const EMAIL_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 12000;
 const SMTP_HOST_LOWER = SMTP_HOST.toLowerCase();
 const IS_GMAIL_SMTP = SMTP_HOST_LOWER === 'smtp.gmail.com' || SMTP_HOST_LOWER === 'gmail';
 const SMTP_FAMILY = Number(process.env.SMTP_FAMILY) || (IS_GMAIL_SMTP ? 4 : 0);
@@ -45,21 +45,35 @@ const getTransportPlans = () => {
   if (!isEmailConfigured()) return [];
 
   const plans = [];
+  const seenPlans = new Set();
+
+  const pushPlan = (options) => {
+    const planKey = [
+      options?.service || '',
+      options?.host || '',
+      options?.port || '',
+      options?.secure ? 'secure' : 'insecure'
+    ].join('|');
+
+    if (seenPlans.has(planKey)) return;
+    seenPlans.add(planKey);
+    plans.push(options);
+  };
+
+  pushPlan(buildTransportOptions({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE
+  }));
 
   if (IS_GMAIL_SMTP && (SMTP_PORT !== 465 || !SMTP_SECURE)) {
-    plans.push(buildTransportOptions({
+    pushPlan(buildTransportOptions({
       host: 'smtp.gmail.com',
       service: 'gmail',
       port: 465,
       secure: true
     }));
   }
-
-  plans.push(buildTransportOptions({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE
-  }));
 
   return plans;
 };
