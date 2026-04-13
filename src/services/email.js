@@ -64,15 +64,14 @@ const getTransportPlans = () => {
     // Gmail is typically most reliable over implicit TLS on 465 in hosted environments.
     pushPlan(buildTransportOptions({
       host: 'smtp.gmail.com',
-      service: 'gmail',
       port: 465,
       secure: true
     }));
 
     pushPlan(buildTransportOptions({
       host: 'smtp.gmail.com',
-      port: 465,
-      secure: true
+      port: 587,
+      secure: false
     }));
   }
 

@@ -98,8 +98,8 @@ const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
   if (warning) return warning;
 
   return normalizedFlow === 'password_reset'
-    ? 'Unable to send password reset OTP right now. Please try again in a moment.'
-    : 'Unable to send OTP right now. Please try again in a moment.';
+    ? 'We could not send the password reset code right now. Please wait a moment and try again.'
+    : 'We could not send the OTP email right now. Please wait a moment and use Resend OTP.';
 };
 
 const buildDeferredOtpWarning = () => (
