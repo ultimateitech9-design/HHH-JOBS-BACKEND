@@ -60,20 +60,27 @@ const getTransportPlans = () => {
     plans.push(options);
   };
 
-  pushPlan(buildTransportOptions({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE
-  }));
-
-  if (IS_GMAIL_SMTP && (SMTP_PORT !== 465 || !SMTP_SECURE)) {
+  if (IS_GMAIL_SMTP) {
+    // Gmail is typically most reliable over implicit TLS on 465 in hosted environments.
     pushPlan(buildTransportOptions({
       host: 'smtp.gmail.com',
       service: 'gmail',
       port: 465,
       secure: true
     }));
+
+    pushPlan(buildTransportOptions({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true
+    }));
   }
+
+  pushPlan(buildTransportOptions({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE
+  }));
 
   return plans;
 };
