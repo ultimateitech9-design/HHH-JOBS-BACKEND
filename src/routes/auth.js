@@ -46,6 +46,11 @@ const createAuthToken = (user) => jwt.sign(
 );
 
 const generateOtp = () => String(Math.floor(100000 + Math.random() * 900000));
+const isOtpStillValid = (user = {}) => {
+  const otpCode = String(user?.otp_code || '').trim();
+  const expiresAt = user?.otp_expires_at ? new Date(user.otp_expires_at) : null;
+  return Boolean(otpCode && expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt > new Date());
+};
 const toOptionalText = (value) => {
   const text = String(value ?? '').trim();
   return text || null;
@@ -968,7 +973,7 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
   }
 
   const user = supabase
-    ? (await supabase.from('users').select('id, email, is_email_verified').eq('email', email).maybeSingle()).data
+    ? (await supabase.from('users').select('id, email, is_email_verified, otp_code, otp_expires_at').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
 
   if (!user) {
@@ -976,10 +981,13 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
     return;
   }
 
-  const otpCode = generateOtp();
-  const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
+  const shouldReuseExistingOtp = isOtpStillValid(user);
+  const otpCode = shouldReuseExistingOtp ? String(user.otp_code).trim() : generateOtp();
+  const otpExpiresAt = shouldReuseExistingOtp
+    ? user.otp_expires_at
+    : new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
 
-  if (supabase) {
+  if (!shouldReuseExistingOtp && supabase) {
     const { error: updateError } = await supabase
       .from('users')
       .update({ otp_code: otpCode, otp_expires_at: otpExpiresAt })
@@ -989,16 +997,21 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
       sendSupabaseError(res, updateError);
       return;
     }
-  } else {
+  } else if (!shouldReuseExistingOtp) {
     authStore.updateUserById(user.id, { otp_code: otpCode, otp_expires_at: otpExpiresAt });
   }
 
   const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
 
   if (!emailResult.sent) {
-    res.status(502).send({
-      status: false,
-      message: buildOtpDeliveryFailureMessage({ reason: emailResult.reason })
+    const emailWarning = buildOtpDeliveryFailureMessage({ reason: emailResult.reason });
+    res.send({
+      status: true,
+      deliveryFailed: true,
+      emailWarning,
+      message: emailWarning,
+      expiresInMinutes: OTP_EXPIRY_MINUTES,
+      otp: exposeOtpForLocalTesting ? otpCode : undefined
     });
     return;
   }
