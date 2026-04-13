@@ -9,6 +9,7 @@ const SMTP_SECURE = Boolean(config.smtpSecure);
 const SMTP_USER = config.smtpUser || '';
 const SMTP_PASS = config.smtpPass || '';
 const FROM_ADDRESS = config.smtpFrom || 'noreply@hhhjobs.com';
+const SENDGRID_API_KEY = config.sendgridApiKey || '';
 const BRAND = normalizeText(process.env.OTP_FROM_NAME) || 'HHH Jobs';
 const EMAIL_CONNECTION_TIMEOUT_MS = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 10000;
 const EMAIL_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 10000;
@@ -17,8 +18,30 @@ const SMTP_HOST_LOWER = SMTP_HOST.toLowerCase();
 const IS_GMAIL_SMTP = SMTP_HOST_LOWER === 'smtp.gmail.com' || SMTP_HOST_LOWER === 'gmail';
 const SMTP_FAMILY = Number(process.env.SMTP_FAMILY) || (IS_GMAIL_SMTP ? 4 : 0);
 
-const isEmailConfigured = () =>
+const isSmtpConfigured = () =>
   Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
+
+const isSendGridConfigured = () =>
+  Boolean(SENDGRID_API_KEY && FROM_ADDRESS);
+
+const isEmailConfigured = () =>
+  isSendGridConfigured() || isSmtpConfigured();
+
+const parseFromAddress = (value = '') => {
+  const rawValue = String(value || '').trim();
+  const match = rawValue.match(/^(?:"?([^"]*)"?\s*)?<([^>]+)>$/);
+  if (match) {
+    return {
+      name: String(match[1] || BRAND).trim() || BRAND,
+      email: String(match[2] || '').trim()
+    };
+  }
+
+  return {
+    name: BRAND,
+    email: rawValue
+  };
+};
 
 const buildTransportOptions = ({ host, port, secure, service = '' } = {}) => ({
   ...(service ? { service } : {}),
@@ -92,7 +115,56 @@ const createTransporter = (options) => {
   });
 };
 
+const sendViaSendGrid = async (message) => {
+  if (!isSendGridConfigured()) {
+    return { sent: false, reason: 'sendgrid_not_configured' };
+  }
+
+  const from = parseFromAddress(message.from || FROM_ADDRESS);
+  const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${SENDGRID_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      personalizations: [{ to: [{ email: message.to }] }],
+      from: {
+        email: from.email,
+        name: from.name || BRAND
+      },
+      subject: message.subject,
+      content: [
+        { type: 'text/plain', value: message.text || '' },
+        { type: 'text/html', value: message.html || '' }
+      ]
+    })
+  });
+
+  if (response.ok) {
+    return { sent: true };
+  }
+
+  const responseText = await response.text().catch(() => '');
+  return {
+    sent: false,
+    reason: responseText || `sendgrid_http_${response.status}`
+  };
+};
+
 const sendEmailWithFallback = async (message) => {
+  if (isSendGridConfigured()) {
+    try {
+      const sendGridResult = await sendViaSendGrid(message);
+      if (sendGridResult.sent) return sendGridResult;
+      console.error('[SENDGRID ERROR]', sendGridResult.reason);
+      return sendGridResult;
+    } catch (error) {
+      console.error('[SENDGRID ERROR]', error.message);
+      return { sent: false, reason: error.message || 'sendgrid_send_failed' };
+    }
+  }
+
   const transportPlans = getTransportPlans();
 
   if (transportPlans.length === 0) {

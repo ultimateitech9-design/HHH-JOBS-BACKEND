@@ -93,6 +93,7 @@ const config = {
   smtpUser,
   smtpPass: process.env.SMTP_PASS || normalizeGmailAppPassword(process.env.GMAIL_APP_PASSWORD),
   smtpFrom: normalizeText(process.env.SMTP_FROM || process.env.EMAIL_FROM) || (smtpUser ? `${smtpFromName} <${smtpUser}>` : `${smtpFromName} <no-reply@hhh-jobs.com>`),
+  sendgridApiKey: normalizeText(process.env.SENDGRID_API_KEY),
 
   // ── Emaiger sync ─────────────────────────────────────────────────────────────
   eimagerSyncUrl: normalizeUrl(process.env.EIMAGER_SYNC_URL),
