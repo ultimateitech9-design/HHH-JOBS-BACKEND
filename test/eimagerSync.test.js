@@ -37,6 +37,7 @@ test('buildEimagerSyncPayload normalizes mixed HHH education and experience data
       name: 'Asha Singh',
       email: 'asha@example.com',
       mobile: '+919999999999',
+      password_hash: '$2a$10$examplehashvalueexamplehashvalueexamplehashvalue1234',
       role: 'student',
       gender: 'Female',
       caste: 'General',
@@ -47,6 +48,7 @@ test('buildEimagerSyncPayload normalizes mixed HHH education and experience data
       date_of_birth: '1999-02-10',
       current_address: 'Noida Sector 62',
       location: 'Noida',
+      profile_summary: 'Full stack candidate',
       linkedin_url: 'https://linkedin.com/in/asha',
       education: [
         {
@@ -76,6 +78,8 @@ test('buildEimagerSyncPayload normalizes mixed HHH education and experience data
 
   assert.equal(payload.name, 'Asha Singh');
   assert.equal(payload.email, 'asha@example.com');
+  assert.equal(payload.passwordHash, '$2a$10$examplehashvalueexamplehashvalueexamplehashvalue1234');
+  assert.equal(payload.profileSummary, 'Full stack candidate');
   assert.equal(payload.education.length, 2);
   assert.equal(payload.education[0].courseName, 'B.Tech');
   assert.equal(payload.education[1].courseName, '12th - CBSE');
@@ -147,10 +151,12 @@ test('syncHhhCandidateToEimager posts the normalized payload with the shared sec
       role: 'retired_employee',
       name: 'Rakesh Kumar',
       email: 'rakesh@example.com',
-      mobile: '+919876543210'
+      mobile: '+919876543210',
+      password_hash: '$2a$10$syncpasswordhashsyncpasswordhashsyncpasswordhash12'
     },
     profile: {
       date_of_birth: '1960-05-10',
+      profile_summary: 'Experienced maintenance engineer',
       experience: ['Senior maintenance engineer with 30 years of field experience']
     }
   });
@@ -161,6 +167,8 @@ test('syncHhhCandidateToEimager posts the normalized payload with the shared sec
   assert.equal(calls[0].options.headers['X-HHH-SYNC-SECRET'], 'sync-secret');
   const parsedBody = JSON.parse(calls[0].options.body);
   assert.equal(parsedBody.role, 'retired_employee');
+  assert.equal(parsedBody.passwordHash, '$2a$10$syncpasswordhashsyncpasswordhashsyncpasswordhash12');
+  assert.equal(parsedBody.profileSummary, 'Experienced maintenance engineer');
   assert.equal(parsedBody.experience.length, 1);
 
   global.fetch = originalFetch;

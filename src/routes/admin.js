@@ -1,4 +1,5 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const {
   ROLES,
   USER_STATUSES,
@@ -13,9 +14,11 @@ const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { mapJobFromRow, mapApplicationFromRow, mapReportFromRow } = require('../utils/mappers');
-const { asyncHandler, clamp } = require('../utils/helpers');
+const { asyncHandler, clamp, normalizeEmail } = require('../utils/helpers');
 const { notifyMatchingJobAlerts, createNotification } = require('../services/notifications');
 const { logAudit, getClientIp } = require('../services/audit');
+const { sendWelcomeEmail } = require('../services/email');
+const { isStudentPortalRole } = require('../services/accountRoles');
 
 const router = express.Router();
 
@@ -1035,6 +1038,144 @@ router.patch('/payments/:id', asyncHandler(async (req, res) => {
   }
 
   res.send({ status: true, payment: data });
+}));
+
+// =============================================
+// Bulk Registration (Migration)
+// POST /admin/bulk-register
+// Body: { candidates: [...], sendEmail: true, loginUrl: "..." }
+// Each candidate: { name, email, mobile, password, role?, gender?, caste?, religion? }
+// =============================================
+router.post('/bulk-register', asyncHandler(async (req, res) => {
+  if (!supabase) {
+    res.status(503).send({ status: false, message: 'Supabase not configured' });
+    return;
+  }
+
+  const candidates = Array.isArray(req.body?.candidates) ? req.body.candidates : [];
+  if (candidates.length === 0) {
+    res.status(400).send({ status: false, message: 'candidates array is required and must not be empty' });
+    return;
+  }
+  if (candidates.length > 500) {
+    res.status(400).send({ status: false, message: 'Max 500 candidates per request' });
+    return;
+  }
+
+  const sendEmail   = req.body?.sendEmail !== false;
+  const loginUrl    = String(req.body?.loginUrl || 'https://hhh-jobs.com/login').trim();
+  const defaultRole = ROLES.STUDENT;
+
+  const results   = [];
+  const succeeded = [];
+  const failed    = [];
+
+  for (const candidate of candidates) {
+    const name     = String(candidate.name   || '').trim();
+    const email    = normalizeEmail(candidate.email  || '');
+    const mobile   = String(candidate.mobile || candidate.phone || '').trim();
+    const password = String(candidate.password || '').trim();
+    const role     = String(candidate.role    || defaultRole).trim().toLowerCase();
+
+    // ── Validate required fields ──────────────────────────────
+    if (!name || !email || !mobile || !password) {
+      failed.push({ email: email || '(missing)', reason: 'Missing required field: name, email, mobile or password' });
+      results.push({ email, status: 'failed', reason: 'missing_fields' });
+      continue;
+    }
+
+    // ── Check duplicate ───────────────────────────────────────
+    const { data: existing } = await supabase
+      .from('users')
+      .select('id, email, is_email_verified')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (existing) {
+      failed.push({ email, reason: 'Already registered' });
+      results.push({ email, status: 'skipped', reason: 'already_exists', userId: existing.id });
+      continue;
+    }
+
+    // ── Hash password ─────────────────────────────────────────
+    let passwordHash;
+    try {
+      passwordHash = await bcrypt.hash(password, 10);
+    } catch (hashErr) {
+      failed.push({ email, reason: 'Password hashing failed' });
+      results.push({ email, status: 'failed', reason: 'hash_error' });
+      continue;
+    }
+
+    // ── Insert user (pre-verified, no OTP needed) ─────────────
+    const userPayload = {
+      name,
+      email,
+      mobile,
+      gender:            candidate.gender   ? String(candidate.gender).trim()   : null,
+      caste:             candidate.caste    ? String(candidate.caste).trim()    : null,
+      religion:          candidate.religion ? String(candidate.religion).trim() : null,
+      password_hash:     passwordHash,
+      role:              isStudentPortalRole(role) ? ROLES.STUDENT : role,
+      status:            USER_STATUSES.ACTIVE,
+      is_hr_approved:    true,
+      is_email_verified: true,   // skip OTP — bulk migration
+      otp_code:          null,
+      otp_expires_at:    null,
+    };
+
+    const { data: newUser, error: insertErr } = await supabase
+      .from('users')
+      .insert(userPayload)
+      .select('id, email, name, role')
+      .single();
+
+    if (insertErr) {
+      failed.push({ email, reason: insertErr.message });
+      results.push({ email, status: 'failed', reason: insertErr.message });
+      continue;
+    }
+
+    // ── Create student profile ────────────────────────────────
+    if (isStudentPortalRole(newUser.role)) {
+      await supabase
+        .from('student_profiles')
+        .insert({ user_id: newUser.id, date_of_birth: null })
+        .select('id')
+        .maybeSingle();
+      // profile insert failure is non-fatal — user still created
+    }
+
+    // ── Send welcome email ────────────────────────────────────
+    let emailSent = false;
+    if (sendEmail) {
+      try {
+        const emailResult = await sendWelcomeEmail({ to: email, name, password, loginUrl });
+        emailSent = emailResult.sent;
+      } catch (_) {
+        // email failure is non-fatal
+      }
+    }
+
+    succeeded.push({ email, userId: newUser.id });
+    results.push({ email, status: 'success', userId: newUser.id, emailSent });
+  }
+
+  // ── Audit log ─────────────────────────────────────────────
+  await logAudit({
+    userId:     req.user.id,
+    action:     AUDIT_ACTIONS.SIGNUP,
+    entityType: 'bulk_register',
+    entityId:   req.user.id,
+    details:    { total: candidates.length, succeeded: succeeded.length, failed: failed.length },
+    ipAddress:  getClientIp(req),
+  });
+
+  res.status(207).send({
+    status:    true,
+    summary:   { total: candidates.length, succeeded: succeeded.length, skipped: results.filter(r => r.status === 'skipped').length, failed: failed.length },
+    results,
+  });
 }));
 
 module.exports = router;

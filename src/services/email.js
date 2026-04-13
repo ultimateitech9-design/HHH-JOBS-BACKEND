@@ -229,4 +229,81 @@ const sendPasswordResetEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
   });
 };
 
-module.exports = { sendOtpEmail, sendPasswordResetEmail, isEmailConfigured };
+const sendWelcomeEmail = async ({ to, name, password, loginUrl = 'https://hhh-jobs.com/login' }) => {
+  if (!isEmailConfigured()) {
+    console.log(`[WELCOME EMAIL - NOT CONFIGURED] To: ${to} | Password: ${password}`);
+    return { sent: false, reason: 'smtp_not_configured' };
+  }
+
+  const subject = `Welcome to ${BRAND} - Your account is ready`;
+  const displayName = String(name || '').trim() || 'Candidate';
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${subject}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:32px 0;">
+    <tr><td align="center">
+      <table width="520" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(11,22,49,0.10);">
+        <tr>
+          <td style="background:linear-gradient(135deg,#0b1631,#1f5ac7);padding:28px 32px;text-align:center;">
+            <span style="color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;">${BRAND}</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:36px 40px;">
+            <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#0b1631;">Welcome, ${displayName}!</h2>
+            <p style="margin:0 0 24px;color:#4f6584;font-size:15px;line-height:1.6;">
+              Your ${BRAND} account has been created. Use the credentials below to log in and start exploring job opportunities.
+            </p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f5ff;border-radius:12px;margin:0 0 28px;">
+              <tr><td style="padding:24px 28px;">
+                <p style="margin:0 0 14px;font-size:13px;color:#4f6584;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Your Login Credentials</p>
+                <table width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="padding:6px 0;color:#6b7a99;font-size:14px;width:90px;">Email</td>
+                    <td style="padding:6px 0;color:#0b1631;font-size:14px;font-weight:600;">${to}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:6px 0;color:#6b7a99;font-size:14px;">Password</td>
+                    <td style="padding:6px 0;color:#0b1631;font-size:15px;font-weight:700;letter-spacing:2px;">${password}</td>
+                  </tr>
+                </table>
+              </td></tr>
+            </table>
+            <div style="text-align:center;margin:0 0 24px;">
+              <a href="${loginUrl}" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 40px;border-radius:8px;font-size:15px;font-weight:700;">
+                Login to ${BRAND}
+              </a>
+            </div>
+            <p style="margin:0;color:#8a9ab5;font-size:12px;line-height:1.5;text-align:center;">
+              We recommend changing your password after your first login.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#f4f6fb;padding:18px 40px;text-align:center;border-top:1px solid #e8edf8;">
+            <p style="margin:0;color:#8a9ab5;font-size:12px;">&copy; ${new Date().getFullYear()} ${BRAND} - India's transparent job portal.</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`.trim();
+
+  return sendEmailWithFallback({
+    from: FROM_ADDRESS.includes('<') ? FROM_ADDRESS : `"${BRAND}" <${FROM_ADDRESS}>`,
+    to,
+    subject,
+    text: `Welcome to ${BRAND}, ${displayName}!\n\nEmail: ${to}\nPassword: ${password}\n\nLogin: ${loginUrl}\n\nPlease change your password after first login.`,
+    html
+  });
+};
+
+module.exports = { sendOtpEmail, sendPasswordResetEmail, sendWelcomeEmail, isEmailConfigured };
