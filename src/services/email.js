@@ -15,6 +15,7 @@ const EMAIL_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS) |
 const EMAIL_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 10000;
 const SMTP_HOST_LOWER = SMTP_HOST.toLowerCase();
 const IS_GMAIL_SMTP = SMTP_HOST_LOWER === 'smtp.gmail.com' || SMTP_HOST_LOWER === 'gmail';
+const SMTP_FAMILY = Number(process.env.SMTP_FAMILY) || (IS_GMAIL_SMTP ? 4 : 0);
 
 const isEmailConfigured = () =>
   Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
@@ -29,6 +30,7 @@ const buildTransportOptions = ({ host, port, secure, service = '' } = {}) => ({
   connectionTimeout: EMAIL_CONNECTION_TIMEOUT_MS,
   greetingTimeout: EMAIL_GREETING_TIMEOUT_MS,
   socketTimeout: EMAIL_SOCKET_TIMEOUT_MS,
+  ...(SMTP_FAMILY ? { family: SMTP_FAMILY } : {}),
   tls: {
     servername: host || SMTP_HOST || 'smtp.gmail.com',
     minVersion: 'TLSv1.2'
