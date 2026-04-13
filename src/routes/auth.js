@@ -32,6 +32,15 @@ const requireConfiguredAuthBackend = (res) => {
   return ensureServerConfig(res);
 };
 const exposeOtpForLocalTesting = hasLocalAuthFallback();
+const runAsyncSideEffect = (label, task) => {
+  setTimeout(() => {
+    Promise.resolve()
+      .then(task)
+      .catch((error) => {
+        console.warn(`[${label}] ${error.message}`);
+      });
+  }, 0);
+};
 
 const createAuthToken = (user) => jwt.sign(
   {
@@ -920,27 +929,32 @@ router.post('/signup', asyncHandler(async (req, res) => {
     await upsertSignupProfile({ userId: userRow.id, role, reqBody: req.body || {} });
   }
 
-  let syncWarning = '';
-  try {
-    await syncHhhCandidateToEimager({ user: userRow, profile: userRow });
-  } catch (error) {
-    syncWarning = `Emaiger sync pending: ${error.message}`;
-    console.warn(`[eimager-sync] Signup candidate sync failed for ${email}: ${error.message}`);
-  }
+  const syncWarning = '';
+  const emailWarning = buildDeferredOtpWarning();
 
-  const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-  const emailWarning = emailResult.sent
-    ? ''
-    : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'signup' }) || buildDeferredOtpWarning());
+  runAsyncSideEffect('signup-eimager-sync', async () => {
+    try {
+      await syncHhhCandidateToEimager({ user: userRow, profile: userRow });
+    } catch (error) {
+      console.warn(`[eimager-sync] Signup candidate sync failed for ${email}: ${error.message}`);
+    }
+  });
 
-  await logAudit({
+  runAsyncSideEffect('signup-otp-email', async () => {
+    const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+    if (!emailResult.sent) {
+      throw new Error(`Signup OTP email failed for ${email}: ${emailResult.reason}`);
+    }
+  });
+
+  runAsyncSideEffect('audit-signup', () => logAudit({
     userId: userRow.id,
     action: AUDIT_ACTIONS.SIGNUP,
     entityType: 'user',
     entityId: userRow.id,
     details: { role, email },
     ipAddress: getClientIp(req)
-  });
+  }));
 
   const token = createAuthToken(userRow);
 
@@ -954,7 +968,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
     requiresOtpVerification: true,
     redirectTo: '/verify-otp',
     otp: exposeOtpForLocalTesting ? otpCode : undefined,
-    deliveryFailed: !emailResult.sent,
+    deliveryFailed: Boolean(emailWarning),
     emailWarning,
     syncWarning,
     message: existingUser
@@ -1315,19 +1329,23 @@ router.post('/login', asyncHandler(async (req, res) => {
       });
     }
 
-    const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-    const emailWarning = emailResult.sent
-      ? ''
-      : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'login' }) || buildDeferredOtpWarning());
+    const emailWarning = buildDeferredOtpWarning();
 
-    await logAudit({
+    runAsyncSideEffect('login-otp-email', async () => {
+      const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+      if (!emailResult.sent) {
+        throw new Error(`Pending-login OTP email failed for ${email}: ${emailResult.reason}`);
+      }
+    });
+
+    runAsyncSideEffect('audit-login-otp', () => logAudit({
       userId: userRow.id,
       action: AUDIT_ACTIONS.OTP_SENT,
       entityType: 'user',
       entityId: userRow.id,
       details: { email, source: 'login' },
       ipAddress: getClientIp(req)
-    });
+    }));
 
     res.send({
       status: true,
@@ -1338,7 +1356,7 @@ router.post('/login', asyncHandler(async (req, res) => {
       requiresOtpVerification: true,
       redirectTo: '/verify-otp',
       otp: exposeOtpForLocalTesting ? otpCode : undefined,
-      deliveryFailed: !emailResult.sent,
+      deliveryFailed: Boolean(emailWarning),
       emailWarning,
       message: 'Email verification is still pending. Continue to the OTP screen.'
     });
