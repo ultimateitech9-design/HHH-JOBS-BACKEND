@@ -930,7 +930,6 @@ router.post('/signup', asyncHandler(async (req, res) => {
   }
 
   const syncWarning = '';
-  const emailWarning = buildDeferredOtpWarning();
 
   runAsyncSideEffect('signup-eimager-sync', async () => {
     try {
@@ -940,12 +939,10 @@ router.post('/signup', asyncHandler(async (req, res) => {
     }
   });
 
-  runAsyncSideEffect('signup-otp-email', async () => {
-    const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-    if (!emailResult.sent) {
-      throw new Error(`Signup OTP email failed for ${email}: ${emailResult.reason}`);
-    }
-  });
+  const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+  const emailWarning = emailResult.sent
+    ? ''
+    : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'signup' }) || buildDeferredOtpWarning());
 
   runAsyncSideEffect('audit-signup', () => logAudit({
     userId: userRow.id,
@@ -968,7 +965,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
     requiresOtpVerification: true,
     redirectTo: '/verify-otp',
     otp: exposeOtpForLocalTesting ? otpCode : undefined,
-    deliveryFailed: Boolean(emailWarning),
+    deliveryFailed: !emailResult.sent,
     emailWarning,
     syncWarning,
     message: existingUser
@@ -1329,14 +1326,10 @@ router.post('/login', asyncHandler(async (req, res) => {
       });
     }
 
-    const emailWarning = buildDeferredOtpWarning();
-
-    runAsyncSideEffect('login-otp-email', async () => {
-      const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-      if (!emailResult.sent) {
-        throw new Error(`Pending-login OTP email failed for ${email}: ${emailResult.reason}`);
-      }
-    });
+    const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+    const emailWarning = emailResult.sent
+      ? ''
+      : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'login' }) || buildDeferredOtpWarning());
 
     runAsyncSideEffect('audit-login-otp', () => logAudit({
       userId: userRow.id,
@@ -1356,7 +1349,7 @@ router.post('/login', asyncHandler(async (req, res) => {
       requiresOtpVerification: true,
       redirectTo: '/verify-otp',
       otp: exposeOtpForLocalTesting ? otpCode : undefined,
-      deliveryFailed: Boolean(emailWarning),
+      deliveryFailed: !emailResult.sent,
       emailWarning,
       message: 'Email verification is still pending. Continue to the OTP screen.'
     });
