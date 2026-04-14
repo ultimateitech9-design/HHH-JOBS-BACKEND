@@ -18,7 +18,7 @@ const EMAIL_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS) |
 const EMAIL_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 10000;
 const SMTP_HOST_LOWER = SMTP_HOST.toLowerCase();
 const IS_GMAIL_SMTP = SMTP_HOST_LOWER === 'smtp.gmail.com' || SMTP_HOST_LOWER === 'gmail';
-const SMTP_FAMILY = Number(process.env.SMTP_FAMILY) || (IS_GMAIL_SMTP ? 4 : 0);
+const SMTP_FAMILY = Number(process.env.SMTP_FAMILY) || 0;
 const transporterCache = new Map();
 let lastSuccessfulTransportPlanKey = '';
 let warmupScheduled = false;
@@ -55,10 +55,11 @@ const getTransportPlanKey = (options = {}) => [
   options?.service || '',
   options?.host || '',
   options?.port || '',
-  options?.secure ? 'secure' : 'insecure'
+  options?.secure ? 'secure' : 'insecure',
+  options?.family || 'auto'
 ].join('|');
 
-const buildTransportOptions = ({ host, port, secure, service = '' } = {}) => ({
+const buildTransportOptions = ({ host, port, secure, service = '', family = SMTP_FAMILY } = {}) => ({
   ...(service ? { service } : {}),
   ...(host ? { host } : {}),
   port,
@@ -71,7 +72,7 @@ const buildTransportOptions = ({ host, port, secure, service = '' } = {}) => ({
   connectionTimeout: EMAIL_CONNECTION_TIMEOUT_MS,
   greetingTimeout: EMAIL_GREETING_TIMEOUT_MS,
   socketTimeout: EMAIL_SOCKET_TIMEOUT_MS,
-  ...(SMTP_FAMILY ? { family: SMTP_FAMILY } : {}),
+  ...(family ? { family } : {}),
   tls: {
     servername: host || SMTP_HOST || 'smtp.gmail.com',
     minVersion: 'TLSv1.2'
@@ -87,6 +88,9 @@ const getTransportPlans = () => {
 
   const plans = [];
   const seenPlans = new Set();
+  const gmailFamilies = config.nodeEnv === 'production'
+    ? [...new Set([0, SMTP_FAMILY].filter((family) => Number.isInteger(family) && family >= 0))]
+    : [SMTP_FAMILY];
 
   const pushPlan = (options) => {
     const planKey = getTransportPlanKey(options);
@@ -96,28 +100,44 @@ const getTransportPlans = () => {
     plans.push(options);
   };
 
-  pushPlan(buildTransportOptions({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE,
-    service: IS_GMAIL_SMTP ? 'gmail' : ''
-  }));
+  if (IS_GMAIL_SMTP) {
+    gmailFamilies.forEach((family) => {
+      pushPlan(buildTransportOptions({
+        host: SMTP_HOST,
+        port: SMTP_PORT,
+        secure: SMTP_SECURE,
+        service: 'gmail',
+        family
+      }));
+    });
+  } else {
+    pushPlan(buildTransportOptions({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_SECURE,
+      service: ''
+    }));
+  }
 
   if (IS_GMAIL_SMTP) {
     // Prefer a single fast Gmail path so auth flows don't wait on multiple SMTP retries.
-    pushPlan(buildTransportOptions({
-      service: 'gmail',
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true
-    }));
+    gmailFamilies.forEach((family) => {
+      pushPlan(buildTransportOptions({
+        service: 'gmail',
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        family
+      }));
 
-    pushPlan(buildTransportOptions({
-      service: 'gmail',
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false
-    }));
+      pushPlan(buildTransportOptions({
+        service: 'gmail',
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false,
+        family
+      }));
+    });
   }
 
   if (!lastSuccessfulTransportPlanKey) {
