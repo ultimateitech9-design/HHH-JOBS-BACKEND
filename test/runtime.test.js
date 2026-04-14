@@ -32,7 +32,8 @@ const ORIGINAL_ENV = {
   EMAIL_FROM: process.env.EMAIL_FROM,
   GMAIL_EMAIL: process.env.GMAIL_EMAIL,
   GMAIL_APP_PASSWORD: process.env.GMAIL_APP_PASSWORD,
-  OTP_FROM_NAME: process.env.OTP_FROM_NAME
+  OTP_FROM_NAME: process.env.OTP_FROM_NAME,
+  OTP_DELIVERY_WAIT_MS: process.env.OTP_DELIVERY_WAIT_MS
 };
 
 const restoreEnv = () => {
@@ -281,8 +282,8 @@ test('email helper uses config-backed SMTP settings without sending network traf
 
 test('email helper retries Gmail with secure transport when the primary SMTP connection times out', async () => {
   process.env.SMTP_HOST = 'smtp.gmail.com';
-  process.env.SMTP_PORT = '587';
-  process.env.SMTP_SECURE = 'false';
+  process.env.SMTP_PORT = '465';
+  process.env.SMTP_SECURE = 'true';
   process.env.SMTP_USER = 'otp@example.com';
   process.env.SMTP_PASS = 'app-pass';
   process.env.EMAIL_FROM = 'noreply@example.com';
@@ -327,6 +328,77 @@ test('email helper retries Gmail with secure transport when the primary SMTP con
   clearModule(emailPath);
   clearModule(configPath);
   restoreEnv();
+});
+
+test('signup returns quickly when OTP delivery is still in progress', async () => {
+  process.env.JWT_SECRET = 'test-secret';
+  process.env.SUPABASE_URL = '';
+  process.env.NEXT_PUBLIC_SUPABASE_URL = '';
+  process.env.EXPO_PUBLIC_SUPABASE_URL = '';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = '';
+  process.env.SUPABASE_SERVICE_KEY = '';
+  process.env.SUPABASE_SECRET_KEY = '';
+  process.env.CORS_ORIGINS = 'http://localhost:5173';
+  process.env.CLIENT_URLS = '';
+  process.env.FRONTEND_URL = '';
+  process.env.OAUTH_CLIENT_URL = '';
+  process.env.SMTP_HOST = 'smtp.gmail.com';
+  process.env.SMTP_PORT = '465';
+  process.env.SMTP_SECURE = 'true';
+  process.env.SMTP_USER = 'otp@example.com';
+  process.env.SMTP_PASS = 'app-pass';
+  process.env.EMAIL_FROM = 'noreply@example.com';
+  process.env.OTP_FROM_NAME = 'HHH Jobs';
+  process.env.OTP_DELIVERY_WAIT_MS = '5';
+
+  require.cache[nodemailerPath] = {
+    id: nodemailerPath,
+    filename: nodemailerPath,
+    loaded: true,
+    exports: {
+      createTransport: () => ({
+        sendMail: () => new Promise((resolve) => setTimeout(() => resolve({ messageId: 'slow-send' }), 30))
+      })
+    }
+  };
+
+  clearModule(authStorePath);
+  clearModule(configPath);
+  clearModule(emailPath);
+  clearModule(indexPath);
+  const { app } = require('../index');
+
+  const server = app.listen(0);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const signupResp = await fetch(`${baseUrl}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Queued Delivery User',
+        email: 'queued.delivery@example.com',
+        mobile: '+919876543210',
+        password: 'Password123!',
+        role: 'student'
+      })
+    });
+    const signupBody = await signupResp.json();
+
+    assert.equal(signupResp.status, 201);
+    assert.equal(signupBody.requiresOtpVerification, true);
+    assert.equal(signupBody.deliveryPending, true);
+    assert.equal(signupBody.deliveryFailed, false);
+    assert.match(String(signupBody.emailWarning || ''), /otp is being sent/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    delete require.cache[nodemailerPath];
+    clearModule(authStorePath);
+    clearModule(indexPath);
+    clearModule(emailPath);
+    clearModule(configPath);
+    restoreEnv();
+  }
 });
 
 test('app bootstrap is import-safe and serves health plus CORS headers', async () => {
@@ -383,8 +455,18 @@ test('login keeps unverified local users in OTP verification flow', async () => 
   process.env.CLIENT_URLS = '';
   process.env.FRONTEND_URL = '';
   process.env.OAUTH_CLIENT_URL = '';
+  process.env.SMTP_HOST = '';
+  process.env.SMTP_PORT = '';
+  process.env.SMTP_SECURE = '';
+  process.env.SMTP_USER = '';
+  process.env.SMTP_PASS = '';
+  process.env.EMAIL_FROM = '';
+  process.env.GMAIL_EMAIL = '';
+  process.env.GMAIL_APP_PASSWORD = '';
+  process.env.OTP_DELIVERY_WAIT_MS = '';
 
   clearModule(authStorePath);
+  clearModule(emailPath);
   clearModule(configPath);
   clearModule(indexPath);
   const { app } = require('../index');
@@ -409,7 +491,7 @@ test('login keeps unverified local users in OTP verification flow', async () => 
     assert.equal(signupResp.status, 201);
     assert.equal(signupBody.requiresOtpVerification, true);
     assert.equal(typeof signupBody.otp, 'string');
-    assert.equal(signupBody.deliveryFailed, true);
+    assert.equal(Boolean(signupBody.deliveryFailed || signupBody.deliveryPending), true);
     assert.match(String(signupBody.emailWarning || ''), /otp|email/i);
 
     const loginResp = await fetch(`${baseUrl}/auth/login`, {
@@ -427,7 +509,7 @@ test('login keeps unverified local users in OTP verification flow', async () => 
     assert.equal(loginBody.redirectTo, '/verify-otp');
     assert.equal('token' in loginBody, false);
     assert.equal(typeof loginBody.otp, 'string');
-    assert.equal(loginBody.deliveryFailed, true);
+    assert.equal(Boolean(loginBody.deliveryFailed || loginBody.deliveryPending), true);
     assert.match(String(loginBody.emailWarning || ''), /otp|email/i);
 
     const verifyResp = await fetch(`${baseUrl}/auth/verify-otp`, {

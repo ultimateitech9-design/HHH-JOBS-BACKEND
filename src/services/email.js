@@ -11,12 +11,15 @@ const SMTP_PASS = config.smtpPass || '';
 const FROM_ADDRESS = config.smtpFrom || 'noreply@hhhjobs.com';
 const SENDGRID_API_KEY = config.sendgridApiKey || '';
 const BRAND = normalizeText(process.env.OTP_FROM_NAME) || 'HHH Jobs';
-const EMAIL_CONNECTION_TIMEOUT_MS = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 10000;
-const EMAIL_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 10000;
-const EMAIL_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 12000;
+const EMAIL_CONNECTION_TIMEOUT_MS = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 8000;
+const EMAIL_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 8000;
+const EMAIL_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 10000;
 const SMTP_HOST_LOWER = SMTP_HOST.toLowerCase();
 const IS_GMAIL_SMTP = SMTP_HOST_LOWER === 'smtp.gmail.com' || SMTP_HOST_LOWER === 'gmail';
 const SMTP_FAMILY = Number(process.env.SMTP_FAMILY) || (IS_GMAIL_SMTP ? 4 : 0);
+const transporterCache = new Map();
+let lastSuccessfulTransportPlanKey = '';
+let warmupScheduled = false;
 
 const isSmtpConfigured = () =>
   Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
@@ -43,11 +46,21 @@ const parseFromAddress = (value = '') => {
   };
 };
 
+const getTransportPlanKey = (options = {}) => [
+  options?.service || '',
+  options?.host || '',
+  options?.port || '',
+  options?.secure ? 'secure' : 'insecure'
+].join('|');
+
 const buildTransportOptions = ({ host, port, secure, service = '' } = {}) => ({
   ...(service ? { service } : {}),
   ...(host ? { host } : {}),
   port,
   secure,
+  pool: true,
+  maxConnections: 1,
+  maxMessages: 50,
   requireTLS: !secure,
   name: 'hhh-jobs.com',
   connectionTimeout: EMAIL_CONNECTION_TIMEOUT_MS,
@@ -71,48 +84,92 @@ const getTransportPlans = () => {
   const seenPlans = new Set();
 
   const pushPlan = (options) => {
-    const planKey = [
-      options?.service || '',
-      options?.host || '',
-      options?.port || '',
-      options?.secure ? 'secure' : 'insecure'
-    ].join('|');
+    const planKey = getTransportPlanKey(options);
 
     if (seenPlans.has(planKey)) return;
     seenPlans.add(planKey);
     plans.push(options);
   };
 
+  pushPlan(buildTransportOptions({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE,
+    service: IS_GMAIL_SMTP ? 'gmail' : ''
+  }));
+
   if (IS_GMAIL_SMTP) {
-    // Gmail is typically most reliable over implicit TLS on 465 in hosted environments.
     pushPlan(buildTransportOptions({
+      service: 'gmail',
       host: 'smtp.gmail.com',
       port: 465,
       secure: true
     }));
 
     pushPlan(buildTransportOptions({
+      service: 'gmail',
       host: 'smtp.gmail.com',
       port: 587,
       secure: false
     }));
   }
 
-  pushPlan(buildTransportOptions({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE
-  }));
+  if (!lastSuccessfulTransportPlanKey) {
+    return plans;
+  }
 
-  return plans;
+  return plans.slice().sort((leftPlan, rightPlan) => {
+    const leftPreferred = getTransportPlanKey(leftPlan) === lastSuccessfulTransportPlanKey ? -1 : 0;
+    const rightPreferred = getTransportPlanKey(rightPlan) === lastSuccessfulTransportPlanKey ? -1 : 0;
+    return leftPreferred - rightPreferred;
+  });
 };
 
 const createTransporter = (options) => {
   if (!options) return null;
 
-  return nodemailer.createTransport({
+  const transportKey = getTransportPlanKey(options);
+  if (transporterCache.has(transportKey)) {
+    return transporterCache.get(transportKey);
+  }
+
+  const transporter = nodemailer.createTransport({
     ...options
   });
+  transporterCache.set(transportKey, transporter);
+  return transporter;
+};
+
+const dropTransporter = (options) => {
+  const transportKey = getTransportPlanKey(options);
+  transporterCache.delete(transportKey);
+
+  if (lastSuccessfulTransportPlanKey === transportKey) {
+    lastSuccessfulTransportPlanKey = '';
+  }
+};
+
+const scheduleTransportWarmup = () => {
+  if (warmupScheduled || !isSmtpConfigured() || isSendGridConfigured()) return;
+
+  warmupScheduled = true;
+  setTimeout(async () => {
+    warmupScheduled = false;
+
+    const preferredPlan = getTransportPlans()[0];
+    if (!preferredPlan) return;
+
+    const transporter = createTransporter(preferredPlan);
+    if (!transporter || typeof transporter.verify !== 'function') return;
+
+    try {
+      await transporter.verify();
+      lastSuccessfulTransportPlanKey = getTransportPlanKey(preferredPlan);
+    } catch (error) {
+      dropTransporter(preferredPlan);
+      console.warn('[EMAIL WARMUP]', error.message);
+    }
+  }, 0);
 };
 
 const sendViaSendGrid = async (message) => {
@@ -178,15 +235,19 @@ const sendEmailWithFallback = async (message) => {
 
     try {
       await transporter.sendMail(message);
+      lastSuccessfulTransportPlanKey = getTransportPlanKey(transportOptions);
       return { sent: true };
     } catch (error) {
       lastError = error;
+      dropTransporter(transportOptions);
       console.error('[EMAIL ERROR]', error.message);
     }
   }
 
   return { sent: false, reason: lastError?.message || 'email_send_failed' };
 };
+
+scheduleTransportWarmup();
 
 const sendOtpEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
   if (!isEmailConfigured()) {

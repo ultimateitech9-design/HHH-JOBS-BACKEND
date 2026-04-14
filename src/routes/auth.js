@@ -41,6 +41,9 @@ const runAsyncSideEffect = (label, task) => {
       });
   }, 0);
 };
+const EMAIL_DELIVERY_WAIT_MS = Number(process.env.OTP_DELIVERY_WAIT_MS) > 0
+  ? Number(process.env.OTP_DELIVERY_WAIT_MS)
+  : 2500;
 
 const createAuthToken = (user) => jwt.sign(
   {
@@ -116,6 +119,44 @@ const buildDeferredOtpWarning = () => (
     ? ''
     : buildOtpEmailWarning({ sent: false, reason: 'smtp_not_configured' })
 );
+const buildPendingDeliveryMessage = ({ flow = 'verification' } = {}) => {
+  const normalizedFlow = String(flow || 'verification').trim().toLowerCase();
+
+  if (normalizedFlow === 'password_reset') {
+    return 'Your password reset code is being sent right now. It can take up to a minute to arrive. If it does not show up, try again from the same screen.';
+  }
+
+  return 'Your OTP is being sent right now. It can take a few moments to arrive. If you do not receive it, use Resend OTP on the next screen.';
+};
+const deliverEmailWithSoftTimeout = async ({ label, task }) => {
+  const deliveryTask = Promise.resolve()
+    .then(task)
+    .catch((error) => ({ sent: false, reason: error.message || 'email_send_failed' }));
+
+  const timeoutResult = await Promise.race([
+    deliveryTask,
+    new Promise((resolve) => setTimeout(() => resolve(null), EMAIL_DELIVERY_WAIT_MS))
+  ]);
+
+  if (timeoutResult) {
+    return {
+      ...timeoutResult,
+      pending: false
+    };
+  }
+
+  deliveryTask.then((result) => {
+    if (!result?.sent) {
+      console.warn(`[${label}] deferred delivery failed: ${result?.reason || 'email_send_failed'}`);
+    }
+  });
+
+  return {
+    sent: true,
+    pending: true,
+    reason: 'email_delivery_pending'
+  };
+};
 
 const normalizeRoleValue = (role) => String(role || '').trim().toLowerCase();
 
@@ -948,10 +989,15 @@ router.post('/signup', asyncHandler(async (req, res) => {
     }
   });
 
-  const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-  const emailWarning = emailResult.sent
-    ? ''
-    : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'signup' }) || buildDeferredOtpWarning());
+  const emailResult = await deliverEmailWithSoftTimeout({
+    label: 'signup-otp-email',
+    task: () => sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES })
+  });
+  const emailWarning = emailResult.pending
+    ? buildPendingDeliveryMessage({ flow: 'signup' })
+    : emailResult.sent
+      ? ''
+      : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'signup' }) || buildDeferredOtpWarning());
 
   runAsyncSideEffect('audit-signup', () => logAudit({
     userId: userRow.id,
@@ -974,12 +1020,15 @@ router.post('/signup', asyncHandler(async (req, res) => {
     requiresOtpVerification: true,
     redirectTo: '/verify-otp',
     otp: exposeOtpForLocalTesting ? otpCode : undefined,
+    deliveryPending: Boolean(emailResult.pending),
     deliveryFailed: !emailResult.sent,
     emailWarning,
     syncWarning,
     message: existingUser
       ? 'Signup already exists but email is pending verification. A fresh OTP has been generated.'
-      : 'Signup successful. Continue to OTP verification.'
+      : (emailResult.pending
+        ? 'Signup successful. Continue to OTP verification while we send your code.'
+        : 'Signup successful. Continue to OTP verification.')
   });
 }));
 
@@ -1181,7 +1230,10 @@ router.post('/forgot-password', asyncHandler(async (req, res) => {
     authStore.updateUserById(user.id, { otp_code: otpCode, otp_expires_at: otpExpiresAt });
   }
 
-  const emailResult = await sendPasswordResetEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+  const emailResult = await deliverEmailWithSoftTimeout({
+    label: 'forgot-password-email',
+    task: () => sendPasswordResetEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES })
+  });
 
   if (!emailResult.sent) {
     res.status(200).send({
@@ -1194,7 +1246,10 @@ router.post('/forgot-password', asyncHandler(async (req, res) => {
 
   res.send({
     status: true,
-    message: 'If the email exists, an OTP has been sent.',
+    deliveryPending: Boolean(emailResult.pending),
+    message: emailResult.pending
+      ? buildPendingDeliveryMessage({ flow: 'password_reset' })
+      : 'If the email exists, an OTP has been sent.',
     otp: exposeOtpForLocalTesting ? otpCode : undefined
   });
 }));
@@ -1335,10 +1390,15 @@ router.post('/login', asyncHandler(async (req, res) => {
       });
     }
 
-    const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-    const emailWarning = emailResult.sent
-      ? ''
-      : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'login' }) || buildDeferredOtpWarning());
+    const emailResult = await deliverEmailWithSoftTimeout({
+      label: 'login-otp-email',
+      task: () => sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES })
+    });
+    const emailWarning = emailResult.pending
+      ? buildPendingDeliveryMessage({ flow: 'login' })
+      : emailResult.sent
+        ? ''
+        : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'login' }) || buildDeferredOtpWarning());
 
     runAsyncSideEffect('audit-login-otp', () => logAudit({
       userId: userRow.id,
@@ -1358,9 +1418,12 @@ router.post('/login', asyncHandler(async (req, res) => {
       requiresOtpVerification: true,
       redirectTo: '/verify-otp',
       otp: exposeOtpForLocalTesting ? otpCode : undefined,
+      deliveryPending: Boolean(emailResult.pending),
       deliveryFailed: !emailResult.sent,
       emailWarning,
-      message: 'Email verification is still pending. Continue to the OTP screen.'
+      message: emailResult.pending
+        ? 'Email verification is still pending. Continue to the OTP screen while we send your code.'
+        : 'Email verification is still pending. Continue to the OTP screen.'
     });
     return;
   }
