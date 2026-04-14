@@ -99,6 +99,7 @@ const config = {
   smtpUser,
   smtpPass: process.env.SMTP_PASS || normalizeGmailAppPassword(process.env.GMAIL_APP_PASSWORD),
   smtpFrom: normalizeText(process.env.SMTP_FROM || process.env.EMAIL_FROM) || (smtpUser ? `${smtpFromName} <${smtpUser}>` : `${smtpFromName} <no-reply@hhh-jobs.com>`),
+  resendFrom: normalizeText(process.env.RESEND_FROM) || `${smtpFromName} <no-reply@hhh-jobs.com>`,
   resendApiKey: normalizeText(process.env.RESEND_API_KEY),
   sendgridApiKey: normalizeText(process.env.SENDGRID_API_KEY),
 

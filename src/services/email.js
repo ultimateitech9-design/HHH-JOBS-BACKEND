@@ -9,7 +9,8 @@ const SMTP_PORT = config.smtpPort || 587;
 const SMTP_SECURE = Boolean(config.smtpSecure);
 const SMTP_USER = config.smtpUser || '';
 const SMTP_PASS = config.smtpPass || '';
-const FROM_ADDRESS = config.smtpFrom || 'noreply@hhhjobs.com';
+const SMTP_FROM_ADDRESS = config.smtpFrom || 'noreply@hhhjobs.com';
+const RESEND_FROM_ADDRESS = config.resendFrom || SMTP_FROM_ADDRESS;
 const RESEND_API_KEY = config.resendApiKey || '';
 const SENDGRID_API_KEY = config.sendgridApiKey || '';
 const BRAND = normalizeText(process.env.OTP_FROM_NAME) || 'HHH Jobs';
@@ -27,10 +28,10 @@ const isSmtpConfigured = () =>
   Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
 
 const isResendConfigured = () =>
-  Boolean(RESEND_API_KEY && FROM_ADDRESS);
+  Boolean(RESEND_API_KEY && RESEND_FROM_ADDRESS);
 
 const isSendGridConfigured = () =>
-  Boolean(SENDGRID_API_KEY && FROM_ADDRESS);
+  Boolean(SENDGRID_API_KEY && SMTP_FROM_ADDRESS);
 
 const isEmailConfigured = () =>
   isResendConfigured() || isSendGridConfigured() || isSmtpConfigured();
@@ -235,7 +236,7 @@ const sendViaSendGrid = async (message) => {
     return { sent: false, reason: 'sendgrid_not_configured' };
   }
 
-  const from = parseFromAddress(message.from || FROM_ADDRESS);
+  const from = parseFromAddress(message.from || SMTP_FROM_ADDRESS);
   const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
     method: 'POST',
     headers: {
@@ -272,7 +273,7 @@ const sendViaResend = async (message) => {
     return { sent: false, reason: 'resend_not_configured' };
   }
 
-  const from = parseFromAddress(message.from || FROM_ADDRESS);
+  const from = parseFromAddress(message.from || RESEND_FROM_ADDRESS);
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
@@ -280,7 +281,7 @@ const sendViaResend = async (message) => {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      from: from.email && from.name ? `${from.name} <${from.email}>` : FROM_ADDRESS,
+      from: from.email && from.name ? `${from.name} <${from.email}>` : RESEND_FROM_ADDRESS,
       to: Array.isArray(message.to) ? message.to : [message.to],
       subject: message.subject,
       text: message.text || '',
@@ -337,7 +338,10 @@ const sendEmailWithFallback = async (message) => {
     const transporter = createTransporter(resolvedTransportOptions);
 
     try {
-      await transporter.sendMail(message);
+      await transporter.sendMail({
+        from: message.from || (SMTP_FROM_ADDRESS.includes('<') ? SMTP_FROM_ADDRESS : `"${BRAND}" <${SMTP_FROM_ADDRESS}>`),
+        ...message
+      });
       lastSuccessfulTransportPlanKey = getTransportPlanKey(transportOptions);
       return { sent: true };
     } catch (error) {
@@ -419,7 +423,6 @@ const sendOtpEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
   const text = `Your ${BRAND} verification code is: ${otp}\n\nThis code expires in ${expiresInMinutes} minutes.\n\nIf you didn't request this, ignore this email.`;
 
   return sendEmailWithFallback({
-    from: FROM_ADDRESS.includes('<') ? FROM_ADDRESS : `"${BRAND}" <${FROM_ADDRESS}>`,
     to,
     subject,
     text,
@@ -479,7 +482,6 @@ const sendPasswordResetEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
   `.trim();
 
   return sendEmailWithFallback({
-    from: FROM_ADDRESS.includes('<') ? FROM_ADDRESS : `"${BRAND}" <${FROM_ADDRESS}>`,
     to,
     subject,
     text: `Your ${BRAND} password reset code: ${otp} (expires in ${expiresInMinutes} min)`,
@@ -556,7 +558,6 @@ const sendWelcomeEmail = async ({ to, name, password, loginUrl = 'https://hhh-jo
 </html>`.trim();
 
   return sendEmailWithFallback({
-    from: FROM_ADDRESS.includes('<') ? FROM_ADDRESS : `"${BRAND}" <${FROM_ADDRESS}>`,
     to,
     subject,
     text: `Welcome to ${BRAND}, ${displayName}!\n\nEmail: ${to}\nPassword: ${password}\n\nLogin: ${loginUrl}\n\nPlease change your password after first login.`,
