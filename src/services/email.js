@@ -1,3 +1,4 @@
+const dns = require('dns');
 const nodemailer = require('nodemailer');
 const config = require('../config');
 
@@ -99,6 +100,7 @@ const getTransportPlans = () => {
   }));
 
   if (IS_GMAIL_SMTP) {
+    // Prefer a single fast Gmail path so auth flows don't wait on multiple SMTP retries.
     pushPlan(buildTransportOptions({
       service: 'gmail',
       host: 'smtp.gmail.com',
@@ -172,6 +174,38 @@ const scheduleTransportWarmup = () => {
   }, 0);
 };
 
+const resolveTransportOptions = async (options = {}) => {
+  const host = String(options?.host || '').trim();
+  if (!host || !SMTP_FAMILY) {
+    return options;
+  }
+
+  const isIpAddress = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+  if (isIpAddress) {
+    return options;
+  }
+
+  try {
+    const lookupResult = await dns.promises.lookup(host, { family: SMTP_FAMILY, all: false });
+    const resolvedAddress = String(lookupResult?.address || '').trim();
+    if (!resolvedAddress) {
+      return options;
+    }
+
+    return {
+      ...options,
+      host: resolvedAddress,
+      tls: {
+        ...(options.tls || {}),
+        servername: host
+      }
+    };
+  } catch (error) {
+    console.warn(`[EMAIL DNS] Unable to resolve ${host} with IPv${SMTP_FAMILY}: ${error.message}`);
+    return options;
+  }
+};
+
 const sendViaSendGrid = async (message) => {
   if (!isSendGridConfigured()) {
     return { sent: false, reason: 'sendgrid_not_configured' };
@@ -231,7 +265,8 @@ const sendEmailWithFallback = async (message) => {
   let lastError = null;
 
   for (const transportOptions of transportPlans) {
-    const transporter = createTransporter(transportOptions);
+    const resolvedTransportOptions = await resolveTransportOptions(transportOptions);
+    const transporter = createTransporter(resolvedTransportOptions);
 
     try {
       await transporter.sendMail(message);

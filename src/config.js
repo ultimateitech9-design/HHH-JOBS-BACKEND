@@ -27,7 +27,7 @@ const smtpPort = Number(process.env.SMTP_PORT) || 587;
 const smtpSecureEnv = String(process.env.SMTP_SECURE || '').trim().toLowerCase();
 
 // Support both CORS_ORIGINS (documented in .env) and legacy CLIENT_URLS
-const corsOrigins = parseEnvList(
+const configuredCorsOrigins = parseEnvList(
   process.env.CORS_ORIGINS,
   process.env.CLIENT_URLS,
   process.env.FRONTEND_URL,
@@ -36,6 +36,12 @@ const corsOrigins = parseEnvList(
 );
 
 const isProduction = (process.env.NODE_ENV || 'development').toLowerCase() === 'production';
+
+const corsOrigins = configuredCorsOrigins.length === 0
+  ? defaultOrigins.map(normalizeOrigin)
+  : isProduction
+    ? [...new Set([...defaultOrigins.map(normalizeOrigin), ...configuredCorsOrigins])]
+    : configuredCorsOrigins;
 
 const config = {
   // ── Server ──────────────────────────────────────────────────────────────────
@@ -58,7 +64,7 @@ const config = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
 
   // ── CORS ──────────────────────────────────────────────────────────────────────
-  corsOrigins: corsOrigins.length > 0 ? corsOrigins : defaultOrigins.map(normalizeOrigin),
+  corsOrigins,
 
   // ── OAuth ─────────────────────────────────────────────────────────────────────
   oauthClientUrl: normalizeOrigin(
@@ -67,7 +73,7 @@ const config = {
     || process.env.FRONTEND_URL
     || process.env.APP_URL
     || process.env.WEB_URL
-    || (corsOrigins.length > 0 ? corsOrigins[0] : defaultOrigins[0])
+    || corsOrigins[0]
   ),
   googleClientId: process.env.GOOGLE_CLIENT_ID || '',
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
