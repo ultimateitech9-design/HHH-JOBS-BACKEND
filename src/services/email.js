@@ -10,6 +10,7 @@ const SMTP_SECURE = Boolean(config.smtpSecure);
 const SMTP_USER = config.smtpUser || '';
 const SMTP_PASS = config.smtpPass || '';
 const FROM_ADDRESS = config.smtpFrom || 'noreply@hhhjobs.com';
+const RESEND_API_KEY = config.resendApiKey || '';
 const SENDGRID_API_KEY = config.sendgridApiKey || '';
 const BRAND = normalizeText(process.env.OTP_FROM_NAME) || 'HHH Jobs';
 const EMAIL_CONNECTION_TIMEOUT_MS = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 8000;
@@ -25,11 +26,14 @@ let warmupScheduled = false;
 const isSmtpConfigured = () =>
   Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
 
+const isResendConfigured = () =>
+  Boolean(RESEND_API_KEY && FROM_ADDRESS);
+
 const isSendGridConfigured = () =>
   Boolean(SENDGRID_API_KEY && FROM_ADDRESS);
 
 const isEmailConfigured = () =>
-  isSendGridConfigured() || isSmtpConfigured();
+  isResendConfigured() || isSendGridConfigured() || isSmtpConfigured();
 
 const parseFromAddress = (value = '') => {
   const rawValue = String(value || '').trim();
@@ -243,7 +247,51 @@ const sendViaSendGrid = async (message) => {
   };
 };
 
+const sendViaResend = async (message) => {
+  if (!isResendConfigured()) {
+    return { sent: false, reason: 'resend_not_configured' };
+  }
+
+  const from = parseFromAddress(message.from || FROM_ADDRESS);
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: from.email && from.name ? `${from.name} <${from.email}>` : FROM_ADDRESS,
+      to: Array.isArray(message.to) ? message.to : [message.to],
+      subject: message.subject,
+      text: message.text || '',
+      html: message.html || ''
+    })
+  });
+
+  if (response.ok) {
+    return { sent: true };
+  }
+
+  const responseText = await response.text().catch(() => '');
+  return {
+    sent: false,
+    reason: responseText || `resend_http_${response.status}`
+  };
+};
+
 const sendEmailWithFallback = async (message) => {
+  if (isResendConfigured()) {
+    try {
+      const resendResult = await sendViaResend(message);
+      if (resendResult.sent) return resendResult;
+      console.error('[RESEND ERROR]', resendResult.reason);
+      return resendResult;
+    } catch (error) {
+      console.error('[RESEND ERROR]', error.message);
+      return { sent: false, reason: error.message || 'resend_send_failed' };
+    }
+  }
+
   if (isSendGridConfigured()) {
     try {
       const sendGridResult = await sendViaSendGrid(message);

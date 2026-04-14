@@ -43,7 +43,7 @@ const runAsyncSideEffect = (label, task) => {
 };
 const EMAIL_DELIVERY_WAIT_MS = Number(process.env.OTP_DELIVERY_WAIT_MS) > 0
   ? Number(process.env.OTP_DELIVERY_WAIT_MS)
-  : 2500;
+  : (config.nodeEnv === 'production' ? 12000 : 2500);
 
 const createAuthToken = (user) => jwt.sign(
   {
