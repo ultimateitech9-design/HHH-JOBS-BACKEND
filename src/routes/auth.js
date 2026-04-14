@@ -948,10 +948,14 @@ router.post('/signup', asyncHandler(async (req, res) => {
     }
   });
 
-  const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-  const emailWarning = emailResult.sent
-    ? ''
-    : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'signup' }) || buildDeferredOtpWarning());
+  runAsyncSideEffect('signup-otp-email', async () => {
+    const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+    if (!emailResult.sent) {
+      console.warn(`[signup-otp-email] OTP email failed for ${email}: ${emailResult.reason}`);
+    }
+  });
+
+  const emailWarning = '';
 
   runAsyncSideEffect('audit-signup', () => logAudit({
     userId: userRow.id,
@@ -974,7 +978,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
     requiresOtpVerification: true,
     redirectTo: '/verify-otp',
     otp: exposeOtpForLocalTesting ? otpCode : undefined,
-    deliveryFailed: !emailResult.sent,
+    deliveryFailed: false,
     emailWarning,
     syncWarning,
     message: existingUser
@@ -1335,10 +1339,14 @@ router.post('/login', asyncHandler(async (req, res) => {
       });
     }
 
-    const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
-    const emailWarning = emailResult.sent
-      ? ''
-      : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'login' }) || buildDeferredOtpWarning());
+    runAsyncSideEffect('login-otp-email', async () => {
+      const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
+      if (!emailResult.sent) {
+        console.warn(`[login-otp-email] OTP email failed for ${email}: ${emailResult.reason}`);
+      }
+    });
+
+    const emailWarning = '';
 
     runAsyncSideEffect('audit-login-otp', () => logAudit({
       userId: userRow.id,
@@ -1358,7 +1366,7 @@ router.post('/login', asyncHandler(async (req, res) => {
       requiresOtpVerification: true,
       redirectTo: '/verify-otp',
       otp: exposeOtpForLocalTesting ? otpCode : undefined,
-      deliveryFailed: !emailResult.sent,
+      deliveryFailed: false,
       emailWarning,
       message: 'Email verification is still pending. Continue to the OTP screen.'
     });
