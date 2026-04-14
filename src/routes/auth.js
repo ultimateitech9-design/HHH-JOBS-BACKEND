@@ -83,12 +83,12 @@ const buildOtpEmailWarning = ({ sent, reason }) => {
   }
 
   if (reason === 'smtp_not_configured') {
-    return 'OTP email service is not configured right now. Continue to the verification screen, and use resend once SMTP is fixed.';
+    return 'OTP email service is not configured right now. Add a Resend API key, SendGrid API key, or SMTP credentials on the backend.';
   }
   if (reason === 'sendgrid_not_configured') {
     return 'OTP email service is not configured right now. Add a valid SendGrid API key on the backend and try again.';
   }
-  return `OTP email could not be sent (${reason}). Check your SMTP settings or resend OTP from the verification screen.`;
+  return `OTP email could not be sent (${reason}). Check your email provider settings or resend OTP from the verification screen.`;
 };
 
 const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
@@ -96,8 +96,8 @@ const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
 
   if (reason === 'smtp_not_configured') {
     return normalizedFlow === 'password_reset'
-      ? 'Password reset email service is not configured. Add a SendGrid API key or valid SMTP credentials on the backend.'
-      : 'OTP email service is not configured on the backend. Add a SendGrid API key or valid SMTP credentials in production.';
+      ? 'Password reset email service is not configured. Add a Resend API key, SendGrid API key, or valid SMTP credentials on the backend.'
+      : 'OTP email service is not configured on the backend. Add a Resend API key, SendGrid API key, or valid SMTP credentials in production.';
   }
 
   if (reason === 'sendgrid_not_configured') {

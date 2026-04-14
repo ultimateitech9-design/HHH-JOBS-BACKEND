@@ -176,7 +176,7 @@ const dropTransporter = (options) => {
 };
 
 const scheduleTransportWarmup = () => {
-  if (warmupScheduled || !isSmtpConfigured() || isSendGridConfigured()) return;
+  if (warmupScheduled || !isSmtpConfigured() || isResendConfigured() || isSendGridConfigured()) return;
 
   warmupScheduled = true;
   setTimeout(async () => {
@@ -355,7 +355,7 @@ scheduleTransportWarmup();
 const sendOtpEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
   if (!isEmailConfigured()) {
     console.log(`[OTP EMAIL - NOT CONFIGURED] To: ${to} | OTP: ${otp} | Expires in: ${expiresInMinutes} min`);
-    console.log('  -> Set SMTP_HOST/SMTP_USER/SMTP_PASS or GMAIL_EMAIL/GMAIL_APP_PASSWORD in .env to enable real email delivery.');
+    console.log('  -> Set RESEND_API_KEY, SENDGRID_API_KEY, or SMTP credentials in .env to enable real email delivery.');
     return { sent: false, reason: 'smtp_not_configured' };
   }
 

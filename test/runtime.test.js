@@ -29,9 +29,12 @@ const ORIGINAL_ENV = {
   SMTP_SECURE: process.env.SMTP_SECURE,
   SMTP_USER: process.env.SMTP_USER,
   SMTP_PASS: process.env.SMTP_PASS,
+  SMTP_FROM: process.env.SMTP_FROM,
   EMAIL_FROM: process.env.EMAIL_FROM,
   GMAIL_EMAIL: process.env.GMAIL_EMAIL,
   GMAIL_APP_PASSWORD: process.env.GMAIL_APP_PASSWORD,
+  RESEND_API_KEY: process.env.RESEND_API_KEY,
+  SENDGRID_API_KEY: process.env.SENDGRID_API_KEY,
   OTP_FROM_NAME: process.env.OTP_FROM_NAME,
   OTP_DELIVERY_WAIT_MS: process.env.OTP_DELIVERY_WAIT_MS
 };
@@ -62,6 +65,8 @@ test('config resolves updated env aliases and normalizes origins', () => {
   process.env.SMTP_HOST = '';
   process.env.SMTP_USER = 'otp@example.com';
   process.env.SMTP_PASS = 'app-pass';
+  process.env.RESEND_API_KEY = '';
+  process.env.SENDGRID_API_KEY = '';
   process.env.EMAIL_FROM = 'noreply@example.com';
   process.env.OTP_FROM_NAME = 'HHH Jobs';
 
@@ -85,6 +90,8 @@ test('config enables secure SMTP automatically for port 465 when SMTP_SECURE is 
   delete process.env.SMTP_SECURE;
   process.env.SMTP_USER = 'otp@example.com';
   process.env.SMTP_PASS = 'app-pass';
+  process.env.RESEND_API_KEY = '';
+  process.env.SENDGRID_API_KEY = '';
 
   clearModule(configPath);
   const config = require('../src/config');
@@ -240,6 +247,8 @@ test('email helper uses config-backed SMTP settings without sending network traf
   process.env.SMTP_SECURE = 'false';
   process.env.SMTP_USER = 'otp@example.com';
   process.env.SMTP_PASS = 'app-pass';
+  process.env.RESEND_API_KEY = '';
+  process.env.SENDGRID_API_KEY = '';
   process.env.EMAIL_FROM = 'noreply@example.com';
   process.env.OTP_FROM_NAME = 'HHH Jobs';
 
@@ -286,6 +295,8 @@ test('email helper retries Gmail with secure transport when the primary SMTP con
   process.env.SMTP_SECURE = 'true';
   process.env.SMTP_USER = 'otp@example.com';
   process.env.SMTP_PASS = 'app-pass';
+  process.env.RESEND_API_KEY = '';
+  process.env.SENDGRID_API_KEY = '';
   process.env.EMAIL_FROM = 'noreply@example.com';
   process.env.OTP_FROM_NAME = 'HHH Jobs';
 
@@ -347,6 +358,8 @@ test('signup returns quickly when OTP delivery is still in progress', async () =
   process.env.SMTP_SECURE = 'true';
   process.env.SMTP_USER = 'otp@example.com';
   process.env.SMTP_PASS = 'app-pass';
+  process.env.RESEND_API_KEY = '';
+  process.env.SENDGRID_API_KEY = '';
   process.env.EMAIL_FROM = 'noreply@example.com';
   process.env.OTP_FROM_NAME = 'HHH Jobs';
   process.env.OTP_DELIVERY_WAIT_MS = '5';
@@ -413,6 +426,8 @@ test('app bootstrap is import-safe and serves health plus CORS headers', async (
   process.env.CLIENT_URLS = '';
   process.env.FRONTEND_URL = '';
   process.env.OAUTH_CLIENT_URL = '';
+  process.env.RESEND_API_KEY = '';
+  process.env.SENDGRID_API_KEY = '';
 
   clearModule(configPath);
   clearModule(indexPath);
@@ -463,6 +478,8 @@ test('login keeps unverified local users in OTP verification flow', async () => 
   process.env.EMAIL_FROM = '';
   process.env.GMAIL_EMAIL = '';
   process.env.GMAIL_APP_PASSWORD = '';
+  process.env.RESEND_API_KEY = '';
+  process.env.SENDGRID_API_KEY = '';
   process.env.OTP_DELIVERY_WAIT_MS = '';
 
   clearModule(authStorePath);
@@ -546,6 +563,8 @@ test('signup reuses existing unverified email instead of blocking with already r
   process.env.CLIENT_URLS = '';
   process.env.FRONTEND_URL = '';
   process.env.OAUTH_CLIENT_URL = '';
+  process.env.RESEND_API_KEY = '';
+  process.env.SENDGRID_API_KEY = '';
 
   clearModule(authStorePath);
   clearModule(configPath);
@@ -611,6 +630,8 @@ test('signup returns a soft login redirect for already verified emails instead o
   process.env.CLIENT_URLS = '';
   process.env.FRONTEND_URL = '';
   process.env.OAUTH_CLIENT_URL = '';
+  process.env.RESEND_API_KEY = '';
+  process.env.SENDGRID_API_KEY = '';
 
   clearModule(authStorePath);
   clearModule(configPath);
