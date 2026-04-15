@@ -9,6 +9,13 @@ const normalizeJson = (input) => {
   return JSON.parse(JSON.stringify(input));
 };
 
+const normalizeMessageRole = (role, providerName) => {
+  if (role === 'assistant') return 'assistant';
+  if (role === 'developer' && providerName === 'openai') return 'developer';
+  if (role === 'system') return providerName === 'openai' ? 'developer' : 'system';
+  return 'user';
+};
+
 const extractMessageContent = (payload) => {
   const message = payload?.choices?.[0]?.message?.content;
   if (typeof message === 'string') return message.trim();
@@ -25,44 +32,102 @@ const extractMessageContent = (payload) => {
   return '';
 };
 
-const ensureAiConfigured = () => {
-  if (!config.xaiApiKey) {
-    const error = new Error('Missing XAI_API_KEY. Set Grok/xAI API key on server environment.');
-    error.statusCode = 500;
-    throw error;
+const resolveAiProvider = () => {
+  const preferredProvider = String(config.aiProvider || 'auto').trim().toLowerCase();
+
+  if (preferredProvider === 'openai') {
+    if (!config.openaiApiKey) {
+      const error = new Error('Missing OPENAI_API_KEY. Set OpenAI API key on the server environment.');
+      error.statusCode = 500;
+      throw error;
+    }
+
+    return {
+      name: 'openai',
+      apiKey: config.openaiApiKey,
+      baseUrl: config.openaiBaseUrl,
+      model: config.openaiModel
+    };
   }
+
+  if (preferredProvider === 'xai') {
+    if (!config.xaiApiKey) {
+      const error = new Error('Missing XAI_API_KEY. Set xAI API key on the server environment.');
+      error.statusCode = 500;
+      throw error;
+    }
+
+    return {
+      name: 'xai',
+      apiKey: config.xaiApiKey,
+      baseUrl: config.xaiBaseUrl,
+      model: config.xaiModel
+    };
+  }
+
+  if (config.openaiApiKey) {
+    return {
+      name: 'openai',
+      apiKey: config.openaiApiKey,
+      baseUrl: config.openaiBaseUrl,
+      model: config.openaiModel
+    };
+  }
+
+  if (config.xaiApiKey) {
+    return {
+      name: 'xai',
+      apiKey: config.xaiApiKey,
+      baseUrl: config.xaiBaseUrl,
+      model: config.xaiModel
+    };
+  }
+
+  const error = new Error('Missing AI provider configuration. Set OPENAI_API_KEY or XAI_API_KEY on the server environment.');
+  error.statusCode = 500;
+  throw error;
 };
 
-const askXai = async ({
+const buildPayloadMessages = ({ systemPrompt, userPrompt, messages, providerName }) => {
+  if (Array.isArray(messages) && messages.length > 0) {
+    return messages
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => ({
+        role: normalizeMessageRole(item.role, providerName),
+        content: truncate(item.content, 12000)
+      }))
+      .filter((item) => item.content);
+  }
+
+  return [
+    { role: providerName === 'openai' ? 'developer' : 'system', content: truncate(systemPrompt, 6000) },
+    { role: 'user', content: truncate(userPrompt, 12000) }
+  ];
+};
+
+const askAi = async ({
   systemPrompt,
   userPrompt,
   messages = null,
   temperature = 0.4,
   maxTokens = 900
 }) => {
-  ensureAiConfigured();
+  const provider = resolveAiProvider();
+  const payloadMessages = buildPayloadMessages({
+    systemPrompt,
+    userPrompt,
+    messages,
+    providerName: provider.name
+  });
 
-  const payloadMessages = Array.isArray(messages) && messages.length > 0
-    ? messages
-      .filter((item) => item && typeof item === 'object')
-      .map((item) => ({
-        role: item.role === 'assistant' ? 'assistant' : item.role === 'system' ? 'system' : 'user',
-        content: truncate(item.content, 12000)
-      }))
-      .filter((item) => item.content)
-    : [
-      { role: 'system', content: truncate(systemPrompt, 6000) },
-      { role: 'user', content: truncate(userPrompt, 12000) }
-    ];
-
-  const response = await fetch(`${config.xaiBaseUrl}/chat/completions`, {
+  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.xaiApiKey}`
+      Authorization: `Bearer ${provider.apiKey}`
     },
     body: JSON.stringify({
-      model: config.xaiModel,
+      model: provider.model,
       messages: payloadMessages,
       temperature,
       max_tokens: maxTokens
@@ -133,6 +198,6 @@ const logAiInteraction = async ({
 };
 
 module.exports = {
-  askXai,
+  askAi,
   logAiInteraction
 };

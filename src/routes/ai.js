@@ -2,7 +2,7 @@ const express = require('express');
 const { ROLES } = require('../constants');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
-const { askXai, logAiInteraction } = require('../services/ai');
+const { askAi, logAiInteraction } = require('../services/ai');
 const { asyncHandler, isValidUuid } = require('../utils/helpers');
 
 const router = express.Router();
@@ -23,6 +23,41 @@ const sendAiError = (res, error) => {
   });
 };
 
+const normalizeLanguagePreference = (preferredLanguage = '', fallback = 'english') => {
+  const normalized = String(preferredLanguage || fallback).trim().toLowerCase();
+  if (normalized === 'hindi') return 'Hindi';
+  if (normalized === 'english') return 'English';
+  return 'Auto-detect';
+};
+
+const getChatbotPageGuidance = (pageContext = '') => {
+  const normalizedPath = String(pageContext || '').trim().toLowerCase();
+  if (!normalizedPath) return 'Unknown page. Ask one short clarifying question only when page context materially changes the answer.';
+  if (normalizedPath.includes('/portal/student/home')) return 'The user is on the student marketplace home. Prioritize jobs discovery, company exploration, saved jobs, and apply-flow guidance.';
+  if (normalizedPath.includes('/portal/student/profile')) return 'The user is on the student profile page. Prioritize profile completion, resume strength, ATS readiness, and recruiter visibility guidance.';
+  if (normalizedPath.includes('/portal/student/ats')) return 'The user is on the ATS page. Prioritize keyword alignment, resume scoring, formatting, and interview-conversion improvements.';
+  if (normalizedPath.includes('/portal/hr')) return 'The user is inside the recruiter portal. Prioritize job creation, candidate shortlisting, screening, interview planning, pipeline hygiene, and recruiter workflows.';
+  if (normalizedPath.includes('/portal/admin')) return 'The user is inside the admin portal. Prioritize moderation, operational health, approvals, analytics, and platform-risk visibility.';
+  if (normalizedPath.includes('/management')) return 'The user is on the management access page. Help them choose the correct portal and explain role-specific access clearly.';
+  if (normalizedPath.includes('/login')) return 'The user is on a login page. Prioritize sign-in troubleshooting, role-fit portal guidance, password reset, and access restrictions.';
+  if (normalizedPath.includes('/sign-up')) return 'The user is on a signup page. Help with account type selection, form completion, and next-step expectations.';
+  return `Current page path: ${normalizedPath}. Keep answers aligned to this workspace when relevant.`;
+};
+
+const getRoleGuidance = (role = 'guest') => {
+  const normalizedRole = String(role || 'guest').trim().toLowerCase();
+  if (normalizedRole === 'hr') {
+    return 'This user is an HR / recruiter. Be especially useful for job descriptions, screening criteria, shortlist strategy, candidate feedback, interview structure, offer-stage communication, and recruiter dashboard guidance.';
+  }
+  if (normalizedRole === 'admin' || normalizedRole === 'super_admin') {
+    return 'This user is a management-level internal operator. Focus on operational actions, dashboard interpretation, moderation, workflow health, and escalation-safe recommendations.';
+  }
+  if (normalizedRole === 'student' || normalizedRole === 'retired_employee') {
+    return 'This user is a candidate-side user. Focus on resumes, ATS readiness, applications, interviews, profile quality, and platform navigation.';
+  }
+  return 'This user may be a guest. Give platform-safe product guidance, explain limitations clearly, and avoid assuming account-specific data.';
+};
+
 const requireAiUser = [requireAuth, requireActiveUser];
 
 router.get('/health', (req, res) => {
@@ -32,6 +67,10 @@ router.get('/health', (req, res) => {
 router.post('/chatbot', optionalAuth, asyncHandler(async (req, res) => {
   const message = String(req.body?.message || '').trim();
   const pageContext = String(req.body?.pageContext || '').trim();
+  const roleContext = String(req.body?.roleContext || '').trim();
+  const preferredLanguage = normalizeLanguagePreference(req.body?.preferredLanguage, req.body?.languageMode);
+  const responsePolicy = req.body?.responsePolicy || {};
+  const conversationStyle = req.body?.conversationStyle || {};
   const history = Array.isArray(req.body?.history) ? req.body.history.slice(-8) : [];
 
   if (!message) {
@@ -47,19 +86,30 @@ router.post('/chatbot', optionalAuth, asyncHandler(async (req, res) => {
     .filter((item) => item.content)
     .slice(-8);
 
-  const signedInRole = req.user?.role || 'guest';
+  const signedInRole = req.user?.role || roleContext || 'guest';
   const systemPrompt = [
-    'You are HHH Job AI assistant.',
-    'Help users with job search, resume improvement, ATS optimization, interview preparation, and dashboard usage.',
-    'Respond in concise Hinglish when user writes in Hinglish, otherwise use clear English.',
-    'Never provide unsafe, illegal, or discriminatory hiring advice.',
-    'When needed, suggest concrete actions inside this platform: profile update, ATS check, apply flow, dashboard tabs.'
+    'You are HHH Jobs Copilot, the in-product assistant for candidates, retired professionals, recruiters, HR teams, admins, and internal employees.',
+    'Be accurate about what the product can do. Never invent hidden dashboard data, account status, jobs, analytics, or backend records.',
+    'When information is missing, say what is missing and ask for only one targeted clarifying detail.',
+    'Give concise, practical, step-by-step guidance that matches the current page and user role.',
+    'If the user writes in Hinglish or Hindi, reply naturally in concise Hinglish. Otherwise, reply in clear English.',
+    'Never provide unsafe, illegal, discriminatory, or privacy-violating hiring advice.',
+    'For recruiter and HR users, be especially useful for job descriptions, candidate screening, shortlisting, interview rubrics, hiring communication, and recruiter workflow decisions.',
+    'For candidate-side users, be especially useful for resume improvement, ATS alignment, applications, interviews, and profile-strength recommendations.',
+    getRoleGuidance(signedInRole),
+    getChatbotPageGuidance(pageContext)
   ].join(' ');
 
   const contextPrompt = [
     `Current page context: ${pageContext || 'unknown'}`,
     `User role: ${signedInRole}`,
-    'If user asks about unavailable backend data, clearly say what is missing and ask for specific details.'
+    `Preferred reply language: ${preferredLanguage}`,
+    `Conversation tone: ${conversationStyle?.tone || 'helpful'}`,
+    `Ask clarifying questions only when needed: ${conversationStyle?.askClarifyingQuestions ? 'yes' : 'no'}`,
+    `Be concise: ${responsePolicy?.concise ? 'yes' : 'no'}`,
+    `Call out uncertainty when needed: ${responsePolicy?.citeUncertainty ? 'yes' : 'no'}`,
+    'If the user asks about unavailable backend data, clearly say what is missing and ask for specific details.',
+    'Anchor suggestions to real HHH Jobs workflows such as login, signup, profile updates, ATS checks, job posting, applications, interviews, candidate screening, and portal navigation.'
   ].join('\n');
 
   const promptMessages = [
@@ -69,7 +119,7 @@ router.post('/chatbot', optionalAuth, asyncHandler(async (req, res) => {
   ];
 
   try {
-    const answer = await askXai({
+    const answer = await askAi({
       messages: promptMessages,
       temperature: 0.4,
       maxTokens: 700
@@ -82,7 +132,7 @@ router.post('/chatbot', optionalAuth, asyncHandler(async (req, res) => {
         featureKey: 'chatbot',
         promptText: message,
         responseText: answer,
-        meta: { pageContext, historyLength: normalizedHistory.length }
+        meta: { pageContext, historyLength: normalizedHistory.length, preferredLanguage, roleContext: signedInRole }
       });
     }
 
@@ -121,7 +171,7 @@ router.post('/admin/insights', requireAiUser, requireRole(ROLES.ADMIN), asyncHan
   ].join('\n');
 
   try {
-    const answer = await askXai({
+    const answer = await askAi({
       systemPrompt,
       userPrompt,
       temperature: 0.3,
@@ -185,7 +235,7 @@ router.post('/hr/job-assistant', requireAiUser, requireRole(ROLES.HR, ROLES.ADMI
   ].join('\n');
 
   try {
-    const answer = await askXai({
+    const answer = await askAi({
       systemPrompt,
       userPrompt,
       temperature: 0.45,
@@ -243,7 +293,7 @@ router.post('/hr/candidate-summary', requireAiUser, requireRole(ROLES.HR, ROLES.
   ].join('\n');
 
   try {
-    const answer = await askXai({
+    const answer = await askAi({
       systemPrompt,
       userPrompt,
       temperature: 0.35,
@@ -296,7 +346,7 @@ router.post('/student/career-coach', requireAiUser, requireRole(ROLES.STUDENT, R
   ].join('\n');
 
   try {
-    const answer = await askXai({
+    const answer = await askAi({
       systemPrompt,
       userPrompt,
       temperature: 0.5,
@@ -352,7 +402,7 @@ router.post('/student/resume-feedback', requireAiUser, requireRole(ROLES.STUDENT
   ].join('\n');
 
   try {
-    const answer = await askXai({
+    const answer = await askAi({
       systemPrompt,
       userPrompt,
       temperature: 0.4,
