@@ -84,7 +84,8 @@ router.get('/', asyncHandler(async (req, res) => {
     experienceLevel: String(req.query.experienceLevel || '').trim(),
     salaryType: String(req.query.salaryType || '').trim(),
     category: String(req.query.category || '').trim(),
-    status: String(req.query.status || JOB_STATUSES.OPEN).trim().toLowerCase()
+    status: String(req.query.status || JOB_STATUSES.OPEN).trim().toLowerCase(),
+    includeUnapproved: String(req.query.includeUnapproved || '').trim().toLowerCase() === 'true'
   };
 
   let query = supabase
