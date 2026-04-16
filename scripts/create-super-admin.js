@@ -8,6 +8,7 @@ dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
 const { ROLES, USER_STATUSES } = require('../src/constants');
 const config = require('../src/config');
+const { ensureRoleProfile } = require('../src/services/profileTables');
 
 const DEFAULT_EMAIL = 'superadmin@hhh-jobs.com';
 const DEFAULT_NAME = 'HHH Jobs Super Admin';
@@ -161,6 +162,12 @@ const main = async () => {
       password,
       role: effectiveRole
     });
+    await ensureRoleProfile({
+      supabase,
+      role: effectiveRole,
+      userId: authResult.user.id,
+      reqBody: {}
+    });
   } catch (error) {
     if (requestedRole === ROLES.SUPER_ADMIN && isEnumRoleError(error)) {
       effectiveRole = ROLES.ADMIN;
@@ -171,6 +178,12 @@ const main = async () => {
         email: requestedEmail,
         password,
         role: effectiveRole
+      });
+      await ensureRoleProfile({
+        supabase,
+        role: effectiveRole,
+        userId: authResult.user.id,
+        reqBody: {}
       });
       await supabase.auth.admin.updateUserById(authResult.user.id, {
         user_metadata: {

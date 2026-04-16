@@ -10,6 +10,52 @@ const { normalizePlan, validateJobPayloadAgainstPlan, calculateQuote, calculateE
 const authMiddlewarePath = require.resolve('../src/middleware/auth');
 const rolesMiddlewarePath = require.resolve('../src/middleware/roles');
 
+const createProfileTablesSupabaseDouble = ({
+  roleTable = 'student_profiles',
+  existingRoleProfile = null,
+  existingEmployeeProfile = null
+} = {}) => {
+  const calls = {
+    inserts: [],
+    lookups: []
+  };
+
+  return {
+    calls,
+    supabase: {
+      from(table) {
+        return {
+          select() {
+            return {
+              eq(_field, value) {
+                return {
+                  maybeSingle: async () => {
+                    calls.lookups.push({ table, value });
+
+                    if (table === 'employee_profiles') {
+                      return { data: existingEmployeeProfile, error: null };
+                    }
+
+                    if (table === roleTable) {
+                      return { data: existingRoleProfile, error: null };
+                    }
+
+                    return { data: null, error: null };
+                  }
+                };
+              }
+            };
+          },
+          insert(payload) {
+            calls.inserts.push({ table, payload });
+            return Promise.resolve({ error: null });
+          }
+        };
+      }
+    }
+  };
+};
+
 const installRouteAuthStubs = (role) => {
   const user = {
     id: `${role}-user`,
@@ -183,6 +229,51 @@ test('core constants stay stable', () => {
   assert.equal(ROLES.ADMIN, 'admin');
   assert.equal(JOB_STATUSES.OPEN, 'open');
   assert.equal(PRICING_PLAN_SLUGS.FREE, 'free');
+});
+
+test('ensureRoleProfile seeds missing student profiles from legacy users without extra writes', async () => {
+  const { ensureRoleProfile, buildProfileSeedFromUser } = require('../src/services/profileTables');
+  const { supabase, calls } = createProfileTablesSupabaseDouble();
+
+  await ensureRoleProfile({
+    supabase,
+    role: ROLES.STUDENT,
+    userId: 'student-user-1',
+    reqBody: buildProfileSeedFromUser({
+      email: 'legacy.student@example.com',
+      date_of_birth: '2001-05-06'
+    })
+  });
+
+  assert.deepEqual(calls.inserts, [
+    {
+      table: 'student_profiles',
+      payload: {
+        user_id: 'student-user-1',
+        date_of_birth: '2001-05-06'
+      }
+    }
+  ]);
+});
+
+test('ensureRoleProfile preserves existing employee and role profiles during login-time repair', async () => {
+  const { ensureRoleProfile, buildProfileSeedFromUser } = require('../src/services/profileTables');
+  const { supabase, calls } = createProfileTablesSupabaseDouble({
+    roleTable: 'admin_profiles',
+    existingRoleProfile: { id: 'admin-profile-1' },
+    existingEmployeeProfile: { id: 'employee-profile-1' }
+  });
+
+  await ensureRoleProfile({
+    supabase,
+    role: ROLES.ADMIN,
+    userId: 'admin-user-1',
+    reqBody: buildProfileSeedFromUser({
+      email: 'admin@example.com'
+    })
+  });
+
+  assert.deepEqual(calls.inserts, []);
 });
 
 test('requireActiveUser blocks unverified email sessions', () => {

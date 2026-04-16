@@ -4,6 +4,10 @@ const assert = require('node:assert/strict');
 const configPath = require.resolve('../src/config');
 const emailPath = require.resolve('../src/services/email');
 const indexPath = require.resolve('../index');
+const authRoutePath = require.resolve('../src/routes/auth');
+const supabasePath = require.resolve('../src/supabase');
+const auditServicePath = require.resolve('../src/services/audit');
+const eimagerSyncPath = require.resolve('../src/services/eimagerSync');
 const nodemailerPath = require.resolve('nodemailer');
 const oauthUtilsPath = require.resolve('../src/utils/oauth');
 const authStorePath = require.resolve('../src/mock/authStore');
@@ -20,6 +24,8 @@ const ORIGINAL_ENV = {
   FRONTEND_URL: process.env.FRONTEND_URL,
   CLIENT_URLS: process.env.CLIENT_URLS,
   OAUTH_CLIENT_URL: process.env.OAUTH_CLIENT_URL,
+  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
   GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI,
   GOOGLE_REDIRECT_URI_LOCAL: process.env.GOOGLE_REDIRECT_URI_LOCAL,
   LINKEDIN_REDIRECT_URI: process.env.LINKEDIN_REDIRECT_URI,
@@ -239,6 +245,238 @@ test('client app resolver accepts allowed local and production frontend URLs', (
   );
 
   clearModule(oauthUtilsPath);
+});
+
+test('google oauth exchange repairs missing student profile rows for existing users', async () => {
+  process.env.JWT_SECRET = 'test-secret';
+  process.env.CORS_ORIGINS = 'http://localhost:5173';
+  process.env.CLIENT_URLS = '';
+  process.env.FRONTEND_URL = '';
+  process.env.OAUTH_CLIENT_URL = 'http://localhost:5173';
+  process.env.GOOGLE_CLIENT_ID = 'google-client-id';
+  process.env.GOOGLE_CLIENT_SECRET = 'google-client-secret';
+  process.env.GOOGLE_REDIRECT_URI = 'https://backend.example.com/auth/oauth/google/callback';
+  process.env.GOOGLE_REDIRECT_URI_LOCAL = 'http://127.0.0.1:5500/auth/oauth/google/callback';
+
+  const existingUser = {
+    id: 'oauth-user-1',
+    name: 'Existing OAuth User',
+    email: 'oauth.existing@example.com',
+    mobile: '',
+    role: 'student',
+    status: 'active',
+    is_hr_approved: true,
+    is_email_verified: true,
+    avatar_url: null,
+    created_at: '2024-01-01T00:00:00.000Z',
+    updated_at: '2024-01-01T00:00:00.000Z',
+    last_login_at: null
+  };
+  const inserts = [];
+  const userUpdates = [];
+  let studentProfileExists = false;
+
+  require.cache[supabasePath] = {
+    id: supabasePath,
+    filename: supabasePath,
+    loaded: true,
+    exports: {
+      supabase: {
+        from(table) {
+          if (table === 'users') {
+            return {
+              select() {
+                return {
+                  eq(field, value) {
+                    return {
+                      maybeSingle: async () => {
+                        if (field === 'email' && value === existingUser.email) {
+                          return { data: existingUser, error: null };
+                        }
+
+                        if (field === 'id' && value === existingUser.id) {
+                          return { data: existingUser, error: null };
+                        }
+
+                        return { data: null, error: null };
+                      }
+                    };
+                  }
+                };
+              },
+              update(payload) {
+                userUpdates.push(payload);
+                return {
+                  eq(field, value) {
+                    return {
+                      select() {
+                        return {
+                          single: async () => ({
+                            data: {
+                              ...existingUser,
+                              ...payload,
+                              [field]: value
+                            },
+                            error: null
+                          })
+                        };
+                      }
+                    };
+                  }
+                };
+              }
+            };
+          }
+
+          if (table === 'student_profiles') {
+            return {
+              select() {
+                return {
+                  eq() {
+                    return {
+                      maybeSingle: async () => ({
+                        data: studentProfileExists ? { id: 'student-profile-1' } : null,
+                        error: null
+                      })
+                    };
+                  }
+                };
+              },
+              insert(payload) {
+                studentProfileExists = true;
+                inserts.push({ table, payload });
+                return Promise.resolve({ error: null });
+              }
+            };
+          }
+
+          if (table === 'employee_profiles') {
+            return {
+              select() {
+                return {
+                  eq() {
+                    return {
+                      maybeSingle: async () => ({ data: null, error: null })
+                    };
+                  }
+                };
+              },
+              insert(payload) {
+                inserts.push({ table, payload });
+                return Promise.resolve({ error: null });
+              }
+            };
+          }
+
+          throw new Error(`Unexpected table access: ${table}`);
+        }
+      },
+      ensureServerConfig: () => true,
+      sendSupabaseError: (res, error, statusCode = 500) => {
+        res.status(statusCode).send({
+          status: false,
+          message: error?.message || 'Database error'
+        });
+      }
+    }
+  };
+
+  require.cache[auditServicePath] = {
+    id: auditServicePath,
+    filename: auditServicePath,
+    loaded: true,
+    exports: {
+      logAudit: async () => {},
+      getClientIp: () => '127.0.0.1'
+    }
+  };
+
+  require.cache[eimagerSyncPath] = {
+    id: eimagerSyncPath,
+    filename: eimagerSyncPath,
+    loaded: true,
+    exports: {
+      syncHhhCandidateToEimager: async () => {}
+    }
+  };
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    const asTextResponse = (payload) => ({
+      ok: true,
+      text: async () => JSON.stringify(payload)
+    });
+
+    if (String(url).includes('oauth2.googleapis.com/token')) {
+      return asTextResponse({ access_token: 'oauth-access-token' });
+    }
+
+    if (String(url).includes('openidconnect.googleapis.com')) {
+      return asTextResponse({
+        email: existingUser.email,
+        name: existingUser.name,
+        picture: 'https://example.com/avatar.png'
+      });
+    }
+
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  };
+
+  clearModule(configPath);
+  clearModule(authRoutePath);
+  const authRouter = require('../src/routes/auth');
+
+  const express = require('express');
+  const jwt = require('jsonwebtoken');
+  const app = express();
+  app.use(express.json());
+  app.use('/auth', authRouter);
+
+  const server = app.listen(0);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const state = jwt.sign({
+    provider: 'google',
+    role: 'student',
+    clientAppUrl: 'http://localhost:5173',
+    redirectUri: 'http://127.0.0.1:5500/auth/oauth/google/callback',
+    nonce: 'oauth-state-nonce'
+  }, process.env.JWT_SECRET, { expiresIn: '10m' });
+
+  try {
+    const resp = await originalFetch(`${baseUrl}/auth/oauth/google/exchange`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code: 'oauth-code',
+        state
+      })
+    });
+    const body = await resp.json();
+
+    assert.equal(resp.status, 200);
+    assert.equal(body.status, true);
+    assert.equal(typeof body.token, 'string');
+    assert.equal(body.user.email, existingUser.email);
+    assert.equal(inserts.length, 1);
+    assert.deepEqual(inserts[0], {
+      table: 'student_profiles',
+      payload: {
+        user_id: existingUser.id,
+        date_of_birth: null
+      }
+    });
+    assert.equal(userUpdates.length, 1);
+    assert.equal(userUpdates[0].is_email_verified, true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    global.fetch = originalFetch;
+    clearModule(authRoutePath);
+    clearModule(configPath);
+    clearModule(supabasePath);
+    clearModule(auditServicePath);
+    clearModule(eimagerSyncPath);
+    restoreEnv();
+  }
 });
 
 test('email helper uses config-backed SMTP settings without sending network traffic', async () => {

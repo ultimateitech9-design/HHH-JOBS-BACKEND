@@ -20,9 +20,16 @@ const { syncHhhCandidateToEimager } = require('../services/eimagerSync');
 const {
   isStudentPortalRole,
   isAuthSignupRole,
-  getRoleRedirectPath,
-  toStudentProfileRole
+  getRoleRedirectPath
 } = require('../services/accountRoles');
+const {
+  isEmployeeProfileRole,
+  getProfileRoleKey,
+  getProfileTableForRole,
+  buildProfileSeedFromUser,
+  ensureRoleProfile,
+  upsertRoleProfile
+} = require('../services/profileTables');
 const authStore = require('../mock/authStore');
 
 const router = express.Router();
@@ -162,64 +169,61 @@ const normalizeRoleValue = (role) => String(role || '').trim().toLowerCase();
 
 const upsertSignupProfile = async ({ userId, role, reqBody = {} }) => {
   if (supabase) {
-    if (role === ROLES.HR) {
-      const profilePayload = {
-        user_id: userId,
-        company_name: reqBody?.companyName || null,
-        location: reqBody?.location || null,
-        about: reqBody?.about || null
-      };
-      const { data: existingProfile, error: lookupError } = await supabase
-        .from('hr_profiles')
-        .select('id')
-        .eq('user_id', userId)
-        .maybeSingle();
-      if (lookupError) throw lookupError;
-
-      if (existingProfile?.id) {
-        const { error } = await supabase
-          .from('hr_profiles')
-          .update(profilePayload)
-          .eq('id', existingProfile.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from('hr_profiles').insert(profilePayload);
-        if (error) throw error;
-      }
-      return;
-    }
-
-    if (isStudentPortalRole(role)) {
-      const profilePayload = {
-        user_id: userId,
-        date_of_birth: reqBody?.dateOfBirth || null
-      };
-      const { data: existingProfile, error: lookupError } = await supabase
-        .from('student_profiles')
-        .select('id')
-        .eq('user_id', userId)
-        .maybeSingle();
-      if (lookupError) throw lookupError;
-
-      if (existingProfile?.id) {
-        const { error } = await supabase
-          .from('student_profiles')
-          .update(profilePayload)
-          .eq('id', existingProfile.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from('student_profiles').insert(profilePayload);
-        if (error) throw error;
-      }
-    }
+    await upsertRoleProfile({ supabase, role, userId, reqBody });
     return;
   }
 
-  const profileRole = isStudentPortalRole(role) ? ROLES.STUDENT : role;
+  const profileRole = getProfileRoleKey(role);
   const existingProfile = authStore.getProfileByRole(profileRole, userId);
   if (!existingProfile) {
     createLocalRoleProfile(role, userId, reqBody || {});
   }
+};
+
+const ensureSupabaseRoleProfile = async ({ user, role = '', reqBody = {} }) => {
+  if (!supabase || !user?.id) return null;
+
+  return ensureRoleProfile({
+    supabase,
+    role: role || user.role,
+    userId: user.id,
+    reqBody: {
+      ...buildProfileSeedFromUser(user),
+      ...(reqBody || {})
+    }
+  });
+};
+
+const readSupabaseProfileBundle = async ({ role, userId }) => {
+  const profileTable = getProfileTableForRole(role);
+  if (!profileTable || !userId) {
+    return {
+      profileTable,
+      roleProfileResp: { data: null, error: null },
+      employeeProfileResp: { data: null, error: null }
+    };
+  }
+
+  const [roleProfileResp, employeeProfileResp] = await Promise.all([
+    supabase
+      .from(profileTable)
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle(),
+    isEmployeeProfileRole(role)
+      ? supabase
+        .from('employee_profiles')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle()
+      : Promise.resolve({ data: null, error: null })
+  ]);
+
+  return {
+    profileTable,
+    roleProfileResp,
+    employeeProfileResp
+  };
 };
 
 
@@ -379,23 +383,6 @@ const getOAuthProfileFromCode = async ({ provider, code, oauthConfig }) => {
   };
 };
 
-const createRoleProfile = async (role, userId) => {
-  if (role === ROLES.HR) {
-    const { error } = await supabase
-      .from('hr_profiles')
-      .insert({ user_id: userId });
-    if (error) throw error;
-    return;
-  }
-
-  if (isStudentPortalRole(role)) {
-    const { error } = await supabase
-      .from('student_profiles')
-      .insert({ user_id: userId });
-    if (error) throw error;
-  }
-};
-
 const findOrCreateOAuthUser = async ({ email, name, avatarUrl, requestedRole }) => {
   const { data: existingUser, error: lookupError } = await supabase
     .from('users')
@@ -408,6 +395,7 @@ const findOrCreateOAuthUser = async ({ email, name, avatarUrl, requestedRole }) 
   }
 
   if (existingUser) {
+    await ensureSupabaseRoleProfile({ user: existingUser });
     return { user: existingUser, created: false };
   }
 
@@ -436,18 +424,38 @@ const findOrCreateOAuthUser = async ({ email, name, avatarUrl, requestedRole }) 
     throw createError;
   }
 
-  await createRoleProfile(role, insertedUser.id);
+  await ensureSupabaseRoleProfile({
+    user: insertedUser,
+    role,
+    reqBody: {
+      avatarUrl
+    }
+  });
   return { user: insertedUser, created: true };
 };
 
 const createLocalRoleProfile = (role, userId, reqBody = {}) => {
-  const profileRole = toStudentProfileRole(role);
+  const profileRole = getProfileRoleKey(role);
 
   authStore.createRoleProfile(profileRole, userId, {
     company_name: reqBody?.companyName || null,
+    companyName: reqBody?.companyName || null,
     location: reqBody?.location || null,
     about: reqBody?.about || null,
-    date_of_birth: reqBody?.dateOfBirth || null
+    date_of_birth: reqBody?.dateOfBirth || null,
+    dateOfBirth: reqBody?.dateOfBirth || null,
+    department: reqBody?.department || null,
+    designation: reqBody?.designation || null,
+    accessScope: reqBody?.accessScope || null,
+    queueName: reqBody?.queueName || null,
+    shiftName: reqBody?.shiftName || null,
+    escalationLevel: reqBody?.escalationLevel || null,
+    territory: reqBody?.territory || null,
+    pipelineFocus: reqBody?.pipelineFocus || null,
+    financeRole: reqBody?.financeRole || null,
+    costCenter: reqBody?.costCenter || null,
+    reviewerLevel: reqBody?.reviewerLevel || null,
+    meta: reqBody?.meta || {}
   });
 };
 
@@ -648,6 +656,18 @@ const completeOAuthFlow = async ({
   }
 
   authUser = updatedUser;
+
+  try {
+    await ensureSupabaseRoleProfile({ user: authUser });
+  } catch (error) {
+    sendOAuthFailure({
+      res,
+      message: error.message || 'Unable to sync your account profile',
+      clientAppUrl,
+      responseMode
+    });
+    return;
+  }
 
   if (created) {
     try {
@@ -1146,6 +1166,13 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
       sendSupabaseError(res, updateError);
       return;
     }
+
+    try {
+      await ensureSupabaseRoleProfile({ user });
+    } catch (profileError) {
+      sendSupabaseError(res, profileError);
+      return;
+    }
   } else {
     authStore.updateUserById(user.id, {
       is_email_verified: true,
@@ -1439,6 +1466,13 @@ router.post('/login', asyncHandler(async (req, res) => {
       sendSupabaseError(res, updateError);
       return;
     }
+
+    try {
+      await ensureSupabaseRoleProfile({ user: userRow });
+    } catch (profileError) {
+      sendSupabaseError(res, profileError);
+      return;
+    }
   } else {
     authStore.updateUserById(userRow.id, { last_login_at: loginTimestamp });
   }
@@ -1467,29 +1501,61 @@ router.post('/login', asyncHandler(async (req, res) => {
 
 router.get('/me', requireAuth, asyncHandler(async (req, res) => {
   let profile = null;
+  const profileRoleKey = getProfileRoleKey(req.user.role);
+  const profileTable = getProfileTableForRole(req.user.role);
 
   if (!supabase) {
-    profile = authStore.getProfileByRole(isStudentPortalRole(req.user.role) ? ROLES.STUDENT : req.user.role, req.user.id);
+    profile = authStore.getProfileByRole(profileRoleKey, req.user.id);
     res.send({ status: true, user: req.user, profile });
     return;
   }
 
-  if (req.user.role === ROLES.HR) {
-    const { data } = await supabase
-      .from('hr_profiles')
-      .select('*')
-      .eq('user_id', req.user.id)
-      .maybeSingle();
-    profile = data;
-  }
+  if (profileTable) {
+    let { roleProfileResp, employeeProfileResp } = await readSupabaseProfileBundle({
+      role: req.user.role,
+      userId: req.user.id
+    });
 
-  if (isStudentPortalRole(req.user.role)) {
-    const { data } = await supabase
-      .from('student_profiles')
-      .select('*')
-      .eq('user_id', req.user.id)
-      .maybeSingle();
-    profile = data;
+    if (roleProfileResp?.error) {
+      sendSupabaseError(res, roleProfileResp.error);
+      return;
+    }
+
+    if (employeeProfileResp?.error) {
+      sendSupabaseError(res, employeeProfileResp.error);
+      return;
+    }
+
+    if (!roleProfileResp?.data || (isEmployeeProfileRole(req.user.role) && !employeeProfileResp?.data)) {
+      try {
+        await ensureSupabaseRoleProfile({ user: req.user });
+      } catch (profileError) {
+        sendSupabaseError(res, profileError);
+        return;
+      }
+
+      const repairedProfiles = await readSupabaseProfileBundle({
+        role: req.user.role,
+        userId: req.user.id
+      });
+      roleProfileResp = repairedProfiles.roleProfileResp;
+      employeeProfileResp = repairedProfiles.employeeProfileResp;
+
+      if (roleProfileResp?.error) {
+        sendSupabaseError(res, roleProfileResp.error);
+        return;
+      }
+
+      if (employeeProfileResp?.error) {
+        sendSupabaseError(res, employeeProfileResp.error);
+        return;
+      }
+    }
+
+    profile = {
+      ...(employeeProfileResp?.data || {}),
+      ...(roleProfileResp?.data || {})
+    };
   }
 
   res.send({ status: true, user: req.user, profile });
