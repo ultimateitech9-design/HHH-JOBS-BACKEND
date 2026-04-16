@@ -4,10 +4,107 @@ const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
+const { upsertRoleProfile } = require('../services/profileTables');
+const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
 
 router.use(requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.DATAENTRY));
+
+const buildDataEntryProfileResponse = ({ user = {}, employeeProfile = {}, dataEntryProfile = {} }) => {
+  const meta = dataEntryProfile.meta && typeof dataEntryProfile.meta === 'object' ? dataEntryProfile.meta : {};
+
+  return {
+    id: user.id,
+    name: user.name || '',
+    email: user.email || '',
+    mobile: user.mobile || '',
+    role: user.role || ROLES.DATAENTRY,
+    status: user.status || 'active',
+    createdAt: user.created_at || null,
+    employeeId: employeeProfile.employee_code || '',
+    shift: meta.shift || 'Morning',
+    location: employeeProfile.office_location || '',
+    headline: meta.headline || employeeProfile.designation || '',
+    dailyTarget: dataEntryProfile.target_volume != null ? String(dataEntryProfile.target_volume) : '',
+    queueName: dataEntryProfile.queue_name || '',
+    reviewerLevel: dataEntryProfile.reviewer_level || '',
+    qualityScore: dataEntryProfile.quality_score != null ? String(dataEntryProfile.quality_score) : '',
+    notes: dataEntryProfile.notes || employeeProfile.notes || ''
+  };
+};
+
+const normalizeDataEntryEntry = (entry = {}) => {
+  const data = entry.data && typeof entry.data === 'object' ? entry.data : {};
+
+  return {
+    id: entry.id,
+    type: entry.type || data.type || 'other',
+    title: entry.title || data.title || '',
+    companyName: data.companyName || data.company_name || '',
+    candidateId: data.candidateId || data.candidate_id || '',
+    candidateName: data.candidateName || data.candidate_name || '',
+    location: data.location || '',
+    status: entry.status || data.status || 'draft',
+    submittedBy: entry.submitted_by || '',
+    reviewedBy: entry.reviewed_by || '',
+    createdAt: entry.created_at || null,
+    updatedAt: entry.updated_at || entry.created_at || null,
+    data
+  };
+};
+
+const buildDataEntryRecordsResponse = ({ entries = [], notifications = [] }) => {
+  const normalizedEntries = entries.map(normalizeDataEntryEntry);
+  const jobEntries = normalizedEntries.filter((entry) => entry.type === 'job');
+  const candidates = normalizedEntries
+    .filter((entry) => entry.candidateId)
+    .map((entry) => ({
+      id: entry.candidateId,
+      name: entry.candidateName || 'Candidate',
+      sourceEntryId: entry.id,
+      jobTitle: entry.title,
+      companyName: entry.companyName,
+      location: entry.location,
+      status: entry.status,
+      createdAt: entry.createdAt
+    }));
+  const companies = Array.from(
+    new Map(
+      normalizedEntries
+        .filter((entry) => entry.companyName)
+        .map((entry) => [
+          entry.companyName,
+          {
+            id: `CMP-${String(entry.companyName).replace(/\s+/g, '-').toUpperCase()}`,
+            companyName: entry.companyName,
+            location: entry.location,
+            totalEntries: normalizedEntries.filter((item) => item.companyName === entry.companyName).length,
+            latestStatus: entry.status
+          }
+        ])
+    ).values()
+  );
+
+  return {
+    summary: {
+      totalJobs: jobEntries.length,
+      totalCandidates: candidates.length,
+      totalCompanies: companies.length,
+      totalNotifications: notifications.length
+    },
+    jobs: jobEntries,
+    candidates,
+    companies,
+    notifications,
+    queue: {
+      drafts: normalizedEntries.filter((entry) => entry.status === 'draft'),
+      pending: normalizedEntries.filter((entry) => entry.status === 'pending'),
+      approved: normalizedEntries.filter((entry) => entry.status === 'approved'),
+      rejected: normalizedEntries.filter((entry) => entry.status === 'rejected')
+    }
+  };
+};
 
 // =============================================
 // Dashboard
@@ -135,16 +232,43 @@ router.get('/entries/:id', asyncHandler(async (req, res) => {
 // Records (approved entries for public view)
 // =============================================
 router.get('/records', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('dataentry_entries')
-    .select('id, type, title, data, created_at')
-    .eq('status', 'approved')
-    .order('created_at', { ascending: false })
-    .limit(200);
+  if (!supabase) {
+    res.send({ status: true, records: portalStore.dataentry.records() });
+    return;
+  }
 
-  if (error) { sendSupabaseError(res, error); return; }
+  const [entriesResp, notificationsResp] = await Promise.all([
+    supabase
+      .from('dataentry_entries')
+      .select('id, type, title, data, status, submitted_by, reviewed_by, created_at, updated_at')
+      .order('created_at', { ascending: false })
+      .limit(200),
+    supabase
+      .from('system_logs')
+      .select('id, action, details, created_at')
+      .eq('actor_id', req.user?.id)
+      .order('created_at', { ascending: false })
+      .limit(30)
+  ]);
 
-  res.send({ status: true, records: data || [] });
+  if (entriesResp.error) { sendSupabaseError(res, entriesResp.error); return; }
+  if (notificationsResp.error) { sendSupabaseError(res, notificationsResp.error); return; }
+
+  const notifications = (notificationsResp.data || []).map((log) => ({
+    id: log.id,
+    title: log.action || 'record_update',
+    message: log.details || log.action || 'Record updated',
+    status: 'unread',
+    createdAt: log.created_at
+  }));
+
+  res.send({
+    status: true,
+    records: buildDataEntryRecordsResponse({
+      entries: entriesResp.data || [],
+      notifications
+    })
+  });
 }));
 
 // =============================================
@@ -296,34 +420,130 @@ router.patch('/notifications/:id/read', asyncHandler(async (req, res) => {
 // Profile
 // =============================================
 router.get('/profile', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('users')
-    .select('id, name, email, mobile, role, status, created_at')
-    .eq('id', req.user?.id)
-    .maybeSingle();
+  const [userResp, employeeResp, profileResp] = await Promise.all([
+    supabase
+      .from('users')
+      .select('id, name, email, mobile, role, status, created_at')
+      .eq('id', req.user?.id)
+      .maybeSingle(),
+    supabase
+      .from('employee_profiles')
+      .select('employee_code, office_location, designation, notes')
+      .eq('user_id', req.user?.id)
+      .maybeSingle(),
+    supabase
+      .from('dataentry_profiles')
+      .select('queue_name, reviewer_level, target_volume, quality_score, notes, meta')
+      .eq('user_id', req.user?.id)
+      .maybeSingle()
+  ]);
 
-  if (error) { sendSupabaseError(res, error); return; }
-  if (!data) return res.status(404).send({ status: false, message: 'Profile not found' });
+  if (userResp.error) { sendSupabaseError(res, userResp.error); return; }
+  if (employeeResp.error) { sendSupabaseError(res, employeeResp.error); return; }
+  if (profileResp.error) { sendSupabaseError(res, profileResp.error); return; }
+  if (!userResp.data) return res.status(404).send({ status: false, message: 'Profile not found' });
 
-  res.send({ status: true, profile: data });
+  res.send({
+    status: true,
+    profile: buildDataEntryProfileResponse({
+      user: userResp.data,
+      employeeProfile: employeeResp.data || {},
+      dataEntryProfile: profileResp.data || {}
+    })
+  });
 }));
 
 router.patch('/profile', asyncHandler(async (req, res) => {
-  const { name, mobile } = req.body || {};
+  const {
+    name,
+    mobile,
+    employeeId,
+    shift,
+    location,
+    headline,
+    dailyTarget,
+    queueName,
+    reviewerLevel,
+    qualityScore,
+    notes
+  } = req.body || {};
   const updates = { updated_at: new Date().toISOString() };
   if (name) updates.name = String(name).trim();
   if (mobile) updates.mobile = String(mobile).trim();
 
-  const { data, error } = await supabase
+  const { data: user, error } = await supabase
     .from('users')
     .update(updates)
     .eq('id', req.user?.id)
-    .select('id, name, email, mobile, role, status')
+    .select('id, name, email, mobile, role, status, created_at')
     .maybeSingle();
 
   if (error) { sendSupabaseError(res, error); return; }
+  if (!user) return res.status(404).send({ status: false, message: 'Profile not found' });
 
-  res.send({ status: true, profile: data });
+  const [existingEmployeeResp, existingProfileResp] = await Promise.all([
+    supabase
+      .from('employee_profiles')
+      .select('employee_code, office_location, designation, notes')
+      .eq('user_id', req.user?.id)
+      .maybeSingle(),
+    supabase
+      .from('dataentry_profiles')
+      .select('queue_name, reviewer_level, target_volume, quality_score, notes, meta')
+      .eq('user_id', req.user?.id)
+      .maybeSingle()
+  ]);
+
+  if (existingEmployeeResp.error) { sendSupabaseError(res, existingEmployeeResp.error); return; }
+  if (existingProfileResp.error) { sendSupabaseError(res, existingProfileResp.error); return; }
+
+  const existingMeta = existingProfileResp.data?.meta && typeof existingProfileResp.data.meta === 'object'
+    ? existingProfileResp.data.meta
+    : {};
+
+  await upsertRoleProfile({
+    supabase,
+    role: ROLES.DATAENTRY,
+    userId: req.user?.id,
+    reqBody: {
+      employeeCode: employeeId ?? existingEmployeeResp.data?.employee_code ?? '',
+      officeLocation: location ?? existingEmployeeResp.data?.office_location ?? '',
+      designation: headline ?? existingEmployeeResp.data?.designation ?? '',
+      queueName: queueName ?? existingProfileResp.data?.queue_name ?? '',
+      reviewerLevel: reviewerLevel ?? existingProfileResp.data?.reviewer_level ?? '',
+      targetVolume: dailyTarget ?? existingProfileResp.data?.target_volume ?? '',
+      qualityScore: qualityScore ?? existingProfileResp.data?.quality_score ?? '',
+      notes: notes ?? existingProfileResp.data?.notes ?? existingEmployeeResp.data?.notes ?? '',
+      meta: {
+        ...existingMeta,
+        shift: shift ?? existingMeta.shift ?? 'Morning',
+        headline: headline ?? existingMeta.headline ?? existingEmployeeResp.data?.designation ?? ''
+      }
+    }
+  });
+
+  const refreshedEmployeeResp = await supabase
+    .from('employee_profiles')
+    .select('employee_code, office_location, designation, notes')
+    .eq('user_id', req.user?.id)
+    .maybeSingle();
+  if (refreshedEmployeeResp.error) { sendSupabaseError(res, refreshedEmployeeResp.error); return; }
+
+  const refreshedProfileResp = await supabase
+    .from('dataentry_profiles')
+    .select('queue_name, reviewer_level, target_volume, quality_score, notes, meta')
+    .eq('user_id', req.user?.id)
+    .maybeSingle();
+  if (refreshedProfileResp.error) { sendSupabaseError(res, refreshedProfileResp.error); return; }
+
+  res.send({
+    status: true,
+    profile: buildDataEntryProfileResponse({
+      user,
+      employeeProfile: refreshedEmployeeResp.data || {},
+      dataEntryProfile: refreshedProfileResp.data || {}
+    })
+  });
 }));
 
 module.exports = router;

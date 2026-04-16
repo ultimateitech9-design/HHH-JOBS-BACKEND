@@ -1,12 +1,21 @@
 const crypto = require('crypto');
+const { buildRoleProfilePayload, getProfileRoleKey } = require('../services/profileTables');
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const nowIso = () => new Date().toISOString();
 
 const state = {
   users: [],
-  hrProfiles: [],
-  studentProfiles: []
+  profilesByRole: {
+    hr: [],
+    student: [],
+    admin: [],
+    super_admin: [],
+    support: [],
+    sales: [],
+    accounts: [],
+    dataentry: []
+  }
 };
 
 const findUserIndexByEmail = (email) => state.users.findIndex((user) => user.email === email);
@@ -47,43 +56,31 @@ const findUserById = (id) => {
   return index === -1 ? null : clone(state.users[index]);
 };
 
+const getRoleBucket = (role) => {
+  const profileRole = getProfileRoleKey(role);
+  if (!state.profilesByRole[profileRole]) {
+    state.profilesByRole[profileRole] = [];
+  }
+  return state.profilesByRole[profileRole];
+};
+
 const createRoleProfile = (role, userId, payload = {}) => {
-  if (role === 'hr') {
-    const profile = {
-      id: crypto.randomUUID(),
-      user_id: userId,
-      company_name: payload.company_name || null,
-      location: payload.location || null,
-      about: payload.about || null,
-      created_at: nowIso(),
-      updated_at: nowIso()
-    };
-    state.hrProfiles.push(profile);
-    return clone(profile);
-  }
-
-  if (role === 'student') {
-    const profile = {
-      id: crypto.randomUUID(),
-      user_id: userId,
-      created_at: nowIso(),
-      updated_at: nowIso()
-    };
-    state.studentProfiles.push(profile);
-    return clone(profile);
-  }
-
-  return null;
+  const profileRole = getProfileRoleKey(role);
+  const bucket = getRoleBucket(profileRole);
+  const profile = {
+    id: crypto.randomUUID(),
+    ...buildRoleProfilePayload({ role: profileRole, userId, reqBody: payload }),
+    created_at: nowIso(),
+    updated_at: nowIso()
+  };
+  bucket.push(profile);
+  return clone(profile);
 };
 
 const getProfileByRole = (role, userId) => {
-  if (role === 'hr') {
-    return clone(state.hrProfiles.find((profile) => profile.user_id === userId) || null);
-  }
-  if (role === 'student') {
-    return clone(state.studentProfiles.find((profile) => profile.user_id === userId) || null);
-  }
-  return null;
+  const profileRole = getProfileRoleKey(role);
+  const bucket = getRoleBucket(profileRole);
+  return clone(bucket.find((profile) => profile.user_id === userId) || null);
 };
 
 module.exports = {

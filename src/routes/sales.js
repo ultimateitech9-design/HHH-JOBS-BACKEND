@@ -4,29 +4,128 @@ const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
+const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
 
 router.use(requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SALES));
 
+const formatSalesOverview = ({
+  totalLeads = 0,
+  newLeads = 0,
+  convertedLeads = 0,
+  totalOrders = 0,
+  totalCustomers = 0,
+  activeCustomers = 0,
+  monthRevenue = 0,
+  totalRevenue = 0,
+  salesAgents = 0,
+  refunds = 0,
+  monthlySales = [],
+  revenueTrend = []
+}) => ({
+  totalLeads,
+  newLeads,
+  convertedLeads,
+  totalOrders,
+  totalCustomers,
+  activeCustomers,
+  monthRevenue,
+  totalRevenue,
+  salesAgents,
+  refunds,
+  stats: {
+    totalRevenue,
+    monthlyRevenue: monthRevenue,
+    totalOrders,
+    openLeads: newLeads,
+    convertedLeads,
+    activeCustomers,
+    totalLeads,
+    totalCustomers,
+    salesAgents,
+    refunds
+  },
+  monthlySales,
+  revenueTrend
+});
+
+const buildMonthlySeries = (rows = []) => {
+  const bucket = new Map();
+
+  rows.forEach((row) => {
+    const createdAt = row?.created_at ? new Date(row.created_at) : null;
+    if (!createdAt || Number.isNaN(createdAt.getTime())) return;
+
+    const key = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, '0')}`;
+    const current = bucket.get(key) || {
+      monthDate: new Date(createdAt.getFullYear(), createdAt.getMonth(), 1),
+      revenue: 0,
+      orders: 0
+    };
+
+    current.revenue += Number(row?.amount || 0);
+    current.orders += 1;
+    bucket.set(key, current);
+  });
+
+  return Array.from(bucket.values())
+    .sort((a, b) => a.monthDate - b.monthDate)
+    .slice(-6)
+    .map((item) => ({
+      month: item.monthDate.toLocaleString('en-US', { month: 'short' }),
+      value: item.revenue,
+      revenue: item.revenue,
+      orders: item.orders
+    }));
+};
+
 // =============================================
 // Overview
 // =============================================
 router.get('/overview', asyncHandler(async (req, res) => {
+  if (!supabase) {
+    const fallbackOverview = portalStore.sales.overview();
+    const stats = fallbackOverview?.stats || {};
+
+    res.send({
+      status: true,
+      overview: formatSalesOverview({
+        totalLeads: stats.leads || 0,
+        newLeads: stats.leads || 0,
+        convertedLeads: stats.conversions || 0,
+        totalOrders: stats.orders || 0,
+        totalCustomers: portalStore.sales.customers().length,
+        activeCustomers: portalStore.sales.customers().filter((item) => String(item.status || '').toLowerCase() === 'active').length,
+        monthRevenue: stats.revenue || 0,
+        totalRevenue: stats.revenue || 0,
+        salesAgents: portalStore.sales.agents().length,
+        refunds: portalStore.sales.refunds().length,
+        monthlySales: fallbackOverview?.salesTrend || [],
+        revenueTrend: fallbackOverview?.revenueTrend || []
+      })
+    });
+    return;
+  }
+
   const [
     totalLeads,
     newLeads,
     convertedLeads,
     totalOrders,
     totalCustomers,
-    activeCustomers
+    activeCustomers,
+    salesAgents,
+    refunds
   ] = await Promise.all([
     countRows('sales_leads'),
     countRows('sales_leads', (q) => q.eq('status', 'new')),
     countRows('sales_leads', (q) => q.eq('status', 'converted')),
     countRows('sales_orders'),
     countRows('sales_customers'),
-    countRows('sales_customers', (q) => q.eq('status', 'active'))
+    countRows('sales_customers', (q) => q.eq('status', 'active')),
+    countRows('users', (q) => q.eq('role', ROLES.SALES)),
+    countRows('sales_refunds')
   ]);
 
   const { data: revenueRows } = await supabase
@@ -40,10 +139,12 @@ router.get('/overview', asyncHandler(async (req, res) => {
     .filter((r) => r.created_at >= monthStart)
     .reduce((sum, r) => sum + Number(r.amount || 0), 0);
   const totalRevenue = (revenueRows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
+  const monthlySales = buildMonthlySeries(revenueRows || []);
+  const revenueTrend = monthlySales.map((item) => ({ month: item.month, value: item.revenue }));
 
   res.send({
     status: true,
-    overview: {
+    overview: formatSalesOverview({
       totalLeads,
       newLeads,
       convertedLeads,
@@ -51,8 +152,12 @@ router.get('/overview', asyncHandler(async (req, res) => {
       totalCustomers,
       activeCustomers,
       monthRevenue,
-      totalRevenue
-    }
+      totalRevenue,
+      salesAgents,
+      refunds,
+      monthlySales,
+      revenueTrend
+    })
   });
 }));
 

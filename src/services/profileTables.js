@@ -24,6 +24,20 @@ const EMPLOYEE_PROFILE_ROLES = new Set([
   ROLES.AUDIT
 ]);
 
+const ROLE_SYNC_CONFIGS = [
+  { role: ROLES.STUDENT, table: 'student_profiles', requiresEmployeeProfile: false },
+  { role: ROLES.RETIRED_EMPLOYEE, table: 'student_profiles', requiresEmployeeProfile: false },
+  { role: ROLES.HR, table: 'hr_profiles', requiresEmployeeProfile: true },
+  { role: ROLES.ADMIN, table: 'admin_profiles', requiresEmployeeProfile: true },
+  { role: ROLES.SUPER_ADMIN, table: 'super_admin_profiles', requiresEmployeeProfile: true },
+  { role: ROLES.SUPPORT, table: 'support_profiles', requiresEmployeeProfile: true },
+  { role: ROLES.SALES, table: 'sales_profiles', requiresEmployeeProfile: true },
+  { role: ROLES.ACCOUNTS, table: 'accounts_profiles', requiresEmployeeProfile: true },
+  { role: ROLES.DATAENTRY, table: 'dataentry_profiles', requiresEmployeeProfile: true },
+  { role: ROLES.PLATFORM, table: null, requiresEmployeeProfile: true },
+  { role: ROLES.AUDIT, table: null, requiresEmployeeProfile: true }
+];
+
 const normalizeRole = (role) => String(role || '').trim().toLowerCase();
 
 const toOptionalText = (value) => {
@@ -55,6 +69,44 @@ const isEmployeeProfileRole = (role) => EMPLOYEE_PROFILE_ROLES.has(normalizeRole
 const buildProfileSeedFromUser = (user = {}) => ({
   workEmail: toOptionalText(user?.work_email ?? user?.workEmail ?? user?.email),
   dateOfBirth: toOptionalText(user?.date_of_birth ?? user?.dateOfBirth)
+});
+
+const chunk = (items = [], size = 500) => {
+  const list = Array.isArray(items) ? items : [];
+  const result = [];
+
+  for (let index = 0; index < list.length; index += size) {
+    result.push(list.slice(index, index + size));
+  }
+
+  return result;
+};
+
+const countRowsForUserIds = async ({ supabase, table, userIds = [] }) => {
+  if (!supabase || !table || !Array.isArray(userIds) || userIds.length === 0) return 0;
+
+  let total = 0;
+  for (const userIdChunk of chunk(userIds, 250)) {
+    const { count, error } = await supabase
+      .from(table)
+      .select('user_id', { count: 'exact', head: true })
+      .in('user_id', userIdChunk);
+
+    if (error) throw error;
+    total += count || 0;
+  }
+
+  return total;
+};
+
+const mapRoleSyncSummaryRow = (row = {}) => ({
+  role: normalizeRole(row.role),
+  usersCount: Number(row.users_count ?? row.usersCount ?? 0),
+  roleProfileTable: row.role_profile_table ?? row.roleProfileTable ?? getProfileTableForRole(row.role),
+  roleProfileRows: Number(row.role_profile_rows ?? row.roleProfileRows ?? 0),
+  employeeProfileRows: Number(row.employee_profile_rows ?? row.employeeProfileRows ?? 0),
+  missingRoleProfiles: Number(row.missing_role_profiles ?? row.missingRoleProfiles ?? 0),
+  missingEmployeeProfiles: Number(row.missing_employee_profiles ?? row.missingEmployeeProfiles ?? 0)
 });
 
 const buildEmployeeProfilePayload = ({ role, userId, reqBody = {} }) => {
@@ -269,13 +321,138 @@ const upsertRoleProfile = async ({ supabase, role, userId, reqBody = {} }) => {
   return table;
 };
 
+const getRoleSyncSummary = async ({ supabase }) => {
+  if (!supabase) return [];
+
+  const { data: summaryRows, error: summaryError } = await supabase
+    .from('role_profile_sync_summary')
+    .select('*')
+    .order('role');
+
+  if (!summaryError && Array.isArray(summaryRows)) {
+    return summaryRows.map(mapRoleSyncSummaryRow);
+  }
+
+  const { data: users, error } = await supabase
+    .from('users')
+    .select('id, role');
+
+  if (error) throw error;
+
+  const usersByRole = (users || []).reduce((acc, user) => {
+    const normalizedRole = normalizeRole(user?.role);
+    if (!normalizedRole) return acc;
+
+    if (!acc[normalizedRole]) {
+      acc[normalizedRole] = [];
+    }
+
+    acc[normalizedRole].push(user.id);
+    return acc;
+  }, {});
+
+  const summaries = [];
+  for (const config of ROLE_SYNC_CONFIGS) {
+    const userIds = usersByRole[config.role] || [];
+    const usersCount = userIds.length;
+    const roleProfileRows = config.table
+      ? await countRowsForUserIds({ supabase, table: config.table, userIds })
+      : 0;
+    const employeeProfileRows = config.requiresEmployeeProfile
+      ? await countRowsForUserIds({ supabase, table: 'employee_profiles', userIds })
+      : 0;
+
+    summaries.push({
+      role: config.role,
+      usersCount,
+      roleProfileTable: config.table,
+      roleProfileRows,
+      employeeProfileRows,
+      missingRoleProfiles: Math.max(usersCount - roleProfileRows, 0),
+      missingEmployeeProfiles: config.requiresEmployeeProfile
+        ? Math.max(usersCount - employeeProfileRows, 0)
+        : 0
+    });
+  }
+
+  return summaries;
+};
+
+const repairRoleProfiles = async ({ supabase, roles = [] }) => {
+  if (!supabase) {
+    return {
+      processedUsers: 0,
+      failedUsers: []
+    };
+  }
+
+  const allowedRoles = new Set(
+    (Array.isArray(roles) ? roles : [])
+      .map((role) => normalizeRole(role))
+      .filter(Boolean)
+  );
+  const roleFilterEnabled = allowedRoles.size > 0;
+  const failedUsers = [];
+  let processedUsers = 0;
+  let from = 0;
+  const batchSize = 200;
+
+  while (true) {
+    let query = supabase
+      .from('users')
+      .select('id, role, email')
+      .order('created_at', { ascending: true })
+      .range(from, from + batchSize - 1);
+
+    if (roleFilterEnabled) {
+      query = query.in('role', [...allowedRoles]);
+    }
+
+    const { data: users, error } = await query;
+    if (error) throw error;
+
+    const batch = Array.isArray(users) ? users : [];
+    if (batch.length === 0) break;
+
+    for (const user of batch) {
+      try {
+        await ensureRoleProfile({
+          supabase,
+          role: user.role,
+          userId: user.id,
+          reqBody: buildProfileSeedFromUser(user)
+        });
+        processedUsers += 1;
+      } catch (repairError) {
+        failedUsers.push({
+          userId: user.id,
+          role: user.role,
+          email: user.email,
+          message: repairError.message || 'profile_repair_failed'
+        });
+      }
+    }
+
+    if (batch.length < batchSize) break;
+    from += batchSize;
+  }
+
+  return {
+    processedUsers,
+    failedUsers
+  };
+};
+
 module.exports = {
+  ROLE_SYNC_CONFIGS,
   isEmployeeProfileRole,
   getProfileRoleKey,
   getProfileTableForRole,
   buildProfileSeedFromUser,
   buildRoleProfilePayload,
   buildEmployeeProfilePayload,
+  getRoleSyncSummary,
+  repairRoleProfiles,
   ensureRoleProfile,
   upsertRoleProfile
 };

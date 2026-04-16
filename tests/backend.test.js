@@ -56,6 +56,78 @@ const createProfileTablesSupabaseDouble = ({
   };
 };
 
+const createRoleSyncSummarySupabaseDouble = ({
+  users = [],
+  profileUserIdsByTable = {}
+} = {}) => ({
+  from(table) {
+    if (table === 'role_profile_sync_summary') {
+      const summaryRows = [
+        { role: ROLES.STUDENT, role_profile_table: 'student_profiles', requires_employee_profile: false },
+        { role: ROLES.RETIRED_EMPLOYEE, role_profile_table: 'student_profiles', requires_employee_profile: false },
+        { role: ROLES.HR, role_profile_table: 'hr_profiles', requires_employee_profile: true },
+        { role: ROLES.ADMIN, role_profile_table: 'admin_profiles', requires_employee_profile: true },
+        { role: ROLES.SUPER_ADMIN, role_profile_table: 'super_admin_profiles', requires_employee_profile: true },
+        { role: ROLES.SUPPORT, role_profile_table: 'support_profiles', requires_employee_profile: true },
+        { role: ROLES.SALES, role_profile_table: 'sales_profiles', requires_employee_profile: true },
+        { role: ROLES.ACCOUNTS, role_profile_table: 'accounts_profiles', requires_employee_profile: true },
+        { role: ROLES.DATAENTRY, role_profile_table: 'dataentry_profiles', requires_employee_profile: true },
+        { role: ROLES.PLATFORM, role_profile_table: null, requires_employee_profile: true },
+        { role: ROLES.AUDIT, role_profile_table: null, requires_employee_profile: true }
+      ].map((config) => {
+        const userIds = users.filter((user) => user.role === config.role).map((user) => user.id);
+        const roleProfileRows = config.role_profile_table
+          ? (profileUserIdsByTable[config.role_profile_table] || []).filter((userId) => userIds.includes(userId)).length
+          : 0;
+        const employeeProfileRows = config.requires_employee_profile
+          ? (profileUserIdsByTable.employee_profiles || []).filter((userId) => userIds.includes(userId)).length
+          : 0;
+
+        return {
+          role: config.role,
+          users_count: userIds.length,
+          role_profile_table: config.role_profile_table,
+          role_profile_rows: roleProfileRows,
+          employee_profile_rows: employeeProfileRows,
+          missing_role_profiles: Math.max(userIds.length - roleProfileRows, 0),
+          missing_employee_profiles: config.requires_employee_profile
+            ? Math.max(userIds.length - employeeProfileRows, 0)
+            : 0
+        };
+      });
+
+      return {
+        select() {
+          return {
+            order() {
+              return Promise.resolve({ data: summaryRows, error: null });
+            }
+          };
+        }
+      };
+    }
+
+    if (table === 'users') {
+      return {
+        select() {
+          return Promise.resolve({ data: users, error: null });
+        }
+      };
+    }
+
+    return {
+      select() {
+        return {
+          in(_field, userIds) {
+            const matchingRows = (profileUserIdsByTable[table] || []).filter((userId) => userIds.includes(userId));
+            return Promise.resolve({ count: matchingRows.length, error: null });
+          }
+        };
+      }
+    };
+  }
+});
+
 const installRouteAuthStubs = (role) => {
   const user = {
     id: `${role}-user`,
@@ -274,6 +346,112 @@ test('ensureRoleProfile preserves existing employee and role profiles during log
   });
 
   assert.deepEqual(calls.inserts, []);
+});
+
+test('getRoleSyncSummary reports role-wise table coverage for database visibility', async () => {
+  const { getRoleSyncSummary } = require('../src/services/profileTables');
+  const supabase = createRoleSyncSummarySupabaseDouble({
+    users: [
+      { id: 'admin-1', role: ROLES.ADMIN },
+      { id: 'admin-2', role: ROLES.ADMIN },
+      { id: 'super-1', role: ROLES.SUPER_ADMIN },
+      { id: 'student-1', role: ROLES.STUDENT }
+    ],
+    profileUserIdsByTable: {
+      admin_profiles: ['admin-1'],
+      super_admin_profiles: ['super-1'],
+      student_profiles: ['student-1'],
+      employee_profiles: ['admin-1', 'super-1']
+    }
+  });
+
+  const summary = await getRoleSyncSummary({ supabase });
+  const adminSummary = summary.find((item) => item.role === ROLES.ADMIN);
+  const superAdminSummary = summary.find((item) => item.role === ROLES.SUPER_ADMIN);
+  const studentSummary = summary.find((item) => item.role === ROLES.STUDENT);
+
+  assert.deepEqual(adminSummary, {
+    role: ROLES.ADMIN,
+    usersCount: 2,
+    roleProfileTable: 'admin_profiles',
+    roleProfileRows: 1,
+    employeeProfileRows: 1,
+    missingRoleProfiles: 1,
+    missingEmployeeProfiles: 1
+  });
+  assert.equal(superAdminSummary.roleProfileRows, 1);
+  assert.equal(superAdminSummary.missingRoleProfiles, 0);
+  assert.equal(studentSummary.usersCount, 1);
+  assert.equal(studentSummary.roleProfileRows, 1);
+  assert.equal(studentSummary.missingEmployeeProfiles, 0);
+});
+
+test('repairRoleProfiles repairs users without requesting non-existent date_of_birth columns', async () => {
+  const { repairRoleProfiles } = require('../src/services/profileTables');
+  const selectCalls = [];
+  const inserts = [];
+  let userBatchCalls = 0;
+
+  const supabase = {
+    from(table) {
+      if (table === 'users') {
+        return {
+          select(selection) {
+            selectCalls.push(selection);
+
+            return {
+              order() {
+                return {
+                  async range() {
+                    userBatchCalls += 1;
+                    return {
+                      data: userBatchCalls === 1
+                        ? [{ id: 'student-user-1', role: ROLES.STUDENT, email: 'student@example.com' }]
+                        : [],
+                      error: null
+                    };
+                  }
+                };
+              }
+            };
+          }
+        };
+      }
+
+      return {
+        select() {
+          return {
+            eq() {
+              return {
+                maybeSingle: async () => ({ data: null, error: null })
+              };
+            }
+          };
+        },
+        insert(payload) {
+          inserts.push({ table, payload });
+          return Promise.resolve({ error: null });
+        }
+      };
+    }
+  };
+
+  const result = await repairRoleProfiles({
+    supabase
+  });
+
+  assert.deepEqual(selectCalls, ['id, role, email']);
+  assert.equal(result.processedUsers, 1);
+  assert.deepEqual(result.failedUsers, []);
+  assert.deepEqual(inserts, [
+    {
+      table: 'student_profiles',
+      payload: {
+        user_id: 'student-user-1',
+        date_of_birth: null
+      }
+    }
+  ]);
 });
 
 test('requireActiveUser blocks unverified email sessions', () => {

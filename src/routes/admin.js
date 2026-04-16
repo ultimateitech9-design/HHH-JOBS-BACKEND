@@ -19,6 +19,7 @@ const { notifyMatchingJobAlerts, createNotification } = require('../services/not
 const { logAudit, getClientIp } = require('../services/audit');
 const { sendWelcomeEmail } = require('../services/email');
 const { isStudentPortalRole } = require('../services/accountRoles');
+const { upsertRoleProfile } = require('../services/profileTables');
 
 const router = express.Router();
 
@@ -1136,14 +1137,15 @@ router.post('/bulk-register', asyncHandler(async (req, res) => {
       continue;
     }
 
-    // ── Create student profile ────────────────────────────────
-    if (isStudentPortalRole(newUser.role)) {
-      await supabase
-        .from('student_profiles')
-        .insert({ user_id: newUser.id, date_of_birth: null })
-        .select('id')
-        .maybeSingle();
-      // profile insert failure is non-fatal — user still created
+    try {
+      await upsertRoleProfile({
+        supabase,
+        role: newUser.role,
+        userId: newUser.id,
+        reqBody: {}
+      });
+    } catch (_) {
+      // profile repair is non-fatal for bulk import; super-admin repair can heal later
     }
 
     // ── Send welcome email ────────────────────────────────────

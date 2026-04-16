@@ -4,6 +4,8 @@ const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
+const { getRoleSyncSummary, repairRoleProfiles, upsertRoleProfile } = require('../services/profileTables');
+const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
 
@@ -13,6 +15,14 @@ router.use(requireAuth, requireActiveUser, requireRole(ROLES.SUPER_ADMIN));
 // Dashboard
 // =============================================
 router.get('/dashboard', asyncHandler(async (req, res) => {
+  if (!supabase) {
+    res.send({
+      status: true,
+      dashboard: portalStore.superAdmin.dashboard()
+    });
+    return;
+  }
+
   const [
     totalUsers,
     totalHr,
@@ -21,7 +31,8 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
     totalApplications,
     openTickets,
     totalRevenue,
-    activeSubscriptions
+    activeSubscriptions,
+    roleSyncSummary
   ] = await Promise.all([
     countRows('users'),
     countRows('users', (q) => q.eq('role', ROLES.HR)),
@@ -30,7 +41,8 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
     countRows('applications'),
     countRows('support_tickets', (q) => q.in('status', ['open', 'pending'])),
     supabase.from('accounts_transactions').select('amount').eq('type', 'credit').eq('status', 'completed'),
-    countRows('accounts_subscriptions', (q) => q.eq('status', 'active'))
+    countRows('accounts_subscriptions', (q) => q.eq('status', 'active')),
+    getRoleSyncSummary({ supabase })
   ]);
 
   const monthlyRevenue = totalRevenue.data
@@ -84,11 +96,34 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
         criticalLogs: (recentLogs || []).filter((l) => l.level === 'critical').length,
         duplicateAccounts: 0
       },
+      roleSync: roleSyncSummary,
       users: recentUsers || [],
       jobs: recentJobs || [],
       supportTickets: recentTickets || [],
       systemLogs: recentLogs || []
     }
+  });
+}));
+
+router.get('/role-sync-summary', asyncHandler(async (_req, res) => {
+  const summary = await getRoleSyncSummary({ supabase });
+  res.send({ status: true, summary });
+}));
+
+router.post('/role-sync-repair', asyncHandler(async (req, res) => {
+  const role = String(req.body?.role || '').trim().toLowerCase();
+  const result = await repairRoleProfiles({
+    supabase,
+    roles: role ? [role] : []
+  });
+  const summary = await getRoleSyncSummary({ supabase });
+
+  res.send({
+    status: true,
+    repairedRole: role || 'all',
+    processedUsers: result.processedUsers,
+    failedUsers: result.failedUsers,
+    summary
   });
 }));
 
@@ -154,6 +189,18 @@ router.post('/users', asyncHandler(async (req, res) => {
     .single();
 
   if (dbError) { sendSupabaseError(res, dbError); return; }
+
+  try {
+    await upsertRoleProfile({
+      supabase,
+      role,
+      userId: user.id,
+      reqBody: req.body || {}
+    });
+  } catch (profileError) {
+    sendSupabaseError(res, profileError);
+    return;
+  }
 
   await supabase.from('system_logs').insert({
     action: 'user_created',
