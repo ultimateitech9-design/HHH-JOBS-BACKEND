@@ -105,6 +105,26 @@ const buildPayloadMessages = ({ systemPrompt, userPrompt, messages, providerName
   ];
 };
 
+const buildProviderPayload = ({ provider, payloadMessages, temperature, maxTokens }) => {
+  const basePayload = {
+    model: provider.model,
+    messages: payloadMessages,
+    temperature
+  };
+
+  if (provider.name === 'openai') {
+    return {
+      ...basePayload,
+      max_completion_tokens: maxTokens
+    };
+  }
+
+  return {
+    ...basePayload,
+    max_tokens: maxTokens
+  };
+};
+
 const askAi = async ({
   systemPrompt,
   userPrompt,
@@ -119,6 +139,12 @@ const askAi = async ({
     messages,
     providerName: provider.name
   });
+  const requestBody = buildProviderPayload({
+    provider,
+    payloadMessages,
+    temperature,
+    maxTokens
+  });
 
   const response = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -126,12 +152,7 @@ const askAi = async ({
       'Content-Type': 'application/json',
       Authorization: `Bearer ${provider.apiKey}`
     },
-    body: JSON.stringify({
-      model: provider.model,
-      messages: payloadMessages,
-      temperature,
-      max_tokens: maxTokens
-    })
+    body: JSON.stringify(requestBody)
   });
 
   let payload = {};
@@ -199,5 +220,6 @@ const logAiInteraction = async ({
 
 module.exports = {
   askAi,
-  logAiInteraction
+  logAiInteraction,
+  buildProviderPayload
 };
