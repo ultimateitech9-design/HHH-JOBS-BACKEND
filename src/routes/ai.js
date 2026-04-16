@@ -3,6 +3,7 @@ const { ROLES } = require('../constants');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { askAi, logAiInteraction } = require('../services/ai');
+const { buildChatbotKnowledgeContext } = require('../services/chatbotKnowledge');
 const { asyncHandler, isValidUuid } = require('../utils/helpers');
 
 const router = express.Router();
@@ -87,9 +88,16 @@ router.post('/chatbot', optionalAuth, asyncHandler(async (req, res) => {
     .slice(-8);
 
   const signedInRole = req.user?.role || roleContext || 'guest';
+  const knowledgeContext = await buildChatbotKnowledgeContext({
+    role: signedInRole,
+    pageContext,
+    message
+  });
+
   const systemPrompt = [
     'You are HHH Jobs Copilot, the in-product assistant for candidates, retired professionals, recruiters, HR teams, admins, and internal employees.',
     'Be accurate about what the product can do. Never invent hidden dashboard data, account status, jobs, analytics, or backend records.',
+    'Use the supplied HHH Jobs project knowledge whenever it helps answer the user correctly.',
     'When information is missing, say what is missing and ask for only one targeted clarifying detail.',
     'Give concise, practical, step-by-step guidance that matches the current page and user role.',
     'If the user writes in Hinglish or Hindi, reply naturally in concise Hinglish. Otherwise, reply in clear English.',
@@ -109,7 +117,8 @@ router.post('/chatbot', optionalAuth, asyncHandler(async (req, res) => {
     `Be concise: ${responsePolicy?.concise ? 'yes' : 'no'}`,
     `Call out uncertainty when needed: ${responsePolicy?.citeUncertainty ? 'yes' : 'no'}`,
     'If the user asks about unavailable backend data, clearly say what is missing and ask for specific details.',
-    'Anchor suggestions to real HHH Jobs workflows such as login, signup, profile updates, ATS checks, job posting, applications, interviews, candidate screening, and portal navigation.'
+    'Anchor suggestions to real HHH Jobs workflows such as login, signup, profile updates, ATS checks, job posting, applications, interviews, candidate screening, and portal navigation.',
+    knowledgeContext || 'Relevant HHH Jobs knowledge: No extra matched knowledge found beyond the current role and page context.'
   ].join('\n');
 
   const promptMessages = [
