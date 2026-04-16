@@ -6,6 +6,7 @@ const { supabase, sendSupabaseError } = require('../supabase');
 const { runAtsAnalysis } = require('../utils/ats');
 const { extractResumeText } = require('../utils/resumeExtraction');
 const { clamp, isValidUuid, asyncHandler } = require('../utils/helpers');
+const { enhanceAtsAnalysisWithAi } = require('../services/atsAi');
 
 const router = express.Router();
 
@@ -19,7 +20,12 @@ const serializeAtsResult = (analysis = {}) => ({
   warnings: analysis.warnings || [],
   suggestions: analysis.suggestions || [],
   targetRole: analysis.targetRole || '',
-  benchmarkKeywords: analysis.benchmarkKeywords || []
+  benchmarkKeywords: analysis.benchmarkKeywords || [],
+  aiPowered: Boolean(analysis.aiPowered),
+  aiSummary: analysis.aiSummary || '',
+  aiStrengths: analysis.aiStrengths || [],
+  aiPriorityEdits: analysis.aiPriorityEdits || [],
+  aiSuggestedSummary: analysis.aiSuggestedSummary || ''
 });
 
 const buildPreviewJob = ({ jobTitle = '', targetText = '' }) => {
@@ -70,12 +76,21 @@ const resolveResumeInput = async ({ req, source }) => {
 
 const createAtsResult = async ({ jobRow, resumeText = '', resumeUrl = '' }) => {
   const extraction = await extractResumeText({ resumeText, resumeUrl });
-  const analysis = runAtsAnalysis({ jobRow, resumeText: extraction.text || '' });
+  const heuristicAnalysis = runAtsAnalysis({ jobRow, resumeText: extraction.text || '' });
 
-  let score = analysis.score;
+  let score = heuristicAnalysis.score;
   if (!String(extraction.text || '').trim()) {
     score = clamp(score - 20, 0, 100);
   }
+
+  const analysis = await enhanceAtsAnalysisWithAi({
+    jobRow,
+    resumeText: extraction.text || '',
+    baseAnalysis: {
+      ...heuristicAnalysis,
+      score
+    }
+  });
 
   return {
     ...analysis,
