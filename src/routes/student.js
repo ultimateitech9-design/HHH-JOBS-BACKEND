@@ -9,6 +9,18 @@ const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
 const { extractResumeText } = require('../utils/resumeExtraction');
 const { extractStudentProfileFromResume } = require('../utils/studentResumeProfileImport');
 const { syncHhhCandidateToEimager } = require('../services/eimagerSync');
+const { createNotification } = require('../services/notifications');
+const {
+  getPersonalizedRecommendations,
+  trackStudentJobView,
+  sendDailyRecommendationDigest
+} = require('../services/recommendations');
+const {
+  getStudentAutoApplyState,
+  updateAutoApplyPreferences,
+  processAutoApplyForStudentJobs,
+  sendStudentAutoApplyDigest
+} = require('../services/autoApply');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -256,6 +268,57 @@ const scoreRecommendedJob = ({ job, skillsSet, profileLocation }) => {
   return score;
 };
 
+const buildLegacyRecommendationMatches = ({ openJobs = [], appliedJobSet = new Set(), skillsSet = new Set(), profileLocation = '', limit = 6 }) =>
+  openJobs
+    .filter((job) => !appliedJobSet.has(job.id))
+    .map((job) => {
+      const score = scoreRecommendedJob({ job, skillsSet, profileLocation });
+      const matchedSkills = (Array.isArray(job.skills) ? job.skills : [])
+        .filter((skill) => skillsSet.has(String(skill || '').toLowerCase()))
+        .slice(0, 3);
+      const missingSkills = (Array.isArray(job.skills) ? job.skills : [])
+        .filter((skill) => !skillsSet.has(String(skill || '').toLowerCase()))
+        .slice(0, 2);
+
+      return {
+        job: mapJobFromRow(job),
+        matchPercent: Math.max(55, Math.min(92, 52 + (score * 7))),
+        rankPosition: 0,
+        vectorSimilarityScore: 0,
+        skillAlignmentScore: 0,
+        collaborativeScore: 0,
+        trendScore: 0,
+        whyThisJob: [
+          matchedSkills.length > 0 ? `You match on ${matchedSkills.join(', ')}.` : 'This role overlaps with your current profile.',
+          missingSkills.length > 0 ? `Small gap: ${missingSkills.join(', ')}.` : 'You already cover the main skill signals we detected.'
+        ],
+        explanation: matchedSkills.length > 0
+          ? `You match on ${matchedSkills.join(', ')}.${missingSkills.length > 0 ? ` Small gap: ${missingSkills.join(', ')}.` : ''}`
+          : 'Recommended based on your active profile and current openings.',
+        gapAnalysis: {
+          matchedSkills,
+          missingSkills,
+          courseSuggestion: missingSkills[0] ? `2-hour ${missingSkills[0]} fundamentals course` : null
+        },
+        collaborative: {
+          score: 0,
+          summary: '',
+          similarStudentsApplied: 0,
+          similarStudentsHired: 0
+        },
+        trend: {
+          score: 0,
+          label: 'Fresh opportunity'
+        }
+      };
+    })
+    .sort((a, b) => b.matchPercent - a.matchPercent)
+    .slice(0, Math.max(1, limit))
+    .map((item, index) => ({
+      ...item,
+      rankPosition: index + 1
+    }));
+
 const bufferToDataUrl = ({ buffer, mimeType = 'application/octet-stream' }) =>
   `data:${mimeType};base64,${Buffer.from(buffer).toString('base64')}`;
 
@@ -392,15 +455,26 @@ router.get('/overview', asyncHandler(async (req, res) => {
   const profileLocation = String(profile.location || '').toLowerCase().trim();
   const appliedJobSet = new Set(applications.map((item) => item.job_id));
 
-  const recommendedJobs = openJobs
-    .filter((job) => !appliedJobSet.has(job.id))
-    .map((job) => ({
-      row: job,
-      score: scoreRecommendedJob({ job, skillsSet: profileSkillsSet, profileLocation })
-    }))
-    .sort((a, b) => b.score - a.score || new Date(b.row.created_at).getTime() - new Date(a.row.created_at).getTime())
-    .slice(0, 6)
-    .map((item) => mapJobFromRow(item.row));
+  let recommendedMatches = [];
+  try {
+    const recommendationFeed = await getPersonalizedRecommendations({
+      userId: targetUserId,
+      limit: 6,
+      source: 'overview'
+    });
+    recommendedMatches = recommendationFeed.recommendations || [];
+  } catch (error) {
+    console.warn('[STUDENT OVERVIEW RECOMMENDATIONS]', error.message || error);
+    recommendedMatches = buildLegacyRecommendationMatches({
+      openJobs,
+      appliedJobSet,
+      skillsSet: profileSkillsSet,
+      profileLocation,
+      limit: 6
+    });
+  }
+
+  const recommendedJobs = recommendedMatches.map((item) => item.job).filter(Boolean);
 
   const unreadNotifications = notifications.filter((notification) => !notification.is_read).length;
   const upcomingInterviews = interviews
@@ -427,6 +501,7 @@ router.get('/overview', asyncHandler(async (req, res) => {
       },
       pipeline,
       recommendedJobs,
+      recommendedMatches,
       recentApplications: applications.slice(0, 6).map((application) => ({
         ...mapApplicationFromRow(application),
         job: jobsMap[application.job_id] || null
@@ -436,6 +511,95 @@ router.get('/overview', asyncHandler(async (req, res) => {
       nextInterview: upcomingInterviews[0] || null
     }
   });
+}));
+
+router.get('/recommendations', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'query');
+  const limit = Math.min(20, Math.max(1, parseInt(req.query.limit || '10', 10)));
+  const minMatchPercent = Math.max(0, parseInt(req.query.minMatchPercent || req.query.min_match_percent || '0', 10));
+
+  try {
+    const recommendationFeed = await getPersonalizedRecommendations({
+      userId: targetUserId,
+      limit,
+      minMatchPercent,
+      source: 'homepage_feed'
+    });
+
+    res.send({
+      status: true,
+      generatedAt: recommendationFeed.generatedAt,
+      recommendations: recommendationFeed.recommendations || [],
+      jobs: (recommendationFeed.recommendations || []).map((item) => item.job).filter(Boolean)
+    });
+  } catch (error) {
+    if (error?.code) {
+      sendSupabaseError(res, error);
+      return;
+    }
+
+    res.status(500).send({
+      status: false,
+      message: error.message || 'Unable to load recommendations'
+    });
+  }
+}));
+
+router.post('/recommendations/view-history/:jobId', asyncHandler(async (req, res) => {
+  const jobId = req.params.jobId;
+  const targetUserId = getTargetStudentId(req, 'body');
+
+  if (!isValidUuid(jobId)) {
+    res.status(400).send({ status: false, message: 'Invalid job id' });
+    return;
+  }
+
+  try {
+    const trackedView = await trackStudentJobView({
+      userId: targetUserId,
+      jobId,
+      source: String(req.body?.source || 'recommendation_feed')
+    });
+
+    res.status(201).send({ status: true, view: trackedView });
+  } catch (error) {
+    if (error?.code) {
+      sendSupabaseError(res, error);
+      return;
+    }
+
+    res.status(500).send({
+      status: false,
+      message: error.message || 'Unable to save job view'
+    });
+  }
+}));
+
+router.post('/recommendations/digest', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'body');
+  const limit = Math.min(10, Math.max(1, parseInt(req.body?.limit || '5', 10)));
+
+  try {
+    const digestResult = await sendDailyRecommendationDigest({
+      userId: targetUserId,
+      limit
+    });
+
+    res.send({
+      status: true,
+      digest: digestResult
+    });
+  } catch (error) {
+    if (error?.code) {
+      sendSupabaseError(res, error);
+      return;
+    }
+
+    res.status(500).send({
+      status: false,
+      message: error.message || 'Unable to send recommendation digest'
+    });
+  }
 }));
 
 router.get('/profile', asyncHandler(async (req, res) => {
@@ -533,7 +697,9 @@ router.put('/profile', asyncHandler(async (req, res) => {
     preferred_job_type: toNullableText(req.body?.preferredJobType ?? req.body?.preferred_job_type),
     availability_to_join: toNullableText(req.body?.availabilityToJoin ?? req.body?.availability_to_join),
     willing_to_relocate: toNullableBoolean(req.body?.willingToRelocate ?? req.body?.willing_to_relocate),
-    notice_period_days: toNullableInteger(req.body?.noticePeriodDays ?? req.body?.notice_period_days)
+    notice_period_days: toNullableInteger(req.body?.noticePeriodDays ?? req.body?.notice_period_days),
+    is_discoverable: req.body?.isDiscoverable !== undefined ? Boolean(req.body.isDiscoverable) : undefined,
+    available_to_hire: req.body?.availableToHire !== undefined ? Boolean(req.body.availableToHire) : undefined
   });
 
   const { data, error } = await upsertStudentProfileSafe(profilePayload);
@@ -858,6 +1024,174 @@ router.delete('/alerts/:id', asyncHandler(async (req, res) => {
   res.send({ status: true, removed: data?.length || 0 });
 }));
 
+router.get('/auto-apply', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'query');
+
+  try {
+    const state = await getStudentAutoApplyState(targetUserId);
+    res.send({
+      status: true,
+      autoApply: state
+    });
+  } catch (error) {
+    if (error?.code) {
+      sendSupabaseError(res, error);
+      return;
+    }
+
+    res.status(500).send({
+      status: false,
+      message: error.message || 'Unable to load auto-apply settings'
+    });
+  }
+}));
+
+router.put('/auto-apply', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'body');
+  const runNow = Boolean(req.body?.runNow);
+
+  try {
+    const preference = await updateAutoApplyPreferences(targetUserId, {
+      isActive: req.body?.isActive,
+      targetRoles: req.body?.targetRoles,
+      preferredLocations: req.body?.preferredLocations,
+      remoteAllowed: req.body?.remoteAllowed,
+      minSalary: req.body?.minSalary,
+      experienceMin: req.body?.experienceMin,
+      experienceMax: req.body?.experienceMax,
+      companySizeFilters: req.body?.companySizeFilters,
+      excludeCompanyTypes: req.body?.excludeCompanyTypes,
+      excludeCompanyNames: req.body?.excludeCompanyNames,
+      excludeAgencies: req.body?.excludeAgencies,
+      atsThreshold: req.body?.atsThreshold,
+      aiCoverLetterEnabled: req.body?.aiCoverLetterEnabled,
+      coverLetterTone: req.body?.coverLetterTone,
+      dailyDigestEnabled: req.body?.dailyDigestEnabled,
+      weeklyDigestEnabled: req.body?.weeklyDigestEnabled,
+      digestHour: req.body?.digestHour,
+      digestTimezone: req.body?.digestTimezone,
+      weeklyDigestWeekday: req.body?.weeklyDigestWeekday,
+      premiumJobLimitEnabled: req.body?.premiumJobLimitEnabled,
+      premiumJobWeeklyLimit: req.body?.premiumJobWeeklyLimit,
+      autoPauseUntil: req.body?.autoPauseUntil
+    });
+
+    let runResult = null;
+    if (runNow && preference.isActive) {
+      const jobsResp = await supabase
+        .from('jobs')
+        .select('*')
+        .eq('status', 'open')
+        .eq('approval_status', 'approved')
+        .order('is_featured', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(40);
+
+      if (jobsResp.error) {
+        sendSupabaseError(res, jobsResp.error);
+        return;
+      }
+
+      runResult = await processAutoApplyForStudentJobs({
+        userId: targetUserId,
+        jobs: jobsResp.data || [],
+        triggerSource: 'criteria_update',
+        limit: 20,
+        ignoreActiveState: false
+      });
+    }
+
+    const state = await getStudentAutoApplyState(targetUserId);
+    res.send({
+      status: true,
+      autoApply: state,
+      runResult
+    });
+  } catch (error) {
+    if (error?.code) {
+      sendSupabaseError(res, error);
+      return;
+    }
+
+    res.status(500).send({
+      status: false,
+      message: error.message || 'Unable to update auto-apply settings'
+    });
+  }
+}));
+
+router.post('/auto-apply/run', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'body');
+  const limit = Math.min(40, Math.max(1, parseInt(req.body?.limit || '20', 10)));
+
+  const jobsResp = await supabase
+    .from('jobs')
+    .select('*')
+    .eq('status', 'open')
+    .eq('approval_status', 'approved')
+    .order('is_featured', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(Math.max(limit * 2, 20));
+
+  if (jobsResp.error) {
+    sendSupabaseError(res, jobsResp.error);
+    return;
+  }
+
+  try {
+    const runResult = await processAutoApplyForStudentJobs({
+      userId: targetUserId,
+      jobs: jobsResp.data || [],
+      triggerSource: 'manual_run',
+      limit
+    });
+
+    const state = await getStudentAutoApplyState(targetUserId);
+    res.send({
+      status: true,
+      runResult,
+      autoApply: state
+    });
+  } catch (error) {
+    if (error?.code) {
+      sendSupabaseError(res, error);
+      return;
+    }
+
+    res.status(500).send({
+      status: false,
+      message: error.message || 'Unable to run auto-apply now'
+    });
+  }
+}));
+
+router.post('/auto-apply/digest', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'body');
+  const cadence = String(req.body?.cadence || 'daily').trim().toLowerCase() === 'weekly' ? 'weekly' : 'daily';
+
+  try {
+    const digest = await sendStudentAutoApplyDigest({
+      userId: targetUserId,
+      cadence
+    });
+
+    res.send({
+      status: true,
+      digest
+    });
+  } catch (error) {
+    if (error?.code) {
+      sendSupabaseError(res, error);
+      return;
+    }
+
+    res.status(500).send({
+      status: false,
+      message: error.message || 'Unable to send auto-apply digest'
+    });
+  }
+}));
+
 router.get('/interviews', asyncHandler(async (req, res) => {
   const targetUserId = getTargetStudentId(req, 'query');
 
@@ -873,7 +1207,10 @@ router.get('/interviews', asyncHandler(async (req, res) => {
   }
 
   const jobIds = [...new Set((data || []).map((item) => item.job_id).filter(Boolean))];
+  const hrIds = [...new Set((data || []).map((item) => item.hr_id).filter(Boolean))];
   let jobsMap = {};
+  let hrUsersMap = {};
+  let hrProfilesMap = {};
 
   if (jobIds.length > 0) {
     const jobsResp = await supabase
@@ -889,11 +1226,33 @@ router.get('/interviews', asyncHandler(async (req, res) => {
     jobsMap = Object.fromEntries((jobsResp.data || []).map((item) => [item.id, item]));
   }
 
+  if (hrIds.length > 0) {
+    const [hrUsersResp, hrProfilesResp] = await Promise.all([
+      supabase.from('users').select('id, name, email').in('id', hrIds),
+      supabase.from('hr_profiles').select('user_id, company_name, logo_url').in('user_id', hrIds)
+    ]);
+
+    if (hrUsersResp.error) {
+      sendSupabaseError(res, hrUsersResp.error);
+      return;
+    }
+    if (hrProfilesResp.error) {
+      sendSupabaseError(res, hrProfilesResp.error);
+      return;
+    }
+
+    hrUsersMap = Object.fromEntries((hrUsersResp.data || []).map((item) => [item.id, item]));
+    hrProfilesMap = Object.fromEntries((hrProfilesResp.data || []).map((item) => [item.user_id, item]));
+  }
+
   res.send({
     status: true,
     interviews: (data || []).map((item) => ({
       ...item,
-      company_name: item.company_name || jobsMap[item.job_id]?.company_name || null,
+      company_name: item.company_name || hrProfilesMap[item.hr_id]?.company_name || jobsMap[item.job_id]?.company_name || null,
+      company_logo: hrProfilesMap[item.hr_id]?.logo_url || null,
+      hr_name: hrUsersMap[item.hr_id]?.name || null,
+      hr_email: hrUsersMap[item.hr_id]?.email || null,
       job_title: item.job_title || jobsMap[item.job_id]?.job_title || null
     }))
   });
@@ -1097,6 +1456,121 @@ router.get('/profile/resume-score', asyncHandler(async (req, res) => {
     breakdown: sections.map((s) => ({ label: s.label, weight: s.weight, earned: s.filled ? s.weight : 0, filled: s.filled })),
     tips
   });
+}));
+
+// ── HR Proactive Sourcing: Student-side endpoints ────────────────────────────
+
+router.get('/profile/discovery', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from('student_profiles')
+    .select('is_discoverable, available_to_hire')
+    .eq('user_id', req.user.id)
+    .maybeSingle();
+
+  if (error) { sendSupabaseError(res, error); return; }
+
+  res.send({
+    status: true,
+    discovery: { isDiscoverable: data?.is_discoverable ?? false, availableToHire: data?.available_to_hire ?? false }
+  });
+}));
+
+router.put('/profile/discovery', asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+  const isDiscoverable = req.body?.isDiscoverable !== undefined ? Boolean(req.body.isDiscoverable) : undefined;
+  const availableToHire = req.body?.availableToHire !== undefined ? Boolean(req.body.availableToHire) : undefined;
+
+  const updatePayload = { user_id: userId };
+  if (isDiscoverable !== undefined) updatePayload.is_discoverable = isDiscoverable;
+  if (availableToHire !== undefined) updatePayload.available_to_hire = availableToHire;
+
+  const { data, error } = await supabase
+    .from('student_profiles')
+    .upsert(updatePayload, { onConflict: 'user_id' })
+    .select('user_id, is_discoverable, available_to_hire')
+    .single();
+
+  if (error) { sendSupabaseError(res, error); return; }
+
+  res.send({ status: true, discovery: { isDiscoverable: data.is_discoverable, availableToHire: data.available_to_hire } });
+}));
+
+router.get('/hr-interests', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from('hr_candidate_interests')
+    .select('*')
+    .eq('student_user_id', req.user.id)
+    .order('created_at', { ascending: false });
+
+  if (error) { sendSupabaseError(res, error); return; }
+
+  const interests = data || [];
+  const hrIds = [...new Set(interests.map((i) => i.hr_user_id))];
+
+  let hrUsersMap = {};
+  let hrProfilesMap = {};
+
+  if (hrIds.length > 0) {
+    const [hrUsersResp, hrProfilesResp] = await Promise.all([
+      supabase.from('users').select('id, name, email').in('id', hrIds),
+      supabase.from('hr_profiles').select('user_id, company_name, company_website, logo_url, industry_type, location').in('user_id', hrIds)
+    ]);
+    hrUsersMap = Object.fromEntries((hrUsersResp.data || []).map((u) => [u.id, u]));
+    hrProfilesMap = Object.fromEntries((hrProfilesResp.data || []).map((p) => [p.user_id, p]));
+  }
+
+  res.send({
+    status: true,
+    interests: interests.map((i) => ({
+      ...i,
+      hrUser: hrUsersMap[i.hr_user_id] || null,
+      hrProfile: hrProfilesMap[i.hr_user_id] || null
+    }))
+  });
+}));
+
+router.put('/hr-interests/:interestId', asyncHandler(async (req, res) => {
+  const { interestId } = req.params;
+  if (!isValidUuid(interestId)) return res.status(400).send({ status: false, message: 'Invalid interestId' });
+
+  const status = String(req.body?.status || '').toLowerCase();
+  if (!['accepted', 'declined'].includes(status)) {
+    return res.status(400).send({ status: false, message: 'status must be accepted or declined' });
+  }
+
+  const { data: existing, error: fetchErr } = await supabase
+    .from('hr_candidate_interests')
+    .select('*')
+    .eq('id', interestId)
+    .eq('student_user_id', req.user.id)
+    .maybeSingle();
+
+  if (fetchErr) { sendSupabaseError(res, fetchErr); return; }
+  if (!existing) return res.status(404).send({ status: false, message: 'Interest request not found' });
+
+  const { data, error } = await supabase
+    .from('hr_candidate_interests')
+    .update({ status, responded_at: new Date().toISOString() })
+    .eq('id', interestId)
+    .select('*')
+    .single();
+
+  if (error) { sendSupabaseError(res, error); return; }
+
+  const { data: studentUser } = await supabase.from('users').select('name').eq('id', req.user.id).maybeSingle();
+
+  await createNotification({
+    userId: existing.hr_user_id,
+    type: 'hr_interest_response',
+    title: status === 'accepted' ? 'A candidate accepted your interest!' : 'A candidate declined your interest',
+    message: status === 'accepted'
+      ? `${studentUser?.name || 'A student'} accepted your interest request. Their full profile and resume are now accessible.`
+      : `${studentUser?.name || 'A student'} has declined your interest request.`,
+    link: '/portal/hr/candidates/interests',
+    meta: { interestId: data.id, studentUserId: req.user.id, status }
+  });
+
+  res.send({ status: true, interest: data });
 }));
 
 module.exports = router;

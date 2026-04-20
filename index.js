@@ -164,6 +164,7 @@ if (authRoutes) {
 }
 mountRoute('/admin', safeRequireRoute('./src/routes/admin', 'admin'));
 mountRoute('/hr', safeRequireRoute('./src/routes/hr', 'hr'));
+mountRoute('/interviews', safeRequireRoute('./src/routes/interviews', 'interviews'));
 mountRoute('/student', safeRequireRoute('./src/routes/student', 'student'));
 mountRoute('/jobs', safeRequireRoute('./src/routes/jobs', 'jobs'));
 mountRoute('/companies', safeRequireRoute('./src/routes/companies', 'companies'));
@@ -180,6 +181,7 @@ mountRoute('/support', safeRequireRoute('./src/routes/support', 'support'));
 mountRoute('/sales', safeRequireRoute('./src/routes/sales', 'sales'));
 mountRoute('/accounts', safeRequireRoute('./src/routes/accounts', 'accounts'));
 mountRoute('/dataentry', safeRequireRoute('./src/routes/dataentry', 'dataentry'));
+mountRoute('/campus-connect', safeRequireRoute('./src/routes/campusConnect', 'campusConnect'));
 mountRoute('/external-jobs', safeRequireRoute('./src/routes/externalJobs', 'externalJobs'));
 
 app.get('/all-jobs', asyncHandler(async (req, res) => {
@@ -285,6 +287,7 @@ const logStartupMode = () => {
 
 let server = null;
 let externalJobsScheduler = null;
+let autoApplyScheduler = null;
 
 const startExternalJobsScheduler = () => {
   if (shouldUseUpstreamProxy) {
@@ -304,6 +307,25 @@ const startExternalJobsScheduler = () => {
   }
 };
 
+const startAutoApplyScheduler = () => {
+  if (shouldUseUpstreamProxy) {
+    console.warn('[AutoApply Scheduler] Skipped - local proxy mode is enabled');
+    return;
+  }
+
+  if (!config.supabaseUrl || !config.supabaseServiceRoleKey) {
+    console.warn('[AutoApply Scheduler] Skipped — Supabase not configured');
+    return;
+  }
+
+  try {
+    autoApplyScheduler = require('./src/modules/auto-apply/scheduler');
+    autoApplyScheduler.start();
+  } catch (error) {
+    console.error('[AutoApply Scheduler] Failed to start:', error.message);
+  }
+};
+
 const startServer = () => {
   if (server) return server;
 
@@ -312,6 +334,7 @@ const startServer = () => {
   server.on('listening', () => {
     logStartupMode();
     startExternalJobsScheduler();
+    startAutoApplyScheduler();
   });
 
   server.on('error', (error) => {
@@ -334,6 +357,9 @@ const startServer = () => {
 const shutdown = (signal) => {
   if (externalJobsScheduler) {
     try { externalJobsScheduler.stop(); } catch {}
+  }
+  if (autoApplyScheduler) {
+    try { autoApplyScheduler.stop(); } catch {}
   }
 
   if (!server) {

@@ -6,9 +6,14 @@ const { createNotification } = require('./notifications');
 const { autoCloseExpiredJob } = require('./jobs');
 const { isJobExpiredByApplications } = require('../modules/pricing/engine');
 
-const applyToJob = async (req, res) => {
-  const jobId = req.params.id;
+const buildApplicationError = (statusCode, message, code = '') => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  if (code) error.code = code;
+  return error;
+};
 
+const loadOpenJobForApplication = async (jobId) => {
   const { data: fetchedJob, error: jobError } = await supabase
     .from('jobs')
     .select('*')
@@ -16,72 +21,98 @@ const applyToJob = async (req, res) => {
     .maybeSingle();
 
   if (jobError) {
-    sendSupabaseError(res, jobError);
-    return;
+    throw jobError;
   }
 
   if (!fetchedJob || fetchedJob.status !== JOB_STATUSES.OPEN) {
-    res.status(404).send({ status: false, message: 'Job not open for applications' });
-    return;
+    throw buildApplicationError(404, 'Job not open for applications');
   }
 
   const job = await autoCloseExpiredJob(fetchedJob);
 
   if (job.status !== JOB_STATUSES.OPEN) {
-    res.status(410).send({ status: false, message: 'Job has expired and is no longer accepting applications' });
-    return;
+    throw buildApplicationError(410, 'Job has expired and is no longer accepting applications');
   }
 
   if (job.approval_status && job.approval_status !== JOB_APPROVAL_STATUSES.APPROVED) {
-    res.status(403).send({ status: false, message: 'Job is pending moderation and cannot accept applications yet' });
-    return;
+    throw buildApplicationError(403, 'Job is pending moderation and cannot accept applications yet');
   }
 
   if (isJobExpiredByApplications(job)) {
-    res.status(410).send({ status: false, message: 'Application window for this job has expired' });
-    return;
+    throw buildApplicationError(410, 'Application window for this job has expired');
   }
 
   if (job.max_applications != null && Number(job.applications_count || 0) >= Number(job.max_applications)) {
-    res.status(409).send({ status: false, message: 'Application limit reached for this job' });
-    return;
+    throw buildApplicationError(409, 'Application limit reached for this job');
   }
 
-  let resumeUrl = String(req.body?.resumeUrl || req.body?.resumeLink || '').trim();
-  let resumeText = String(req.body?.resumeText || '').trim();
-  const coverLetter = String(req.body?.coverLetter || '').trim() || null;
+  return job;
+};
 
-  const useProfileResume = Boolean(req.body?.useProfileResume) || (!resumeUrl && !resumeText);
+const resolveResumeForApplication = async ({
+  userId,
+  resumeUrl = '',
+  resumeText = '',
+  useProfileResume = false
+}) => {
+  let nextResumeUrl = String(resumeUrl || '').trim();
+  let nextResumeText = String(resumeText || '').trim();
+  const shouldUseProfileResume = Boolean(useProfileResume) || (!nextResumeUrl && !nextResumeText);
 
-  if (useProfileResume) {
+  if (shouldUseProfileResume) {
     const { data: profile, error: profileError } = await supabase
       .from('student_profiles')
       .select('resume_url, resume_text')
-      .eq('user_id', req.user.id)
+      .eq('user_id', userId)
       .maybeSingle();
 
     if (profileError) {
-      sendSupabaseError(res, profileError);
-      return;
+      throw profileError;
     }
 
-    resumeUrl = resumeUrl || String(profile?.resume_url || '').trim();
-    resumeText = resumeText || String(profile?.resume_text || '').trim();
+    nextResumeUrl = nextResumeUrl || String(profile?.resume_url || '').trim();
+    nextResumeText = nextResumeText || String(profile?.resume_text || '').trim();
   }
 
-  if (!resumeUrl && !resumeText) {
-    res.status(400).send({ status: false, message: 'Resume is required. Upload profile resume or provide new resume content.' });
-    return;
+  if (!nextResumeUrl && !nextResumeText) {
+    throw buildApplicationError(400, 'Resume is required. Upload profile resume or provide new resume content.');
   }
+
+  return {
+    resumeUrl: nextResumeUrl || null,
+    resumeText: nextResumeText || null
+  };
+};
+
+const submitApplicationForUser = async ({
+  jobId,
+  user,
+  resumeUrl = '',
+  resumeText = '',
+  coverLetter = '',
+  useProfileResume = false,
+  studentNotification = {}
+}) => {
+  const job = await loadOpenJobForApplication(jobId);
+  const resolvedResume = await resolveResumeForApplication({
+    userId: user.id,
+    resumeUrl,
+    resumeText,
+    useProfileResume
+  });
+
+  const normalizedCoverLetter = String(coverLetter || '').trim() || null;
+  const studentMessage = studentNotification.message
+    || `Your application to ${job.job_title} was submitted successfully.`;
 
   const applicationInsert = {
     job_id: jobId,
-    applicant_id: req.user.id,
-    applicant_email: normalizeEmail(req.user.email),
+    applicant_id: user.id,
+    applicant_email: normalizeEmail(user.email),
     hr_id: job.created_by,
-    resume_url: resumeUrl || null,
-    resume_text: resumeText || null,
-    cover_letter: coverLetter,
+    resume_url: resolvedResume.resumeUrl,
+    resume_text: resolvedResume.resumeText,
+    cover_letter: normalizedCoverLetter,
     status: 'applied'
   };
 
@@ -93,40 +124,74 @@ const applyToJob = async (req, res) => {
 
   if (error) {
     if (error.code === '23505') {
-      res.status(409).send({ status: false, message: 'You already applied to this job' });
-      return;
+      throw buildApplicationError(409, 'You already applied to this job', error.code);
     }
-    sendSupabaseError(res, error);
-    return;
+    throw error;
   }
 
   await supabase.from('job_applications').insert({
     job_id: jobId,
-    applicant_email: normalizeEmail(req.user.email),
-    resume_link: resumeUrl || 'PROFILE_RESUME_TEXT'
+    applicant_email: normalizeEmail(user.email),
+    resume_link: resolvedResume.resumeUrl || 'PROFILE_RESUME_TEXT'
   });
 
   await createNotification({
     userId: job.created_by,
     type: 'new_application',
     title: `New application for ${job.job_title}`,
-    message: `${req.user.name || req.user.email} has applied to your job.`,
+    message: `${user.name || user.email} has applied to your job.`,
     link: '/hr',
     meta: { jobId: job.id, applicationId: data.id }
   });
 
   await createNotification({
-    userId: req.user.id,
-    type: 'application_submitted',
-    title: 'Application submitted',
-    message: `Your application to ${job.job_title} was submitted successfully.`,
-    link: '/student',
-    meta: { jobId: job.id, applicationId: data.id }
+    userId: user.id,
+    type: studentNotification.type || 'application_submitted',
+    title: studentNotification.title || 'Application submitted',
+    message: studentMessage,
+    link: studentNotification.link || '/student',
+    meta: {
+      jobId: job.id,
+      applicationId: data.id,
+      ...(studentNotification.meta || {})
+    }
   });
 
-  res.status(201).send({ status: true, application: mapApplicationFromRow(data) });
+  return {
+    application: mapApplicationFromRow(data),
+    applicationRow: data,
+    job
+  };
+};
+
+const applyToJob = async (req, res) => {
+  const jobId = req.params.id;
+
+  try {
+    const result = await submitApplicationForUser({
+      jobId,
+      user: req.user,
+      resumeUrl: req.body?.resumeUrl || req.body?.resumeLink || '',
+      resumeText: req.body?.resumeText || '',
+      coverLetter: req.body?.coverLetter || '',
+      useProfileResume: Boolean(req.body?.useProfileResume) || (!req.body?.resumeUrl && !req.body?.resumeText)
+    });
+
+    res.status(201).send({ status: true, application: result.application });
+  } catch (error) {
+    if (error?.statusCode) {
+      res.status(error.statusCode).send({ status: false, message: error.message });
+      return;
+    }
+
+    sendSupabaseError(res, error);
+    return;
+  }
 };
 
 module.exports = {
-  applyToJob
+  applyToJob,
+  submitApplicationForUser,
+  loadOpenJobForApplication,
+  resolveResumeForApplication
 };

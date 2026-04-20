@@ -489,6 +489,103 @@ const sendPasswordResetEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
   });
 };
 
+const sendCampusInviteEmail = async ({
+  to,
+  name,
+  collegeName,
+  otp,
+  expiresInMinutes = 10,
+  activationUrl = 'https://hhh-jobs.com/verify-otp'
+}) => {
+  if (!isEmailConfigured()) {
+    console.log(`[CAMPUS INVITE EMAIL - NOT CONFIGURED] To: ${to} | OTP: ${otp} | College: ${collegeName || 'Campus Connect'}`);
+    return { sent: false, reason: 'smtp_not_configured' };
+  }
+
+  const displayName = String(name || '').trim() || 'Student';
+  const campusName = String(collegeName || 'Your college').trim() || 'Your college';
+  const subject = `${campusName} invited you to ${BRAND} Campus Connect`;
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${subject}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:32px 0;">
+    <tr>
+      <td align="center">
+        <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(11,22,49,0.10);">
+          <tr>
+            <td style="background:linear-gradient(135deg,#0b1631,#1f5ac7);padding:28px 32px;text-align:center;">
+              <span style="color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;">${BRAND}</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:34px 36px;">
+              <p style="margin:0 0 8px;font-size:12px;font-weight:800;color:#c46d00;letter-spacing:0.14em;text-transform:uppercase;">Campus Connect invite</p>
+              <h2 style="margin:0 0 10px;font-size:24px;font-weight:800;color:#0b1631;">Hi ${displayName}, your campus profile is ready.</h2>
+              <p style="margin:0 0 20px;color:#4f6584;font-size:15px;line-height:1.7;">
+                ${campusName} added you to HHH Jobs Campus Connect. Verify your email to activate your account, receive campus drive alerts, and track placement activity from one dashboard.
+              </p>
+              <div style="margin:0 0 20px;padding:16px 18px;border-radius:14px;background:#f9fbff;border:1px solid #dbe7ff;">
+                <p style="margin:0;color:#4f6584;font-size:13px;line-height:1.7;">
+                  Activation method: <strong style="color:#0b1631;">OTP verification</strong><br />
+                  Expires in: <strong style="color:#0b1631;">${expiresInMinutes} minutes</strong>
+                </p>
+              </div>
+              <div style="text-align:center;margin:0 0 24px;">
+                <span style="display:inline-block;background:#f0f5ff;border:2px dashed #1f5ac7;border-radius:12px;padding:18px 40px;font-size:36px;font-weight:900;letter-spacing:10px;color:#1f5ac7;">
+                  ${otp}
+                </span>
+              </div>
+              <div style="text-align:center;margin:0 0 24px;">
+                <a href="${activationUrl}" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:10px;font-size:15px;font-weight:700;">
+                  Activate Campus Account
+                </a>
+              </div>
+              <p style="margin:0;color:#8a9ab5;font-size:12px;line-height:1.6;">
+                If you already had an HHH Jobs student account, this import only linked your campus access. No duplicate account was created.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f4f6fb;padding:18px 36px;text-align:center;border-top:1px solid #e8edf8;">
+              <p style="margin:0;color:#8a9ab5;font-size:12px;">&copy; ${new Date().getFullYear()} ${BRAND}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`.trim();
+
+  const text = [
+    `${campusName} invited you to ${BRAND} Campus Connect.`,
+    '',
+    `Hi ${displayName},`,
+    '',
+    'Your campus profile is ready. Verify your email with the OTP below to activate your account and start receiving eligible campus drive notifications.',
+    '',
+    `OTP: ${otp}`,
+    `Expires in: ${expiresInMinutes} minutes`,
+    `Activate here: ${activationUrl}`,
+    '',
+    'If you already had an HHH Jobs student account, we linked this campus access to your existing account instead of creating a duplicate.'
+  ].join('\n');
+
+  return sendEmailWithFallback({
+    to,
+    subject,
+    text,
+    html
+  });
+};
+
 const sendWelcomeEmail = async ({ to, name, password, loginUrl = 'https://hhh-jobs.com/login' }) => {
   if (!isEmailConfigured()) {
     console.log(`[WELCOME EMAIL - NOT CONFIGURED] To: ${to} | Password: ${password}`);
@@ -565,4 +662,233 @@ const sendWelcomeEmail = async ({ to, name, password, loginUrl = 'https://hhh-jo
   });
 };
 
-module.exports = { sendOtpEmail, sendPasswordResetEmail, sendWelcomeEmail, isEmailConfigured };
+const sendRecommendationDigestEmail = async ({ to, name, recommendations = [] }) => {
+  if (!isEmailConfigured()) {
+    console.log(`[RECOMMENDATION DIGEST - NOT CONFIGURED] To: ${to} | Matches: ${recommendations.length}`);
+    return { sent: false, reason: 'smtp_not_configured' };
+  }
+
+  const displayName = String(name || '').trim() || 'Candidate';
+  const topRecommendations = Array.isArray(recommendations) ? recommendations.slice(0, 5) : [];
+  const subject = `${BRAND}: Your ${topRecommendations.length || 5} best matches today`;
+  const recommendationRows = topRecommendations.map((item) => {
+    const job = item?.job || {};
+    const gapText = item?.gapAnalysis?.missingSkills?.length
+      ? `Gap: ${item.gapAnalysis.missingSkills.slice(0, 2).join(', ')}`
+      : 'Gap: You are strongly aligned for this role';
+    const whyText = Array.isArray(item?.whyThisJob) && item.whyThisJob.length > 0
+      ? item.whyThisJob.slice(0, 2).join(' ')
+      : (item?.explanation || 'Strong fit based on your profile and activity.');
+
+    return `
+      <tr>
+        <td style="padding:0 0 16px;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5edf8;border-radius:14px;background:#f9fbff;">
+            <tr>
+              <td style="padding:18px 20px;">
+                <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
+                  <div>
+                    <p style="margin:0;font-size:18px;font-weight:800;color:#0b1631;">${job.jobTitle || 'Recommended job'}</p>
+                    <p style="margin:6px 0 0;color:#4f6584;font-size:14px;">${job.companyName || 'HHH Jobs'}${job.jobLocation ? ` • ${job.jobLocation}` : ''}</p>
+                  </div>
+                  <span style="display:inline-block;background:#e8f7ef;color:#0f7a43;border-radius:999px;padding:8px 12px;font-size:13px;font-weight:800;">
+                    ${Number(item?.matchPercent || 0)}% match
+                  </span>
+                </div>
+                <p style="margin:14px 0 0;color:#30415f;font-size:14px;line-height:1.6;">${whyText}</p>
+                <p style="margin:10px 0 0;color:#8a9ab5;font-size:12px;line-height:1.6;">${gapText}</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    `.trim();
+  }).join('');
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${subject}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:32px 0;">
+    <tr>
+      <td align="center">
+        <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(11,22,49,0.10);">
+          <tr>
+            <td style="background:linear-gradient(135deg,#0b1631,#1f5ac7);padding:28px 32px;text-align:center;">
+              <span style="color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;">${BRAND}</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:34px 36px;">
+              <h2 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#0b1631;">Your best matches today, ${displayName}</h2>
+              <p style="margin:0 0 24px;color:#4f6584;font-size:15px;line-height:1.6;">
+                Fresh roles were ranked using your skills, history, and jobs trending for profiles like yours.
+              </p>
+              <table width="100%" cellpadding="0" cellspacing="0">
+                ${recommendationRows || `
+                <tr>
+                  <td style="padding:18px 20px;border:1px solid #e5edf8;border-radius:14px;background:#f9fbff;color:#4f6584;font-size:14px;">
+                    We did not find strong matches today, but we are still watching for fresh roles for you.
+                  </td>
+                </tr>
+                `}
+              </table>
+              <div style="text-align:center;margin-top:24px;">
+                <a href="https://hhh-jobs.com/portal/student/home" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 30px;border-radius:8px;font-size:15px;font-weight:700;">
+                  Explore your recommendations
+                </a>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f4f6fb;padding:18px 36px;text-align:center;border-top:1px solid #e8edf8;">
+              <p style="margin:0;color:#8a9ab5;font-size:12px;">&copy; ${new Date().getFullYear()} ${BRAND}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`.trim();
+
+  const textBody = topRecommendations.length > 0
+    ? topRecommendations
+      .map((item, index) => {
+        const job = item?.job || {};
+        const whyText = Array.isArray(item?.whyThisJob) && item.whyThisJob.length > 0
+          ? item.whyThisJob.slice(0, 2).join(' ')
+          : (item?.explanation || 'Strong fit based on your profile.');
+
+        return `${index + 1}. ${job.jobTitle || 'Recommended job'} at ${job.companyName || 'HHH Jobs'} (${Number(item?.matchPercent || 0)}% match)\n${whyText}`;
+      })
+      .join('\n\n')
+    : 'We did not find strong matches today, but we are still watching for fresh roles for you.';
+
+  return sendEmailWithFallback({
+    to,
+    subject,
+    text: `Your best matches today\n\n${textBody}\n\nOpen HHH Jobs: https://hhh-jobs.com/portal/student/home`,
+    html
+  });
+};
+
+const sendAutoApplyDigestEmail = async ({ to, name, cadence = 'daily', digest = {} }) => {
+  if (!isEmailConfigured()) {
+    console.log(`[AUTO APPLY DIGEST - NOT CONFIGURED] To: ${to} | Cadence: ${cadence} | Applied: ${digest?.appliedCount || 0}`);
+    return { sent: false, reason: 'smtp_not_configured' };
+  }
+
+  const displayName = String(name || '').trim() || 'Candidate';
+  const jobs = Array.isArray(digest?.jobs) ? digest.jobs : [];
+  const cadenceLabel = cadence === 'weekly' ? 'weekly' : 'daily';
+  const subject = `${BRAND}: Your ${cadenceLabel} auto-apply summary`;
+  const jobRows = jobs.map((item) => `
+    <tr>
+      <td style="padding:0 0 14px;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5edf8;border-radius:14px;background:#ffffff;">
+          <tr>
+            <td style="padding:16px 18px;">
+              <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
+                <div>
+                  <p style="margin:0;font-size:17px;font-weight:800;color:#0b1631;">${item.jobTitle || 'Applied role'}</p>
+                  <p style="margin:6px 0 0;color:#4f6584;font-size:14px;">${item.companyName || 'HHH Jobs'}</p>
+                </div>
+                <span style="display:inline-block;background:#eff6ff;color:#1d4ed8;border-radius:999px;padding:7px 11px;font-size:12px;font-weight:800;">
+                  ATS ${Number(item.atsScore || 0)}
+                </span>
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  `).join('');
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${subject}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:32px 0;">
+    <tr>
+      <td align="center">
+        <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(11,22,49,0.10);">
+          <tr>
+            <td style="background:linear-gradient(135deg,#0b1631,#1f5ac7);padding:28px 32px;text-align:center;">
+              <span style="color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;">${BRAND}</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:34px 36px;">
+              <h2 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#0b1631;">Your ${cadenceLabel} auto-apply summary, ${displayName}</h2>
+              <p style="margin:0 0 20px;color:#4f6584;font-size:15px;line-height:1.6;">
+                HHH Jobs kept watching relevant roles for you and submitted applications that cleared your ATS threshold.
+              </p>
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:18px;">
+                <tr>
+                  <td style="padding:14px 16px;border:1px solid #dbeafe;background:#eff6ff;border-radius:14px;">
+                    <p style="margin:0;color:#1d4ed8;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;">This ${cadenceLabel} cycle</p>
+                    <p style="margin:8px 0 0;font-size:26px;font-weight:900;color:#0b1631;">${Number(digest?.appliedCount || 0)} applied</p>
+                    <p style="margin:6px 0 0;color:#4f6584;font-size:14px;">${Number(digest?.shortlistedCount || 0)} reached shortlist or beyond</p>
+                  </td>
+                </tr>
+              </table>
+              <table width="100%" cellpadding="0" cellspacing="0">
+                ${jobRows || `
+                <tr>
+                  <td style="padding:18px 20px;border:1px solid #e5edf8;border-radius:14px;background:#f9fbff;color:#4f6584;font-size:14px;">
+                    No new applications were submitted in this cycle, but your auto-apply rules are still active.
+                  </td>
+                </tr>
+                `}
+              </table>
+              <div style="text-align:center;margin-top:24px;">
+                <a href="https://hhh-jobs.com/portal/student/applications" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 30px;border-radius:8px;font-size:15px;font-weight:700;">
+                  View applications
+                </a>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f4f6fb;padding:18px 36px;text-align:center;border-top:1px solid #e8edf8;">
+              <p style="margin:0;color:#8a9ab5;font-size:12px;">&copy; ${new Date().getFullYear()} ${BRAND}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`.trim();
+
+  const textBody = jobs.length > 0
+    ? jobs.map((item, index) => `${index + 1}. ${item.jobTitle || 'Applied role'} at ${item.companyName || 'HHH Jobs'} (ATS ${Number(item.atsScore || 0)})`).join('\n')
+    : 'No new applications were submitted in this cycle, but your auto-apply rules are still active.';
+
+  return sendEmailWithFallback({
+    to,
+    subject,
+    text: `Your ${cadenceLabel} auto-apply summary\n\nApplied: ${Number(digest?.appliedCount || 0)}\nShortlisted: ${Number(digest?.shortlistedCount || 0)}\n\n${textBody}\n\nOpen HHH Jobs: https://hhh-jobs.com/portal/student/applications`,
+    html
+  });
+};
+
+module.exports = {
+  sendOtpEmail,
+  sendPasswordResetEmail,
+  sendCampusInviteEmail,
+  sendWelcomeEmail,
+  sendRecommendationDigestEmail,
+  sendAutoApplyDigestEmail,
+  isEmailConfigured
+};

@@ -6,20 +6,22 @@ create or replace function public.ensure_profile_user_role()
 returns trigger
 language plpgsql
 as $$
-declare
-  current_role text;
 begin
-  select role::text
-    into current_role
-  from public.users
-  where id = new.user_id;
-
-  if current_role is null then
+  if not exists (
+    select 1
+    from public.users u
+    where u.id = new.user_id
+  ) then
     raise exception 'User % does not exist for %', new.user_id, tg_table_name;
   end if;
 
-  if tg_nargs > 0 and not (current_role = any (tg_argv)) then
-    raise exception 'User % with role % cannot be stored in %', new.user_id, current_role, tg_table_name;
+  if tg_nargs > 0 and not exists (
+    select 1
+    from public.users u
+    where u.id = new.user_id
+      and u.role::text = any (tg_argv)
+  ) then
+    raise exception 'User % cannot be stored in % because the role does not match the trigger guard', new.user_id, tg_table_name;
   end if;
 
   return new;
@@ -222,3 +224,67 @@ create trigger dataentry_profiles_role_guard
 before insert or update on public.dataentry_profiles
 for each row
 execute function public.ensure_profile_user_role('dataentry');
+
+alter table public.employee_profiles enable row level security;
+alter table public.admin_profiles enable row level security;
+alter table public.super_admin_profiles enable row level security;
+alter table public.support_profiles enable row level security;
+alter table public.sales_profiles enable row level security;
+alter table public.accounts_profiles enable row level security;
+alter table public.dataentry_profiles enable row level security;
+
+drop policy if exists deny_employee_profiles_public_access on public.employee_profiles;
+create policy deny_employee_profiles_public_access
+on public.employee_profiles
+for all
+to anon, authenticated
+using (false)
+with check (false);
+
+drop policy if exists deny_admin_profiles_public_access on public.admin_profiles;
+create policy deny_admin_profiles_public_access
+on public.admin_profiles
+for all
+to anon, authenticated
+using (false)
+with check (false);
+
+drop policy if exists deny_super_admin_profiles_public_access on public.super_admin_profiles;
+create policy deny_super_admin_profiles_public_access
+on public.super_admin_profiles
+for all
+to anon, authenticated
+using (false)
+with check (false);
+
+drop policy if exists deny_support_profiles_public_access on public.support_profiles;
+create policy deny_support_profiles_public_access
+on public.support_profiles
+for all
+to anon, authenticated
+using (false)
+with check (false);
+
+drop policy if exists deny_sales_profiles_public_access on public.sales_profiles;
+create policy deny_sales_profiles_public_access
+on public.sales_profiles
+for all
+to anon, authenticated
+using (false)
+with check (false);
+
+drop policy if exists deny_accounts_profiles_public_access on public.accounts_profiles;
+create policy deny_accounts_profiles_public_access
+on public.accounts_profiles
+for all
+to anon, authenticated
+using (false)
+with check (false);
+
+drop policy if exists deny_dataentry_profiles_public_access on public.dataentry_profiles;
+create policy deny_dataentry_profiles_public_access
+on public.dataentry_profiles
+for all
+to anon, authenticated
+using (false)
+with check (false);

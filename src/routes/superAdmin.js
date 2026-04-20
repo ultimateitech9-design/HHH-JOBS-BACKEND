@@ -5,6 +5,9 @@ const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
 const { getRoleSyncSummary, repairRoleProfiles, upsertRoleProfile } = require('../services/profileTables');
+const { notifyMatchingJobAlerts } = require('../services/notifications');
+const { notifyRecommendedStudentsForJob } = require('../services/recommendations');
+const { processAutoApplyForJob } = require('../services/autoApply');
 const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
@@ -394,11 +397,25 @@ router.patch('/jobs/:id/status', asyncHandler(async (req, res) => {
     .from('jobs')
     .update({ ...updatePayload, updated_at: new Date().toISOString() })
     .eq('id', jobId)
-    .select('id, title, status, approval_status')
+    .select('*')
     .maybeSingle();
 
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Job not found' });
+
+  if (data.approval_status === JOB_APPROVAL_STATUSES.APPROVED && data.status === JOB_STATUSES.OPEN) {
+    const results = await Promise.allSettled([
+      notifyMatchingJobAlerts(data),
+      notifyRecommendedStudentsForJob(data),
+      processAutoApplyForJob(data, { triggerSource: 'job_approved' })
+    ]);
+
+    results
+      .filter((result) => result.status === 'rejected')
+      .forEach((result) => {
+        console.warn('[SUPER ADMIN JOB APPROVAL NOTIFY]', result.reason?.message || result.reason || 'Unknown error');
+      });
+  }
 
   res.send({ status: true, job: data });
 }));

@@ -166,6 +166,39 @@ const deliverEmailWithSoftTimeout = async ({ label, task }) => {
 };
 
 const normalizeRoleValue = (role) => String(role || '').trim().toLowerCase();
+const activatePendingCampusStudentRows = async ({ userId, email }) => {
+  if (!supabase || !userId || !email) return;
+
+  const payload = {
+    student_user_id: userId,
+    account_status: 'active'
+  };
+
+  const [linkedRowsResp, emailRowsResp] = await Promise.all([
+    supabase
+      .from('campus_students')
+      .update(payload)
+      .eq('student_user_id', userId)
+      .eq('account_status', 'pending_activation'),
+    supabase
+      .from('campus_students')
+      .update(payload)
+      .is('student_user_id', null)
+      .eq('email', email)
+      .eq('account_status', 'pending_activation')
+  ]);
+
+  const linkedError = linkedRowsResp.error;
+  const emailError = emailRowsResp.error;
+  const missingCampusTable = [linkedError, emailError].some((error) => {
+    const message = String(error?.message || '').toLowerCase();
+    return error?.code === '42P01' || message.includes('campus_students');
+  });
+
+  if (missingCampusTable) return;
+  if (linkedError) throw linkedError;
+  if (emailError) throw emailError;
+};
 
 const upsertSignupProfile = async ({ userId, role, reqBody = {} }) => {
   if (supabase) {
@@ -1169,6 +1202,7 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
 
     try {
       await ensureSupabaseRoleProfile({ user });
+      await activatePendingCampusStudentRows({ userId: user.id, email });
     } catch (profileError) {
       sendSupabaseError(res, profileError);
       return;
@@ -1469,6 +1503,7 @@ router.post('/login', asyncHandler(async (req, res) => {
 
     try {
       await ensureSupabaseRoleProfile({ user: userRow });
+      await activatePendingCampusStudentRows({ userId: userRow.id, email });
     } catch (profileError) {
       sendSupabaseError(res, profileError);
       return;

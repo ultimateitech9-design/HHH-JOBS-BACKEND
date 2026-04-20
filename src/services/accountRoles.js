@@ -18,6 +18,7 @@ const getRoleRedirectPath = (role) => {
   if (normalizedRole === ROLES.SALES) return '/portal/sales/overview';
   if (normalizedRole === ROLES.ACCOUNTS) return '/portal/accounts/overview';
   if (normalizedRole === ROLES.DATAENTRY) return '/portal/dataentry/dashboard';
+  if (normalizedRole === ROLES.CAMPUS_CONNECT) return '/portal/campus-connect/dashboard';
   if (normalizedRole === ROLES.ADMIN) return '/admin';
   if (normalizedRole === ROLES.HR) return '/hr';
   return '/student';

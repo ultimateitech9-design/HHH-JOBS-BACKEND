@@ -20,6 +20,8 @@ const { logAudit, getClientIp } = require('../services/audit');
 const { sendWelcomeEmail } = require('../services/email');
 const { isStudentPortalRole } = require('../services/accountRoles');
 const { upsertRoleProfile } = require('../services/profileTables');
+const { notifyRecommendedStudentsForJob } = require('../services/recommendations');
+const { processAutoApplyForJob } = require('../services/autoApply');
 
 const router = express.Router();
 
@@ -312,7 +314,17 @@ router.patch('/jobs/:id/approval', asyncHandler(async (req, res) => {
   });
 
   if (approvalStatus === JOB_APPROVAL_STATUSES.APPROVED && data.status === JOB_STATUSES.OPEN) {
-    await notifyMatchingJobAlerts(data);
+    const results = await Promise.allSettled([
+      notifyMatchingJobAlerts(data),
+      notifyRecommendedStudentsForJob(data),
+      processAutoApplyForJob(data, { triggerSource: 'job_approved' })
+    ]);
+
+    results
+      .filter((result) => result.status === 'rejected')
+      .forEach((result) => {
+        console.warn('[ADMIN JOB APPROVAL NOTIFY]', result.reason?.message || result.reason || 'Unknown error');
+      });
   }
 
   await logAudit({

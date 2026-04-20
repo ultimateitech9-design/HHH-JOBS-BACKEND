@@ -9,7 +9,8 @@ const ROLES = {
   SUPPORT: 'support',
   AUDIT: 'audit',
   DATAENTRY: 'dataentry',
-  RETIRED_EMPLOYEE: 'retired_employee'
+  RETIRED_EMPLOYEE: 'retired_employee',
+  CAMPUS_CONNECT: 'campus_connect'
 };
 
 const USER_STATUSES = {

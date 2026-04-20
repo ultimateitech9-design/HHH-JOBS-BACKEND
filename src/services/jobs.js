@@ -3,6 +3,7 @@ const { JOB_STATUSES, JOB_APPROVAL_STATUSES, ROLES } = require('../constants');
 const { normalizeEmail, stripUndefined, toArray } = require('../utils/helpers');
 const { mapJobFromRow } = require('../utils/mappers');
 const { notifyMatchingJobAlerts } = require('./notifications');
+const { notifyRecommendedStudentsForJob } = require('./recommendations');
 const {
   getPlanOrThrow,
   getPlanBySlug,
@@ -19,6 +20,11 @@ const {
 const { normalizeCompanyKey } = require('./companyDirectory');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
+
+const triggerAutoApplyForJob = async (job, options) => {
+  const { processAutoApplyForJob } = require('./autoApply');
+  return processAutoApplyForJob(job, options);
+};
 
 const extractLocationsFromBody = (body = {}) => {
   const list = [
@@ -263,7 +269,18 @@ const createHrJob = async (req, res) => {
     }
 
     if (data.status === JOB_STATUSES.OPEN && data.approval_status === JOB_APPROVAL_STATUSES.APPROVED) {
-      await notifyMatchingJobAlerts(data);
+      const notificationJobs = [
+        notifyMatchingJobAlerts(data),
+        notifyRecommendedStudentsForJob(data),
+        triggerAutoApplyForJob(data, { triggerSource: 'job_created' })
+      ];
+
+      const results = await Promise.allSettled(notificationJobs);
+      results
+        .filter((result) => result.status === 'rejected')
+        .forEach((result) => {
+          console.warn('[JOB RECOMMENDATION NOTIFY]', result.reason?.message || result.reason || 'Unknown error');
+        });
     }
 
     res.status(201).send({
