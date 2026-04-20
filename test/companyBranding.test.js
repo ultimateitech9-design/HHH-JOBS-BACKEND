@@ -27,7 +27,10 @@ test('buildCompanyBrandIndex keeps sponsor branding available for company lookup
 
   const resolved = resolveCompanyBrand(brandIndex, 'Indian Trade Mart');
 
-  assert.equal(resolved.logoUrl, 'https://www.indiantrademart.com/favicon-512x512.png');
+  assert.equal(
+    resolved.logoUrl,
+    'https://www.google.com/s2/favicons?sz=128&domain_url=https%3A%2F%2Fwww.indiantrademart.com'
+  );
   assert.equal(resolved.websiteUrl, 'https://www.indiantrademart.com/');
   assert.equal(resolved.websiteHost, 'indiantrademart.com');
 });
@@ -44,13 +47,20 @@ test('resolveCompanyBrand falls back to profile branding and preserves current j
   });
 
   const fallback = resolveCompanyBrand(brandIndex, 'Local E2E Hiring Labs');
-  assert.equal(fallback.logoUrl, 'https://cdn.example.com/local-e2e.png');
+  assert.equal(
+    fallback.logoUrl,
+    'https://www.google.com/s2/favicons?sz=128&domain_url=https%3A%2F%2Flocale2e.example.com'
+  );
   assert.equal(fallback.websiteHost, 'locale2e.example.com');
 
   const preserved = resolveCompanyBrand(brandIndex, 'Local E2E Hiring Labs', {
-    logoUrl: 'https://assets.example.com/job-specific-logo.png'
+    logoUrl: 'https://assets.example.com/job-specific-logo.png',
+    websiteUrl: 'https://careers.locale2e.example.com/jobs/1'
   });
-  assert.equal(preserved.logoUrl, 'https://assets.example.com/job-specific-logo.png');
+  assert.equal(
+    preserved.logoUrl,
+    'https://www.google.com/s2/favicons?sz=128&domain_url=https%3A%2F%2Fcareers.locale2e.example.com'
+  );
 });
 
 test('buildDomainLogoUrl derives a site favicon URL from the apply domain', () => {

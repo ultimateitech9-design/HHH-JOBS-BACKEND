@@ -77,9 +77,10 @@ const resolveCompanyBrand = (brandIndex = {}, companyName = '', current = {}) =>
   const key = normalizeCompanyKey(companyName);
   const stored = key ? (brandIndex[key] || {}) : {};
   const websiteUrl = pickPreferredText(current.websiteUrl, stored.websiteUrl);
+  const websiteLogoUrl = buildDomainLogoUrl(websiteUrl);
 
   return {
-    logoUrl: pickPreferredText(current.logoUrl, stored.logoUrl) || null,
+    logoUrl: pickPreferredText(websiteLogoUrl, current.logoUrl, stored.logoUrl) || null,
     websiteUrl: websiteUrl || null,
     websiteHost: pickPreferredText(current.websiteHost, toHostname(websiteUrl), stored.websiteHost) || null
   };
