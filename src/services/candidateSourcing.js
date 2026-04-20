@@ -22,6 +22,35 @@ const DEFAULT_TEMPLATES = [
 
 const normalizeText = (value = '') => String(value || '').trim();
 const normalizeLowerText = (value = '') => normalizeText(value).toLowerCase();
+const parseMissingStudentProfileColumn = (error) => {
+  const candidates = [
+    String(error?.message || ''),
+    String(error?.details || ''),
+    String(error?.hint || '')
+  ].filter(Boolean);
+
+  for (const message of candidates) {
+    const qualifiedMatch = message.match(/student_profiles\.([a-zA-Z0-9_]+)/i);
+    if (qualifiedMatch?.[1]) return qualifiedMatch[1];
+
+    const singleQuoteMatch = message.match(/Could not find the '([^']+)' column/i);
+    if (singleQuoteMatch?.[1]) return singleQuoteMatch[1];
+
+    const doubleQuoteMatch = message.match(/Could not find the "([^"]+)" column/i);
+    if (doubleQuoteMatch?.[1]) return doubleQuoteMatch[1];
+
+    const genericMatch = message.match(/column\s+['"]?([a-zA-Z0-9_]+)['"]?\s+of\s+['"]?student_profiles['"]?/i);
+    if (genericMatch?.[1]) return genericMatch[1];
+  }
+
+  return null;
+};
+const isOptionalSchemaError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return ['42p01', '42703', 'pgrst204'].includes(String(error?.code || '').toLowerCase())
+    || message.includes('does not exist')
+    || message.includes('could not find the');
+};
 const normalizeList = (value) => {
   if (Array.isArray(value)) {
     return [...new Set(value.map((item) => normalizeText(item)).filter(Boolean))];
@@ -32,6 +61,15 @@ const normalizeList = (value) => {
   }
 
   return [];
+};
+const chunkList = (items = [], size = 200) => {
+  const list = Array.isArray(items) ? items : [];
+  const chunkSize = Math.max(1, size);
+  const chunks = [];
+  for (let index = 0; index < list.length; index += chunkSize) {
+    chunks.push(list.slice(index, index + chunkSize));
+  }
+  return chunks;
 };
 
 const parseNumber = (value) => {
@@ -109,6 +147,77 @@ const blurName = (value = '') => {
     .filter(Boolean)
     .map((part) => `${part[0]}${'*'.repeat(Math.max(2, Math.min(6, part.length - 1)))}`)
     .join(' ');
+};
+
+const selectStudentProfilesSafe = async ({
+  fields = [],
+  limit = null,
+  userIds = [],
+  filters = []
+}) => {
+  const workingFields = [...new Set((fields || []).map((field) => normalizeText(field)).filter(Boolean))];
+  let lastError = null;
+
+  for (let attempt = 0; attempt < workingFields.length; attempt += 1) {
+    let query = supabase.from('student_profiles').select(workingFields.join(', '));
+
+    filters.forEach((apply) => {
+      if (typeof apply === 'function') {
+        query = apply(query);
+      }
+    });
+
+    if (Array.isArray(userIds) && userIds.length > 0) {
+      query = query.in('user_id', userIds);
+    }
+
+    if (Number.isFinite(limit) && limit > 0) {
+      query = query.limit(limit);
+    }
+
+    const response = await query;
+    if (!response.error) return response;
+
+    lastError = response.error;
+    const missingColumn = parseMissingStudentProfileColumn(response.error);
+    if (!missingColumn) return response;
+
+    const columnIndex = workingFields.findIndex((field) => field === missingColumn);
+    if (columnIndex === -1) return response;
+    workingFields.splice(columnIndex, 1);
+  }
+
+  return { data: null, error: lastError };
+};
+
+const resolveOptionalResponse = (response, fallback = []) => {
+  if (!response?.error) return response?.data || fallback;
+  if (isOptionalSchemaError(response.error)) return fallback;
+  throw response.error;
+};
+const fetchRowsByIdsInChunks = async ({
+  table,
+  select,
+  column = 'id',
+  ids = [],
+  chunkSize = 200,
+  decorateQuery
+}) => {
+  const normalizedIds = [...new Set((Array.isArray(ids) ? ids : []).filter(Boolean))];
+  if (normalizedIds.length === 0) return [];
+
+  const rows = [];
+  for (const idChunk of chunkList(normalizedIds, chunkSize)) {
+    let query = supabase.from(table).select(select).in(column, idChunk);
+    if (typeof decorateQuery === 'function') {
+      query = decorateQuery(query);
+    }
+    const response = await query;
+    if (response.error) throw response.error;
+    rows.push(...(response.data || []));
+  }
+
+  return rows;
 };
 
 const stringifyExperience = (items = []) =>
@@ -415,14 +524,21 @@ const resolveTemplateForInterest = async ({ hrUserId, templateId }) => {
   return data || null;
 };
 
-const searchDiscoverableCandidates = async ({ hrUser, filters = {} }) => {
+const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, limit = 24 }) => {
   const access = await getHrSourcingAccess({ userId: hrUser.id, role: hrUser.role });
+  const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const pageSize = Math.min(60, Math.max(1, Number.parseInt(limit, 10) || 24));
 
-  const { data: profiles, error } = await supabase
-    .from('student_profiles')
-    .select('user_id, headline, target_role, skills, technical_skills, tools_technologies, experience, location, resume_url, resume_text, about, profile_summary, is_discoverable, available_to_hire, expected_salary, preferred_salary_max, availability_to_join, education, graduation_details, education_score, linkedin_url, github_url, portfolio_url')
-    .eq('is_discoverable', true)
-    .limit(800);
+  const { data: profiles, error } = await selectStudentProfilesSafe({
+    fields: [
+      'user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies',
+      'experience', 'location', 'resume_url', 'resume_text', 'about', 'profile_summary',
+      'is_discoverable', 'available_to_hire', 'expected_salary', 'preferred_salary_max',
+      'availability_to_join', 'education', 'graduation_details', 'education_score',
+      'linkedin_url', 'github_url', 'portfolio_url'
+    ],
+    limit: 5000
+  });
 
   if (error) throw error;
 
@@ -435,19 +551,34 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {} }) => {
     };
   }
 
-  const [usersResp, interestsResp, shortlistResp] = await Promise.all([
-    supabase.from('users').select('id, name, email, mobile, role, status').in('id', userIds).in('role', [ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE]).eq('status', 'active'),
-    supabase.from('hr_candidate_interests').select('student_user_id, status').eq('hr_user_id', hrUser.id).in('student_user_id', userIds),
-    supabase.from('hr_shortlisted_candidates').select('student_user_id, tags, notes').eq('hr_user_id', hrUser.id).in('student_user_id', userIds)
+  const [users, interestsResp, shortlistResp] = await Promise.all([
+    fetchRowsByIdsInChunks({
+      table: 'users',
+      select: 'id, name, email, mobile, role, status',
+      ids: userIds,
+      decorateQuery: (query) => query.in('role', [ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE]).eq('status', 'active')
+    }),
+    fetchRowsByIdsInChunks({
+      table: 'hr_candidate_interests',
+      select: 'student_user_id, status',
+      column: 'student_user_id',
+      ids: userIds,
+      decorateQuery: (query) => query.eq('hr_user_id', hrUser.id)
+    }).then((data) => ({ data, error: null })).catch((error) => ({ data: null, error })),
+    fetchRowsByIdsInChunks({
+      table: 'hr_shortlisted_candidates',
+      select: 'student_user_id, tags, notes',
+      column: 'student_user_id',
+      ids: userIds,
+      decorateQuery: (query) => query.eq('hr_user_id', hrUser.id)
+    }).then((data) => ({ data, error: null })).catch((error) => ({ data: null, error }))
   ]);
 
-  if (usersResp.error) throw usersResp.error;
-  if (interestsResp.error) throw interestsResp.error;
-  if (shortlistResp.error) throw shortlistResp.error;
-
-  const usersMap = Object.fromEntries((usersResp.data || []).map((item) => [item.id, item]));
-  const interestMap = Object.fromEntries((interestsResp.data || []).map((item) => [item.student_user_id, item.status]));
-  const shortlistMap = Object.fromEntries((shortlistResp.data || []).map((item) => [item.student_user_id, item]));
+  const usersMap = Object.fromEntries(users.map((item) => [item.id, item]));
+  const interests = resolveOptionalResponse(interestsResp, []);
+  const shortlists = resolveOptionalResponse(shortlistResp, []);
+  const interestMap = Object.fromEntries(interests.map((item) => [item.student_user_id, item.status]));
+  const shortlistMap = Object.fromEntries(shortlists.map((item) => [item.student_user_id, item]));
 
   const filtered = (profiles || [])
     .filter((profile) => usersMap[profile.user_id])
@@ -466,15 +597,28 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {} }) => {
     .sort((left, right) => scoreCandidate({ candidate: right, filters }) - scoreCandidate({ candidate: left, filters }))
     .map((candidate) => buildCandidatePresentation({ candidate, access }));
 
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const startIndex = (safePage - 1) * pageSize;
+  const pagedCandidates = filtered.slice(startIndex, startIndex + pageSize);
+
   return {
     access,
     summary: {
-      total: filtered.length,
-      blurred: access.hasPaidAccess ? 0 : filtered.length,
+      total,
+      blurred: access.hasPaidAccess ? 0 : total,
       connected: filtered.filter((item) => item.crm.interestStatus === 'accepted').length,
       availableNow: filtered.filter((item) => item.profile.availableToHire).length
     },
-    candidates: filtered
+    pagination: {
+      page: safePage,
+      limit: pageSize,
+      total,
+      totalPages,
+      count: pagedCandidates.length
+    },
+    candidates: pagedCandidates
   };
 };
 
@@ -486,23 +630,29 @@ const listHrCandidateInterests = async ({ hrUser }) => {
     .eq('hr_user_id', hrUser.id)
     .order('created_at', { ascending: false });
 
-  if (error) throw error;
+  if (error && !isOptionalSchemaError(error)) throw error;
 
-  const interests = data || [];
+  const interests = error ? [] : (data || []);
   const studentIds = [...new Set(interests.map((item) => item.student_user_id))];
   let usersMap = {};
   let profilesMap = {};
 
   if (studentIds.length > 0) {
-    const [usersResp, profilesResp] = await Promise.all([
-      supabase.from('users').select('id, name, email, mobile, role').in('id', studentIds),
-      supabase.from('student_profiles').select('user_id, headline, target_role, skills, technical_skills, tools_technologies, location, available_to_hire, resume_url, resume_text, education').in('user_id', studentIds)
+    const [users, profilesResp] = await Promise.all([
+      fetchRowsByIdsInChunks({
+        table: 'users',
+        select: 'id, name, email, mobile, role',
+        ids: studentIds
+      }),
+      selectStudentProfilesSafe({
+        fields: ['user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies', 'location', 'available_to_hire', 'resume_url', 'resume_text', 'education'],
+        userIds: studentIds
+      })
     ]);
 
-    if (usersResp.error) throw usersResp.error;
     if (profilesResp.error) throw profilesResp.error;
 
-    usersMap = Object.fromEntries((usersResp.data || []).map((item) => [item.id, item]));
+    usersMap = Object.fromEntries(users.map((item) => [item.id, item]));
     profilesMap = Object.fromEntries((profilesResp.data || []).map((item) => [item.user_id, item]));
   }
 
@@ -542,28 +692,39 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
     .eq('hr_user_id', hrUser.id)
     .order('updated_at', { ascending: false });
 
-  if (error) throw error;
+  if (error && !isOptionalSchemaError(error)) throw error;
 
-  const rows = data || [];
+  const rows = error ? [] : (data || []);
   const studentIds = [...new Set(rows.map((item) => item.student_user_id))];
   let usersMap = {};
   let profilesMap = {};
   let interestMap = {};
 
   if (studentIds.length > 0) {
-    const [usersResp, profilesResp, interestsResp] = await Promise.all([
-      supabase.from('users').select('id, name, email, mobile, role').in('id', studentIds),
-      supabase.from('student_profiles').select('user_id, headline, target_role, skills, technical_skills, tools_technologies, location, available_to_hire, resume_url, resume_text, education').in('user_id', studentIds),
-      supabase.from('hr_candidate_interests').select('student_user_id, status').eq('hr_user_id', hrUser.id).in('student_user_id', studentIds)
+    const [users, profilesResp, interestsResp] = await Promise.all([
+      fetchRowsByIdsInChunks({
+        table: 'users',
+        select: 'id, name, email, mobile, role',
+        ids: studentIds
+      }),
+      selectStudentProfilesSafe({
+        fields: ['user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies', 'location', 'available_to_hire', 'resume_url', 'resume_text', 'education'],
+        userIds: studentIds
+      }),
+      fetchRowsByIdsInChunks({
+        table: 'hr_candidate_interests',
+        select: 'student_user_id, status',
+        column: 'student_user_id',
+        ids: studentIds,
+        decorateQuery: (query) => query.eq('hr_user_id', hrUser.id)
+      }).then((data) => ({ data, error: null })).catch((error) => ({ data: null, error }))
     ]);
 
-    if (usersResp.error) throw usersResp.error;
     if (profilesResp.error) throw profilesResp.error;
-    if (interestsResp.error) throw interestsResp.error;
 
-    usersMap = Object.fromEntries((usersResp.data || []).map((item) => [item.id, item]));
+    usersMap = Object.fromEntries(users.map((item) => [item.id, item]));
     profilesMap = Object.fromEntries((profilesResp.data || []).map((item) => [item.user_id, item]));
-    interestMap = Object.fromEntries((interestsResp.data || []).map((item) => [item.student_user_id, item.status]));
+    interestMap = Object.fromEntries(resolveOptionalResponse(interestsResp, []).map((item) => [item.student_user_id, item.status]));
   }
 
   return {
@@ -595,6 +756,7 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
 module.exports = {
   DEFAULT_TEMPLATES,
   normalizeList,
+  parseMissingStudentProfileColumn,
   toEducationInsight,
   matchesCandidateFilters,
   buildSystemTemplateMessage,

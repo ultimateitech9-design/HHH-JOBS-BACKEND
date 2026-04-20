@@ -5,6 +5,7 @@ const {
   buildCandidatePresentation,
   buildSystemTemplateMessage,
   matchesCandidateFilters,
+  parseMissingStudentProfileColumn,
   toEducationInsight
 } = require('../src/services/candidateSourcing');
 
@@ -153,4 +154,20 @@ test('buildSystemTemplateMessage personalizes placeholders for sourcing outreach
   });
 
   assert.equal(message, 'Hi Aisha, HHH Jobs would love to connect with talent from SIES College.');
+});
+
+test('parseMissingStudentProfileColumn extracts optional student profile columns from query errors', () => {
+  assert.equal(
+    parseMissingStudentProfileColumn({
+      message: 'column student_profiles.about does not exist'
+    }),
+    'about'
+  );
+
+  assert.equal(
+    parseMissingStudentProfileColumn({
+      details: 'Could not find the "profile_summary" column of student_profiles in the schema cache'
+    }),
+    'profile_summary'
+  );
 });

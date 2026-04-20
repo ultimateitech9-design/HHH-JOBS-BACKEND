@@ -340,6 +340,8 @@ router.get('/candidates/search', requireApprovedHr, asyncHandler(async (req, res
   try {
     const result = await searchDiscoverableCandidates({
       hrUser: req.user,
+      page: req.query.page || '1',
+      limit: req.query.limit || '24',
       filters: {
         q: req.query.q || req.query.search || '',
         skills: req.query.skills || req.query.skill || '',
@@ -358,6 +360,7 @@ router.get('/candidates/search', requireApprovedHr, asyncHandler(async (req, res
       status: true,
       access: result.access,
       summary: result.summary,
+      pagination: result.pagination,
       candidates: result.candidates
     });
   } catch (error) {
