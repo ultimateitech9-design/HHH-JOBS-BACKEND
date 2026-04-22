@@ -7,6 +7,7 @@ const config = require('../config');
 const { supabase, ensureServerConfig, sendSupabaseError } = require('../supabase');
 const { mapPublicUser } = require('../utils/mappers');
 const { normalizeEmail, asyncHandler } = require('../utils/helpers');
+const { getPasswordPolicyError } = require('../utils/passwordPolicy');
 const { requireAuth } = require('../middleware/auth');
 const { logAudit, getClientIp } = require('../services/audit');
 const { sendOtpEmail, sendPasswordResetEmail, isEmailConfigured } = require('../services/email');
@@ -73,6 +74,39 @@ const isOtpStillValid = (user = {}) => {
 const toOptionalText = (value) => {
   const text = String(value ?? '').trim();
   return text || null;
+};
+const pendingSignupStore = new Map();
+const clonePendingSignup = (entry) => (entry ? JSON.parse(JSON.stringify(entry)) : null);
+const sanitizeSignupDraft = (reqBody = {}) => {
+  const draft = { ...(reqBody || {}) };
+  delete draft.password;
+  return draft;
+};
+const getPendingSignupByEmail = (email) => clonePendingSignup(
+  pendingSignupStore.get(normalizeEmail(email)) || null
+);
+const upsertPendingSignup = (entry = {}) => {
+  const normalizedEmail = normalizeEmail(entry.email);
+  if (!normalizedEmail) return null;
+
+  const timestamp = new Date().toISOString();
+  const existing = pendingSignupStore.get(normalizedEmail);
+  const nextEntry = {
+    ...(existing || {}),
+    ...entry,
+    email: normalizedEmail,
+    id: existing?.id || crypto.randomUUID(),
+    created_at: existing?.created_at || timestamp,
+    updated_at: timestamp
+  };
+
+  pendingSignupStore.set(normalizedEmail, nextEntry);
+  return clonePendingSignup(nextEntry);
+};
+const clearPendingSignup = (email) => {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return;
+  pendingSignupStore.delete(normalizedEmail);
 };
 const buildOtpEmailWarning = ({ sent, reason }) => {
   if (sent) return undefined;
@@ -492,6 +526,51 @@ const createLocalRoleProfile = (role, userId, reqBody = {}) => {
   });
 };
 
+const createVerifiedUserFromPendingSignup = async (pendingSignup) => {
+  const role = normalizeRoleValue(pendingSignup?.role);
+  const reqBody = pendingSignup?.reqBody || {};
+  const baseUserPayload = {
+    name: pendingSignup?.name || '',
+    email: normalizeEmail(pendingSignup?.email),
+    mobile: pendingSignup?.mobile || '',
+    gender: pendingSignup?.gender || null,
+    caste: pendingSignup?.caste || null,
+    religion: pendingSignup?.religion || null,
+    password_hash: pendingSignup?.password_hash || '',
+    role,
+    status: USER_STATUSES.ACTIVE,
+    is_hr_approved: role === ROLES.HR ? false : true,
+    is_email_verified: true,
+    otp_code: null,
+    otp_expires_at: null
+  };
+
+  if (supabase) {
+    const { data: insertedUser, error: userInsertError } = await supabase
+      .from('users')
+      .insert(baseUserPayload)
+      .select('*')
+      .single();
+
+    if (userInsertError) throw userInsertError;
+
+    const userRow = isStudentPortalRole(role)
+      ? { ...insertedUser, date_of_birth: reqBody?.dateOfBirth || null }
+      : insertedUser;
+
+    await upsertSignupProfile({ userId: userRow.id, role, reqBody });
+    return userRow;
+  }
+
+  const userRow = authStore.createUser({
+    ...baseUserPayload,
+    date_of_birth: isStudentPortalRole(role) ? reqBody?.dateOfBirth || null : null
+  });
+
+  await upsertSignupProfile({ userId: userRow.id, role, reqBody });
+  return userRow;
+};
+
 const redirectOAuthFailure = (res, message, clientAppUrl) => {
   res.redirect(buildOAuthClientRedirectUrl({ error: message, clientAppUrl }));
 };
@@ -905,8 +984,9 @@ router.post('/signup', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (password.length < 6) {
-    res.status(400).send({ status: false, message: 'Password must be at least 6 characters' });
+  const passwordError = getPasswordPolicyError(password);
+  if (passwordError) {
+    res.status(400).send({ status: false, message: passwordError });
     return;
   }
 
@@ -918,6 +998,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
   const role = config.adminEmails.includes(email)
     ? ROLES.ADMIN
     : requestedRole;
+  const pendingSignup = getPendingSignupByEmail(email);
 
   const existingUser = supabase
     ? (await supabase.from('users').select('*').eq('email', email).maybeSingle()).data
@@ -947,12 +1028,56 @@ router.post('/signup', asyncHandler(async (req, res) => {
     }
   }
 
+  if (!existingUser && pendingSignup && normalizeRoleValue(pendingSignup.role) !== normalizeRoleValue(role)) {
+    res.send({
+      status: true,
+      roleConflict: true,
+      requiresOtpVerification: true,
+      redirectTo: '/verify-otp',
+      message: `This email is already pending verification as ${pendingSignup.role}. Complete OTP verification or login with the same role.`
+    });
+    return;
+  }
+
   const passwordHash = await bcrypt.hash(password, 10);
   const otpCode = generateOtp();
   const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
 
   let userRow;
-  if (supabase) {
+  let pendingDraft = null;
+  if (!existingUser && !pendingSignup) {
+    pendingDraft = upsertPendingSignup({
+      name,
+      email,
+      mobile,
+      gender,
+      caste,
+      religion,
+      password_hash: passwordHash,
+      role,
+      status: USER_STATUSES.ACTIVE,
+      is_hr_approved: role === ROLES.HR ? false : true,
+      otp_code: otpCode,
+      otp_expires_at: otpExpiresAt,
+      reqBody: sanitizeSignupDraft(req.body || {})
+    });
+  } else if (!existingUser && pendingSignup) {
+    pendingDraft = upsertPendingSignup({
+      ...pendingSignup,
+      name,
+      mobile,
+      gender,
+      caste,
+      religion,
+      password_hash: passwordHash,
+      role,
+      status: USER_STATUSES.ACTIVE,
+      is_hr_approved: role === ROLES.HR ? false : true,
+      otp_code: otpCode,
+      otp_expires_at: otpExpiresAt,
+      reqBody: sanitizeSignupDraft(req.body || {})
+    });
+  } else if (supabase) {
     const userPayload = {
         name,
         email,
@@ -1034,14 +1159,6 @@ router.post('/signup', asyncHandler(async (req, res) => {
 
   const syncWarning = '';
 
-  runAsyncSideEffect('signup-eimager-sync', async () => {
-    try {
-      await syncHhhCandidateToEimager({ user: userRow, profile: userRow });
-    } catch (error) {
-      console.warn(`[eimager-sync] Signup candidate sync failed for ${email}: ${error.message}`);
-    }
-  });
-
   const emailResult = await deliverEmailWithSoftTimeout({
     label: 'signup-otp-email',
     task: () => sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES })
@@ -1053,23 +1170,16 @@ router.post('/signup', asyncHandler(async (req, res) => {
       : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'signup' }) || buildDeferredOtpWarning());
 
   runAsyncSideEffect('audit-signup', () => logAudit({
-    userId: userRow.id,
+    userId: userRow?.id || null,
     action: AUDIT_ACTIONS.SIGNUP,
-    entityType: 'user',
-    entityId: userRow.id,
+    entityType: userRow ? 'user' : 'pending_signup',
+    entityId: userRow?.id || pendingDraft?.id || email,
     details: { role, email },
     ipAddress: getClientIp(req)
   }));
 
-  const token = createAuthToken(userRow);
-
-  res.status(existingUser ? 200 : 201).send({
+  res.status(existingUser || pendingSignup ? 200 : 201).send({
     status: true,
-    token,
-    user: {
-      ...mapPublicUser(userRow),
-      dateOfBirth: userRow.date_of_birth || null
-    },
     requiresOtpVerification: true,
     redirectTo: '/verify-otp',
     otp: exposeOtpForLocalTesting ? otpCode : undefined,
@@ -1077,8 +1187,8 @@ router.post('/signup', asyncHandler(async (req, res) => {
     deliveryFailed: !emailResult.sent,
     emailWarning,
     syncWarning,
-    message: existingUser
-      ? 'Signup already exists but email is pending verification. A fresh OTP has been generated.'
+    message: existingUser || pendingSignup
+      ? 'Signup is pending verification. A fresh OTP has been generated.'
       : (emailResult.pending
         ? 'Signup successful. Continue to OTP verification while we send your code.'
         : 'Signup successful. Continue to OTP verification.')
@@ -1094,22 +1204,24 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
     return;
   }
 
+  const pendingSignup = getPendingSignupByEmail(email);
   const user = supabase
     ? (await supabase.from('users').select('id, email, is_email_verified, otp_code, otp_expires_at').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
+  const target = user || pendingSignup;
 
-  if (!user) {
+  if (!target) {
     res.status(404).send({ status: false, message: 'User not found' });
     return;
   }
 
-  const shouldReuseExistingOtp = isOtpStillValid(user);
-  const otpCode = shouldReuseExistingOtp ? String(user.otp_code).trim() : generateOtp();
+  const shouldReuseExistingOtp = isOtpStillValid(target);
+  const otpCode = shouldReuseExistingOtp ? String(target.otp_code).trim() : generateOtp();
   const otpExpiresAt = shouldReuseExistingOtp
-    ? user.otp_expires_at
+    ? target.otp_expires_at
     : new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
 
-  if (!shouldReuseExistingOtp && supabase) {
+  if (!shouldReuseExistingOtp && user && supabase) {
     const { error: updateError } = await supabase
       .from('users')
       .update({ otp_code: otpCode, otp_expires_at: otpExpiresAt })
@@ -1119,8 +1231,14 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
       sendSupabaseError(res, updateError);
       return;
     }
-  } else if (!shouldReuseExistingOtp) {
+  } else if (!shouldReuseExistingOtp && user) {
     authStore.updateUserById(user.id, { otp_code: otpCode, otp_expires_at: otpExpiresAt });
+  } else if (!shouldReuseExistingOtp && pendingSignup) {
+    upsertPendingSignup({
+      ...pendingSignup,
+      otp_code: otpCode,
+      otp_expires_at: otpExpiresAt
+    });
   }
 
   const emailResult = await sendOtpEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES });
@@ -1138,14 +1256,16 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
     return;
   }
 
-  await logAudit({
-    userId: user.id,
-    action: AUDIT_ACTIONS.OTP_SENT,
-    entityType: 'user',
-    entityId: user.id,
-    details: { email },
-    ipAddress: getClientIp(req)
-  });
+  if (user) {
+    await logAudit({
+      userId: user.id,
+      action: AUDIT_ACTIONS.OTP_SENT,
+      entityType: 'user',
+      entityId: user.id,
+      details: { email },
+      ipAddress: getClientIp(req)
+    });
+  }
 
   res.send({
     status: true,
@@ -1163,6 +1283,76 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
 
   if (!email || !otpCode) {
     res.status(400).send({ status: false, message: 'email and otp are required' });
+    return;
+  }
+
+  const pendingSignup = getPendingSignupByEmail(email);
+  if (pendingSignup) {
+    if (!pendingSignup.otp_code || pendingSignup.otp_code !== otpCode) {
+      res.status(400).send({ status: false, message: 'Invalid OTP' });
+      return;
+    }
+
+    if (pendingSignup.otp_expires_at && new Date(pendingSignup.otp_expires_at) < new Date()) {
+      res.status(400).send({ status: false, message: 'OTP has expired. Please request a new one.' });
+      return;
+    }
+
+    const existingVerifiedUser = supabase
+      ? (await supabase.from('users').select('id, email, is_email_verified').eq('email', email).maybeSingle()).data
+      : authStore.findUserByEmail(email);
+
+    if (existingVerifiedUser?.is_email_verified) {
+      res.status(409).send({ status: false, message: 'Email already registered. Please login instead.' });
+      return;
+    }
+
+    let userRow;
+    try {
+      userRow = await createVerifiedUserFromPendingSignup(pendingSignup);
+    } catch (createError) {
+      sendSupabaseError(res, createError);
+      return;
+    }
+
+    clearPendingSignup(email);
+
+    runAsyncSideEffect('signup-eimager-sync', async () => {
+      try {
+        await syncHhhCandidateToEimager({ user: userRow, profile: userRow });
+      } catch (syncError) {
+        console.warn(`[eimager-sync] Signup candidate sync failed for ${email}: ${syncError.message}`);
+      }
+    });
+
+    await logAudit({
+      userId: userRow.id,
+      action: AUDIT_ACTIONS.OTP_VERIFIED,
+      entityType: 'user',
+      entityId: userRow.id,
+      details: { email, source: 'signup_pending' },
+      ipAddress: getClientIp(req)
+    });
+
+    const token = createAuthToken(userRow);
+    const publicUser = isStudentPortalRole(userRow.role) && pendingSignup?.reqBody?.dateOfBirth
+      ? { ...userRow, date_of_birth: pendingSignup.reqBody.dateOfBirth }
+      : userRow;
+
+    res.send({
+      status: true,
+      message: 'Email verified successfully',
+      token,
+      user: {
+        ...mapPublicUser({
+          ...publicUser,
+          is_email_verified: true,
+          date_of_birth: publicUser.date_of_birth || null
+        }),
+        dateOfBirth: publicUser.date_of_birth || null
+      },
+      redirectTo: getRoleRedirectPath(publicUser.role)
+    });
     return;
   }
 
@@ -1327,8 +1517,9 @@ router.post('/reset-password', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (newPassword.length < 6) {
-    res.status(400).send({ status: false, message: 'Password must be at least 6 characters' });
+  const passwordError = getPasswordPolicyError(newPassword, 'New password is required');
+  if (passwordError) {
+    res.status(400).send({ status: false, message: passwordError });
     return;
   }
 
