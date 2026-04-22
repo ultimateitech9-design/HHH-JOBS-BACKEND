@@ -15,9 +15,10 @@ test('retired employee is treated as a student-portal role', () => {
   assert.equal(isStudentPortalRole(ROLES.HR), false);
 });
 
-test('retired employee is allowed in auth signup and oauth flows', () => {
+test('supported public roles are allowed in auth signup', () => {
   assert.equal(isAuthSignupRole(ROLES.RETIRED_EMPLOYEE), true);
   assert.equal(isAuthSignupRole(ROLES.STUDENT), true);
+  assert.equal(isAuthSignupRole(ROLES.CAMPUS_CONNECT), true);
   assert.equal(isAuthSignupRole(ROLES.ADMIN), false);
 });
 
@@ -29,6 +30,7 @@ test('student-like roles redirect to the student dashboard and profile bucket', 
   assert.equal(getRoleRedirectPath(ROLES.SALES), '/portal/sales/overview');
   assert.equal(getRoleRedirectPath(ROLES.ACCOUNTS), '/portal/accounts/overview');
   assert.equal(getRoleRedirectPath(ROLES.DATAENTRY), '/portal/dataentry/dashboard');
+  assert.equal(getRoleRedirectPath(ROLES.CAMPUS_CONNECT), '/portal/campus-connect/dashboard');
   assert.equal(getRoleRedirectPath(ROLES.PLATFORM), '/portal/platform/dashboard');
   assert.equal(getRoleRedirectPath(ROLES.AUDIT), '/portal/audit/dashboard');
   assert.equal(getRoleRedirectPath(ROLES.SUPER_ADMIN), '/portal/super-admin/dashboard');

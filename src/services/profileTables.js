@@ -4,6 +4,7 @@ const PROFILE_TABLE_BY_ROLE = {
   [ROLES.STUDENT]: 'student_profiles',
   [ROLES.RETIRED_EMPLOYEE]: 'student_profiles',
   [ROLES.HR]: 'hr_profiles',
+  [ROLES.CAMPUS_CONNECT]: 'colleges',
   [ROLES.ADMIN]: 'admin_profiles',
   [ROLES.SUPER_ADMIN]: 'super_admin_profiles',
   [ROLES.DATAENTRY]: 'dataentry_profiles',
@@ -28,6 +29,7 @@ const ROLE_SYNC_CONFIGS = [
   { role: ROLES.STUDENT, table: 'student_profiles', requiresEmployeeProfile: false },
   { role: ROLES.RETIRED_EMPLOYEE, table: 'student_profiles', requiresEmployeeProfile: false },
   { role: ROLES.HR, table: 'hr_profiles', requiresEmployeeProfile: true },
+  { role: ROLES.CAMPUS_CONNECT, table: 'colleges', requiresEmployeeProfile: false },
   { role: ROLES.ADMIN, table: 'admin_profiles', requiresEmployeeProfile: true },
   { role: ROLES.SUPER_ADMIN, table: 'super_admin_profiles', requiresEmployeeProfile: true },
   { role: ROLES.SUPPORT, table: 'support_profiles', requiresEmployeeProfile: true },
@@ -67,6 +69,9 @@ const getProfileTableForRole = (role) => PROFILE_TABLE_BY_ROLE[normalizeRole(rol
 const isEmployeeProfileRole = (role) => EMPLOYEE_PROFILE_ROLES.has(normalizeRole(role));
 
 const buildProfileSeedFromUser = (user = {}) => ({
+  name: toOptionalText(user?.name),
+  email: toOptionalText(user?.email),
+  mobile: toOptionalText(user?.mobile),
   workEmail: toOptionalText(user?.work_email ?? user?.workEmail ?? user?.email),
   dateOfBirth: toOptionalText(user?.date_of_birth ?? user?.dateOfBirth)
 });
@@ -138,6 +143,24 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
       company_name: toOptionalText(reqBody?.companyName ?? reqBody?.company_name),
       location: toOptionalText(reqBody?.location),
       about: toOptionalText(reqBody?.about)
+    };
+  }
+
+  if (profileRole === ROLES.CAMPUS_CONNECT) {
+    const fallbackName = toOptionalText(reqBody?.name) || toOptionalText(reqBody?.collegeName) || 'Campus Connect';
+    return {
+      ...basePayload,
+      name: fallbackName,
+      city: toOptionalText(reqBody?.city),
+      state: toOptionalText(reqBody?.state),
+      affiliation: toOptionalText(reqBody?.affiliation),
+      established_year: toOptionalNumber(reqBody?.establishedYear ?? reqBody?.established_year),
+      website: toOptionalText(reqBody?.website),
+      logo_url: toOptionalText(reqBody?.logoUrl ?? reqBody?.logo_url),
+      contact_email: toOptionalText(reqBody?.contactEmail ?? reqBody?.contact_email ?? reqBody?.email),
+      contact_phone: toOptionalText(reqBody?.contactPhone ?? reqBody?.contact_phone ?? reqBody?.mobile),
+      about: toOptionalText(reqBody?.about),
+      placement_officer_name: toOptionalText(reqBody?.placementOfficerName ?? reqBody?.placement_officer_name)
     };
   }
 

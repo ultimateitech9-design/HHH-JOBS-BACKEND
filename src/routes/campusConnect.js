@@ -466,7 +466,7 @@ router.post('/students/import', upload.single('csv'), asyncHandler(async (req, r
     if (existingUser && !isAllowedCampusStudentUser(existingUser)) {
       needsReview += 1;
       studentPayloads.push({
-        id: existingRow?.id,
+        ...(existingRow?.id ? { id: existingRow.id } : {}),
         college_id: collegeId,
         name: row.name,
         email: row.email,
@@ -532,7 +532,7 @@ router.post('/students/import', upload.single('csv'), asyncHandler(async (req, r
     }
 
     studentPayloads.push({
-      id: existingRow?.id,
+      ...(existingRow?.id ? { id: existingRow.id } : {}),
       college_id: collegeId,
       name: row.name,
       email: row.email,

@@ -200,6 +200,45 @@ const deliverEmailWithSoftTimeout = async ({ label, task }) => {
 };
 
 const normalizeRoleValue = (role) => String(role || '').trim().toLowerCase();
+const buildCampusCollegePayload = ({ userId, reqBody = {}, fallbackName = '', fallbackEmail = '', fallbackMobile = '' }) => {
+  const basePayload = {
+    user_id: userId,
+    name: toOptionalText(reqBody?.name ?? fallbackName),
+    city: toOptionalText(reqBody?.city),
+    state: toOptionalText(reqBody?.state),
+    affiliation: toOptionalText(reqBody?.affiliation),
+    established_year: reqBody?.establishedYear ? Number.parseInt(reqBody.establishedYear, 10) : null,
+    website: toOptionalText(reqBody?.website),
+    logo_url: toOptionalText(reqBody?.logoUrl ?? reqBody?.logo_url),
+    contact_email: toOptionalText(reqBody?.contactEmail ?? reqBody?.contact_email ?? fallbackEmail),
+    contact_phone: toOptionalText(reqBody?.contactPhone ?? reqBody?.contact_phone ?? fallbackMobile),
+    about: toOptionalText(reqBody?.about),
+    placement_officer_name: toOptionalText(reqBody?.placementOfficerName ?? reqBody?.placement_officer_name)
+  };
+
+  return Object.fromEntries(
+    Object.entries(basePayload).filter(([, value]) => value !== undefined)
+  );
+};
+
+const upsertCampusCollegeProfile = async ({ userId, role, reqBody = {}, fallbackName = '', fallbackEmail = '', fallbackMobile = '' }) => {
+  if (!supabase || !userId || normalizeRoleValue(role) !== ROLES.CAMPUS_CONNECT) return;
+
+  const payload = buildCampusCollegePayload({
+    userId,
+    reqBody,
+    fallbackName,
+    fallbackEmail,
+    fallbackMobile
+  });
+
+  const { error } = await supabase
+    .from('colleges')
+    .upsert(payload, { onConflict: 'user_id' });
+
+  if (error) throw error;
+};
+
 const activatePendingCampusStudentRows = async ({ userId, email }) => {
   if (!supabase || !userId || !email) return;
 
@@ -237,6 +276,14 @@ const activatePendingCampusStudentRows = async ({ userId, email }) => {
 const upsertSignupProfile = async ({ userId, role, reqBody = {} }) => {
   if (supabase) {
     await upsertRoleProfile({ supabase, role, userId, reqBody });
+    await upsertCampusCollegeProfile({
+      userId,
+      role,
+      reqBody,
+      fallbackName: reqBody?.name,
+      fallbackEmail: reqBody?.email,
+      fallbackMobile: reqBody?.mobile
+    });
     return;
   }
 
@@ -991,7 +1038,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
   }
 
   if (!isAuthSignupRole(requestedRole)) {
-    res.status(400).send({ status: false, message: 'Invalid role. Allowed roles: student, hr, retired_employee' });
+    res.status(400).send({ status: false, message: 'Invalid role. Allowed roles: student, hr, retired_employee, campus_connect' });
     return;
   }
 

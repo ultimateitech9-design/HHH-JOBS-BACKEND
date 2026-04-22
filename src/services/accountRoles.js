@@ -1,7 +1,7 @@
 const { ROLES } = require('../constants');
 
 const STUDENT_PORTAL_ROLES = new Set([ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE]);
-const AUTH_ALLOWED_ROLES = new Set([ROLES.STUDENT, ROLES.HR, ROLES.RETIRED_EMPLOYEE]);
+const AUTH_ALLOWED_ROLES = new Set([ROLES.STUDENT, ROLES.HR, ROLES.RETIRED_EMPLOYEE, ROLES.CAMPUS_CONNECT]);
 
 const normalizeRole = (role) => String(role || '').trim().toLowerCase();
 

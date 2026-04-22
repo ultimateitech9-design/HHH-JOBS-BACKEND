@@ -66,6 +66,7 @@ const createRoleSyncSummarySupabaseDouble = ({
         { role: ROLES.STUDENT, role_profile_table: 'student_profiles', requires_employee_profile: false },
         { role: ROLES.RETIRED_EMPLOYEE, role_profile_table: 'student_profiles', requires_employee_profile: false },
         { role: ROLES.HR, role_profile_table: 'hr_profiles', requires_employee_profile: true },
+        { role: ROLES.CAMPUS_CONNECT, role_profile_table: 'colleges', requires_employee_profile: false },
         { role: ROLES.ADMIN, role_profile_table: 'admin_profiles', requires_employee_profile: true },
         { role: ROLES.SUPER_ADMIN, role_profile_table: 'super_admin_profiles', requires_employee_profile: true },
         { role: ROLES.SUPPORT, role_profile_table: 'support_profiles', requires_employee_profile: true },
