@@ -34,8 +34,8 @@ const loadOpenJobForApplication = async (jobId) => {
     throw buildApplicationError(410, 'Job has expired and is no longer accepting applications');
   }
 
-  if (job.approval_status && job.approval_status !== JOB_APPROVAL_STATUSES.APPROVED) {
-    throw buildApplicationError(403, 'Job is pending moderation and cannot accept applications yet');
+  if (job.approval_status === JOB_APPROVAL_STATUSES.REJECTED) {
+    throw buildApplicationError(403, 'Job is unavailable for applications');
   }
 
   if (isJobExpiredByApplications(job)) {

@@ -3,6 +3,8 @@ const { ROLES, JOB_STATUSES } = require('../constants');
 const { supabase, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('../middleware/roles');
+const { createRateLimitMiddleware, resolveRequestKey } = require('../middleware/rateLimit');
+const { createAutomationProtection, createBrowserWriteProtection } = require('../middleware/requestProtection');
 const { mapJobFromRow } = require('../utils/mappers');
 const { normalizeEmail, clamp, asyncHandler } = require('../utils/helpers');
 const { applyJobFilters, createHrJob, updateHrJob, deleteHrJob, getJobByIdAndOptionallyTrackView } = require('../services/jobs');
@@ -10,6 +12,26 @@ const { applyToJob } = require('../services/applications');
 const { buildCompanyBrandIndex, resolveCompanyBrand } = require('../services/companyBranding');
 
 const router = express.Router();
+const publicJobsReadLimiter = createRateLimitMiddleware({
+  namespace: 'jobs_catalog',
+  windowMs: 60 * 1000,
+  max: 180,
+  message: 'Too many catalog requests. Please slow down and try again in a minute.'
+});
+const jobApplicationLimiter = createRateLimitMiddleware({
+  namespace: 'jobs_apply',
+  windowMs: 10 * 60 * 1000,
+  max: 25,
+  message: 'Too many application attempts. Please wait before trying again.',
+  keyGenerator: (req) => req.user?.id || normalizeEmail(req.user?.email) || resolveRequestKey(req),
+  skip: (req) => [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user?.role)
+});
+const automationProtection = createAutomationProtection();
+const browserWriteProtection = createBrowserWriteProtection();
+const setCatalogCacheHeaders = (_req, res, next) => {
+  res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
+  next();
+};
 
 const mapJobWithBrand = (job, brandIndex) => {
   const mappedJob = mapJobFromRow(job);
@@ -23,7 +45,7 @@ const mapJobWithBrand = (job, brandIndex) => {
   };
 };
 
-router.get('/meta/categories', asyncHandler(async (req, res) => {
+router.get('/meta/categories', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!supabase) {
     res.send({ status: true, categories: [] });
     return;
@@ -43,7 +65,7 @@ router.get('/meta/categories', asyncHandler(async (req, res) => {
   res.send({ status: true, categories: data || [] });
 }));
 
-router.get('/meta/locations', asyncHandler(async (req, res) => {
+router.get('/meta/locations', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!supabase) {
     res.send({ status: true, locations: [] });
     return;
@@ -63,7 +85,7 @@ router.get('/meta/locations', asyncHandler(async (req, res) => {
   res.send({ status: true, locations: data || [] });
 }));
 
-router.get('/', asyncHandler(async (req, res) => {
+router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!supabase) {
     res.status(503).send({
       status: false,
@@ -140,7 +162,7 @@ router.get('/', asyncHandler(async (req, res) => {
   });
 }));
 
-router.get('/all', asyncHandler(async (req, res) => {
+router.get('/all', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!supabase) {
     res.status(503).send({
       status: false,
@@ -226,9 +248,9 @@ router.get('/mine/list/:email?', requireAuth, requireActiveUser, requireRole(ROL
 router.post('/legacy/post-job', requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN, ROLES.SUPER_ADMIN), requireApprovedHr, asyncHandler(createHrJob));
 router.patch('/legacy/update-job/:id', requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN, ROLES.SUPER_ADMIN), requireApprovedHr, asyncHandler(updateHrJob));
 router.delete('/legacy/job/:id', requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN, ROLES.SUPER_ADMIN), requireApprovedHr, asyncHandler(deleteHrJob));
-router.post('/legacy/job/:id/apply', requireAuth, requireActiveUser, requireRole(ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(applyToJob));
+router.post('/legacy/job/:id/apply', automationProtection, browserWriteProtection, requireAuth, requireActiveUser, requireRole(ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, ROLES.ADMIN, ROLES.SUPER_ADMIN), jobApplicationLimiter, asyncHandler(applyToJob));
 
-router.get('/:id', asyncHandler(async (req, res) => {
+router.get('/:id', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!supabase) {
     res.status(503).send({
       status: false,
@@ -271,6 +293,15 @@ router.get('/:id', asyncHandler(async (req, res) => {
   res.send({ status: true, job: mapJobWithBrand(data, brandIndex) });
 }));
 
-router.post('/:id/apply', requireAuth, requireActiveUser, requireRole(ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(applyToJob));
+router.post(
+  '/:id/apply',
+  automationProtection,
+  browserWriteProtection,
+  requireAuth,
+  requireActiveUser,
+  requireRole(ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, ROLES.ADMIN, ROLES.SUPER_ADMIN),
+  jobApplicationLimiter,
+  asyncHandler(applyToJob)
+);
 
 module.exports = router;

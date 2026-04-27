@@ -2,8 +2,9 @@ const { supabase, sendSupabaseError } = require('../supabase');
 const { JOB_STATUSES, JOB_APPROVAL_STATUSES, ROLES } = require('../constants');
 const { normalizeEmail, stripUndefined, toArray } = require('../utils/helpers');
 const { mapJobFromRow } = require('../utils/mappers');
-const { notifyMatchingJobAlerts } = require('./notifications');
-const { notifyRecommendedStudentsForJob } = require('./recommendations');
+const { notifyUsersByRoles } = require('./notifications');
+const { inspectJobPostingContent } = require('./jobModeration');
+const { enqueueJobPostedSideEffects } = require('./sideEffectQueue');
 const {
   getPlanOrThrow,
   getPlanBySlug,
@@ -21,9 +22,41 @@ const { normalizeCompanyKey } = require('./companyDirectory');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
 
-const triggerAutoApplyForJob = async (job, options) => {
-  const { processAutoApplyForJob } = require('./autoApply');
-  return processAutoApplyForJob(job, options);
+const notifyBlockedJobToAdmins = async ({
+  actor = {},
+  payload = {},
+  moderation = {},
+  action = 'create'
+}) => {
+  const jobTitle = String(payload.job_title || 'Untitled role').trim() || 'Untitled role';
+  const companyName = String(payload.company_name || 'Unknown company').trim() || 'Unknown company';
+  const matchedTerms = Array.isArray(moderation.matchedTerms) ? moderation.matchedTerms.slice(0, 8) : [];
+  const blockedFields = Array.isArray(moderation.blockedFields) ? moderation.blockedFields.slice(0, 8) : [];
+
+  try {
+    await notifyUsersByRoles({
+      roles: [ROLES.ADMIN, ROLES.SUPER_ADMIN],
+      type: 'job_content_blocked',
+      title: action === 'update' ? 'Blocked job update attempt' : 'Blocked job post attempt',
+      message: `${actor.name || 'An HR user'} (${actor.email || 'unknown'}) tried to ${action === 'update' ? 'update' : 'publish'} "${jobTitle}" for ${companyName}, but the post was blocked by content safeguards.`,
+      link: '/portal/admin/jobs',
+      meta: {
+        action,
+        hrId: actor.id || null,
+        hrName: actor.name || null,
+        hrEmail: actor.email || null,
+        jobTitle,
+        companyName,
+        moderation: {
+          matchedTerms,
+          blockedFields,
+          matchedCategories: moderation.matchedCategories || []
+        }
+      }
+    });
+  } catch (error) {
+    console.warn('[JOB MODERATION ALERT]', error.message || error);
+  }
 };
 
 const extractLocationsFromBody = (body = {}) => {
@@ -167,7 +200,6 @@ const applyJobFilters = (query, filters = {}) => {
     salaryType,
     status,
     category,
-    approvalStatus = JOB_APPROVAL_STATUSES.APPROVED,
     includeUnapproved = false
   } = filters;
 
@@ -181,7 +213,7 @@ const applyJobFilters = (query, filters = {}) => {
   if (category) query = query.eq('category', category);
   if (status) query = query.eq('status', status);
   if (status === JOB_STATUSES.OPEN) query = query.gte('valid_till', new Date().toISOString());
-  if (!includeUnapproved) query = query.eq('approval_status', approvalStatus);
+  if (!includeUnapproved) query = query.neq('approval_status', JOB_APPROVAL_STATUSES.REJECTED);
 
   return query;
 };
@@ -192,6 +224,26 @@ const createHrJob = async (req, res) => {
 
   if (missing.length > 0) {
     res.status(400).send({ status: false, message: `Missing required fields: ${missing.join(', ')}` });
+    return;
+  }
+
+  const moderation = inspectJobPostingContent(payload);
+  if (moderation.blocked) {
+    await notifyBlockedJobToAdmins({
+      actor: req.user,
+      payload,
+      moderation,
+      action: 'create'
+    });
+
+    res.status(400).send({
+      status: false,
+      message: 'Job post blocked because it contains unsafe or inappropriate content. Remove that wording and try again.',
+      moderation: {
+        matchedCategories: moderation.matchedCategories,
+        blockedFields: moderation.blockedFields
+      }
+    });
     return;
   }
 
@@ -250,7 +302,7 @@ const createHrJob = async (req, res) => {
       posted_by: normalizeEmail(req.user.email),
       created_by: req.user.id,
       status: JOB_STATUSES.OPEN,
-      approval_status: req.user.role === ROLES.ADMIN ? JOB_APPROVAL_STATUSES.APPROVED : JOB_APPROVAL_STATUSES.PENDING,
+      approval_status: JOB_APPROVAL_STATUSES.APPROVED,
       skills: Array.isArray(payload.skills) ? payload.skills : []
     };
 
@@ -269,18 +321,10 @@ const createHrJob = async (req, res) => {
     }
 
     if (data.status === JOB_STATUSES.OPEN && data.approval_status === JOB_APPROVAL_STATUSES.APPROVED) {
-      const notificationJobs = [
-        notifyMatchingJobAlerts(data),
-        notifyRecommendedStudentsForJob(data),
-        triggerAutoApplyForJob(data, { triggerSource: 'job_created' })
-      ];
-
-      const results = await Promise.allSettled(notificationJobs);
-      results
-        .filter((result) => result.status === 'rejected')
-        .forEach((result) => {
-          console.warn('[JOB RECOMMENDATION NOTIFY]', result.reason?.message || result.reason || 'Unknown error');
-        });
+      await enqueueJobPostedSideEffects({
+        jobId: data.id,
+        triggerSource: 'job_created'
+      });
     }
 
     res.status(201).send({
@@ -310,7 +354,6 @@ const updateHrJob = async (req, res) => {
 
   const payload = buildJobPayload(req.body || {});
   const allowedStatus = String(req.body?.status || '').toLowerCase();
-  const approvalStatus = String(req.body?.approvalStatus || '').toLowerCase();
   const requestedPlanSlug = normalizePlanSlug(payload.plan_slug || req.body?.planSlug || req.body?.plan_slug || '');
 
   if (requestedPlanSlug && requestedPlanSlug !== normalizePlanSlug(existingJob.plan_slug)) {
@@ -326,8 +369,30 @@ const updateHrJob = async (req, res) => {
     return;
   }
 
-  if (approvalStatus && !Object.values(JOB_APPROVAL_STATUSES).includes(approvalStatus)) {
-    res.status(400).send({ status: false, message: 'Invalid approval status' });
+  const moderation = inspectJobPostingContent({
+    ...existingJob,
+    ...payload,
+    skills: payload.skills !== undefined ? payload.skills : existingJob.skills
+  });
+  if (moderation.blocked) {
+    await notifyBlockedJobToAdmins({
+      actor: req.user,
+      payload: {
+        ...existingJob,
+        ...payload
+      },
+      moderation,
+      action: 'update'
+    });
+
+    res.status(400).send({
+      status: false,
+      message: 'Job update blocked because it contains unsafe or inappropriate content. Remove that wording and try again.',
+      moderation: {
+        matchedCategories: moderation.matchedCategories,
+        blockedFields: moderation.blockedFields
+      }
+    });
     return;
   }
 
@@ -370,11 +435,8 @@ const updateHrJob = async (req, res) => {
         ? null
         : undefined,
     skills: payload.skills ? (Array.isArray(payload.skills) ? payload.skills : []) : undefined,
-    approval_status: req.user.role === ROLES.ADMIN
-      ? (approvalStatus || undefined)
-      : JOB_APPROVAL_STATUSES.PENDING,
-    reviewed_by: req.user.role === ROLES.ADMIN ? req.user.id : undefined,
-    reviewed_at: req.user.role === ROLES.ADMIN ? new Date().toISOString() : undefined
+    approval_status: JOB_APPROVAL_STATUSES.APPROVED,
+    approval_note: null
   });
 
   if (payload.company_logo !== undefined || !normalizeLogoInput(existingJob.company_logo)) {

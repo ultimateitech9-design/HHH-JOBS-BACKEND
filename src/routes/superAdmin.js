@@ -379,19 +379,21 @@ router.patch('/jobs/:id/status', asyncHandler(async (req, res) => {
   const jobId = req.params.id;
   const newStatus = String(req.body?.status || '').toLowerCase();
 
-  const validStatuses = [JOB_STATUSES.OPEN, JOB_STATUSES.CLOSED, JOB_STATUSES.DELETED,
-    JOB_APPROVAL_STATUSES.APPROVED, JOB_APPROVAL_STATUSES.REJECTED, JOB_APPROVAL_STATUSES.PENDING];
+  if ([JOB_APPROVAL_STATUSES.APPROVED, JOB_APPROVAL_STATUSES.REJECTED, JOB_APPROVAL_STATUSES.PENDING].includes(newStatus)) {
+    return res.status(410).send({
+      status: false,
+      message: 'Job approval statuses are retired. Use open, closed, or deleted only.'
+    });
+  }
+
+  const validStatuses = [JOB_STATUSES.OPEN, JOB_STATUSES.CLOSED, JOB_STATUSES.DELETED];
 
   if (!validStatuses.includes(newStatus)) {
     return res.status(400).send({ status: false, message: 'Invalid status value' });
   }
 
   const updatePayload = {};
-  if ([JOB_STATUSES.OPEN, JOB_STATUSES.CLOSED, JOB_STATUSES.DELETED].includes(newStatus)) {
-    updatePayload.status = newStatus;
-  } else {
-    updatePayload.approval_status = newStatus;
-  }
+  updatePayload.status = newStatus;
 
   const { data, error } = await supabase
     .from('jobs')
@@ -402,20 +404,6 @@ router.patch('/jobs/:id/status', asyncHandler(async (req, res) => {
 
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Job not found' });
-
-  if (data.approval_status === JOB_APPROVAL_STATUSES.APPROVED && data.status === JOB_STATUSES.OPEN) {
-    const results = await Promise.allSettled([
-      notifyMatchingJobAlerts(data),
-      notifyRecommendedStudentsForJob(data),
-      processAutoApplyForJob(data, { triggerSource: 'job_approved' })
-    ]);
-
-    results
-      .filter((result) => result.status === 'rejected')
-      .forEach((result) => {
-        console.warn('[SUPER ADMIN JOB APPROVAL NOTIFY]', result.reason?.message || result.reason || 'Unknown error');
-      });
-  }
 
   res.send({ status: true, job: data });
 }));

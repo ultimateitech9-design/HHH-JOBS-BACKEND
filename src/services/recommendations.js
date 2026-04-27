@@ -373,7 +373,7 @@ const loadRecommendationContext = async (userId) => {
     supabase.from('applications').select('job_id, status, created_at').eq('applicant_id', userId).order('created_at', { ascending: false }),
     supabase.from('saved_jobs').select('job_id, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(40),
     supabase.from('student_job_views').select('job_id, viewed_at').eq('user_id', userId).order('viewed_at', { ascending: false }).limit(60),
-    supabase.from('jobs').select('*').eq('status', 'open').eq('approval_status', 'approved').order('is_featured', { ascending: false }).order('created_at', { ascending: false }).limit(200),
+    supabase.from('jobs').select('*').eq('status', 'open').neq('approval_status', 'rejected').order('is_featured', { ascending: false }).order('created_at', { ascending: false }).limit(200),
     supabase.from('student_profiles').select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, graduation_details, is_discoverable').neq('user_id', userId).eq('is_discoverable', true).limit(200),
     supabase.from('users').select('id, name, email').eq('id', userId).maybeSingle()
   ]);

@@ -1,3 +1,4 @@
+const { ROLES, USER_STATUSES } = require('../constants');
 const { supabase } = require('../supabase');
 const { pushNotificationEvent } = require('./notificationStream');
 
@@ -99,7 +100,47 @@ const notifyMatchingJobAlerts = async (job) => {
   });
 };
 
+const notifyUsersByRoles = async ({
+  roles = [ROLES.ADMIN, ROLES.SUPER_ADMIN],
+  type,
+  title,
+  message,
+  link = null,
+  meta = {}
+}) => {
+  if (!supabase || !title || !message || !Array.isArray(roles) || roles.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('id')
+    .in('role', roles)
+    .eq('status', USER_STATUSES.ACTIVE);
+
+  if (error || !Array.isArray(data) || data.length === 0) {
+    return [];
+  }
+
+  const uniqueUserIds = [...new Set(data.map((row) => row.id).filter(Boolean))];
+  const results = await Promise.allSettled(
+    uniqueUserIds.map((userId) =>
+      createNotification({
+        userId,
+        type,
+        title,
+        message,
+        link,
+        meta
+      })
+    )
+  );
+
+  return results
+    .filter((result) => result.status === 'fulfilled' && result.value)
+    .map((result) => result.value);
+};
+
 module.exports = {
   createNotification,
-  notifyMatchingJobAlerts
+  notifyMatchingJobAlerts,
+  notifyUsersByRoles
 };

@@ -1631,24 +1631,29 @@ router.post('/login', asyncHandler(async (req, res) => {
     return;
   }
 
+  const pendingSignup = getPendingSignupByEmail(email);
   const userRow = supabase
     ? (await supabase.from('users').select('*').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
+  const loginTarget = userRow || pendingSignup;
 
-  if (!userRow) {
+  if (!loginTarget) {
     res.status(401).send({ status: false, message: 'Invalid email or password' });
     return;
   }
 
-  const isPasswordValid = await bcrypt.compare(password, userRow.password_hash);
+  const storedPasswordHash = String(loginTarget.password_hash || '');
+  const isPasswordValid = storedPasswordHash
+    ? await bcrypt.compare(password, storedPasswordHash)
+    : false;
   if (!isPasswordValid) {
     res.status(401).send({ status: false, message: 'Invalid email or password' });
     return;
   }
 
-  let publicUser = userRow;
-  if (isStudentPortalRole(userRow.role) && !publicUser.date_of_birth) {
-    if (supabase) {
+  let publicUser = loginTarget;
+  if (isStudentPortalRole(loginTarget.role) && !publicUser.date_of_birth) {
+    if (userRow && supabase) {
       const { data: studentProfile } = await supabase
         .from('student_profiles')
         .select('date_of_birth')
@@ -1657,19 +1662,21 @@ router.post('/login', asyncHandler(async (req, res) => {
       if (studentProfile?.date_of_birth) {
         publicUser = { ...publicUser, date_of_birth: studentProfile.date_of_birth };
       }
-    } else {
+    } else if (userRow) {
       const studentProfile = authStore.getProfileByRole(ROLES.STUDENT, userRow.id);
       if (studentProfile?.date_of_birth) {
         publicUser = { ...publicUser, date_of_birth: studentProfile.date_of_birth };
       }
+    } else if (pendingSignup?.reqBody?.dateOfBirth) {
+      publicUser = { ...publicUser, date_of_birth: pendingSignup.reqBody.dateOfBirth };
     }
   }
 
-  if (!userRow.is_email_verified) {
+  if (!loginTarget.is_email_verified) {
     const otpCode = generateOtp();
     const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
 
-    if (supabase) {
+    if (userRow && supabase) {
       const { error: updateError } = await supabase
         .from('users')
         .update({
@@ -1682,8 +1689,14 @@ router.post('/login', asyncHandler(async (req, res) => {
         sendSupabaseError(res, updateError);
         return;
       }
-    } else {
+    } else if (userRow) {
       authStore.updateUserById(userRow.id, {
+        otp_code: otpCode,
+        otp_expires_at: otpExpiresAt
+      });
+    } else if (pendingSignup) {
+      upsertPendingSignup({
+        ...pendingSignup,
         otp_code: otpCode,
         otp_expires_at: otpExpiresAt
       });
@@ -1700,10 +1713,10 @@ router.post('/login', asyncHandler(async (req, res) => {
         : (buildOtpDeliveryFailureMessage({ reason: emailResult.reason, flow: 'login' }) || buildDeferredOtpWarning());
 
     runAsyncSideEffect('audit-login-otp', () => logAudit({
-      userId: userRow.id,
+      userId: userRow?.id || null,
       action: AUDIT_ACTIONS.OTP_SENT,
-      entityType: 'user',
-      entityId: userRow.id,
+      entityType: userRow ? 'user' : 'pending_signup',
+      entityId: userRow?.id || pendingSignup?.id || email,
       details: { email, source: 'login' },
       ipAddress: getClientIp(req)
     }));

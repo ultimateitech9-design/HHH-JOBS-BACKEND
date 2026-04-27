@@ -7,6 +7,7 @@ const { runAtsAnalysis } = require('../utils/ats');
 const { extractResumeText } = require('../utils/resumeExtraction');
 const { clamp, isValidUuid, asyncHandler } = require('../utils/helpers');
 const { enhanceAtsAnalysisWithAi } = require('../services/atsAi');
+const { enqueueAtsCheckPostProcessing } = require('../services/sideEffectQueue');
 
 const router = express.Router();
 
@@ -240,15 +241,13 @@ router.post('/check/:jobId', asyncHandler(async (req, res) => {
     persistenceWarning = checkError?.message || 'ATS result generated but history could not be saved.';
   } else {
     const atsItems = [
-      ...analysis.matchedKeywords.map((item) => ({ ats_check_id: checkRow.id, item_type: 'matched_keyword', item_value: item })),
-      ...analysis.missingKeywords.map((item) => ({ ats_check_id: checkRow.id, item_type: 'missing_keyword', item_value: item })),
-      ...analysis.warnings.map((item) => ({ ats_check_id: checkRow.id, item_type: 'warning', item_value: item })),
-      ...analysis.suggestions.map((item) => ({ ats_check_id: checkRow.id, item_type: 'suggestion', item_value: item }))
+      ...analysis.matchedKeywords.map((item) => ({ itemType: 'matched_keyword', itemValue: item })),
+      ...analysis.missingKeywords.map((item) => ({ itemType: 'missing_keyword', itemValue: item })),
+      ...analysis.warnings.map((item) => ({ itemType: 'warning', itemValue: item })),
+      ...analysis.suggestions.map((item) => ({ itemType: 'suggestion', itemValue: item }))
     ];
 
-    if (atsItems.length > 0) {
-      await supabase.from('ats_check_items').insert(atsItems);
-    }
+    await enqueueAtsCheckPostProcessing({ atsCheckId: checkRow.id, items: atsItems });
   }
 
   res.send({

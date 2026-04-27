@@ -2,11 +2,19 @@ const express = require('express');
 const { ROLES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
+const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { supabase, sendSupabaseError } = require('../supabase');
 const { asyncHandler, isValidUuid } = require('../utils/helpers');
 const { pushNotificationEvent, registerNotificationClient, serializeSseEvent } = require('../services/notificationStream');
 
 const router = express.Router();
+const notificationStreamLimiter = createRateLimitMiddleware({
+  namespace: 'notification_stream',
+  windowMs: 60 * 1000,
+  max: 12,
+  message: 'Too many notification stream reconnects. Please wait a moment and try again.',
+  keyGenerator: (req) => req.user?.id || req.ip || req.socket?.remoteAddress || 'unknown'
+});
 
 const NOTIFICATION_ROLES = [
   ROLES.STUDENT,
@@ -18,6 +26,7 @@ const NOTIFICATION_ROLES = [
   ROLES.SALES,
   ROLES.ACCOUNTS,
   ROLES.DATAENTRY,
+  ROLES.CAMPUS_CONNECT,
   ROLES.PLATFORM,
   ROLES.AUDIT
 ];
@@ -44,7 +53,7 @@ router.get('/', asyncHandler(async (req, res) => {
   res.send({ status: true, notifications: data || [] });
 }));
 
-router.get('/stream', asyncHandler(async (req, res) => {
+router.get('/stream', notificationStreamLimiter, asyncHandler(async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');

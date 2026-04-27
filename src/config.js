@@ -11,6 +11,10 @@ const normalizeOrigin = (origin) => String(origin || '').trim().replace(/\/+$/, 
 const normalizeText = (value) => String(value || '').trim();
 const normalizeUrl = (value) => normalizeText(value).replace(/\/+$/, '');
 const normalizeGmailAppPassword = (value) => String(value || '').replace(/\s+/g, '');
+const parseBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+};
 const parseEnvList = (...values) => {
   const list = values
     .filter((value) => value !== undefined && value !== null)
@@ -48,6 +52,12 @@ const config = {
   port: Number(process.env.PORT) || 5500,
   nodeEnv: process.env.NODE_ENV || 'development',
   isProduction,
+  redisUrl: normalizeText(process.env.REDIS_URL || process.env.UPSTASH_REDIS_URL || process.env.RENDER_REDIS_URL),
+  redisKeyPrefix: normalizeText(process.env.REDIS_KEY_PREFIX) || 'hhh_jobs',
+  queueWorkersEmbedded: parseBoolean(process.env.QUEUE_WORKERS_EMBEDDED, process.env.NODE_ENV !== 'test'),
+  queueWorkerConcurrency: Number(process.env.QUEUE_WORKER_CONCURRENCY) > 0 ? Number(process.env.QUEUE_WORKER_CONCURRENCY) : 2,
+  queueRetryLimit: Number(process.env.QUEUE_RETRY_LIMIT) > 0 ? Number(process.env.QUEUE_RETRY_LIMIT) : 3,
+  queueBlockTimeoutSeconds: Number(process.env.QUEUE_BLOCK_TIMEOUT_SECONDS) > 0 ? Number(process.env.QUEUE_BLOCK_TIMEOUT_SECONDS) : 2,
 
   // ── Supabase ─────────────────────────────────────────────────────────────────
   supabaseUrl:
@@ -65,6 +75,7 @@ const config = {
 
   // ── CORS ──────────────────────────────────────────────────────────────────────
   corsOrigins,
+  blockSuspiciousAutomation: parseBoolean(process.env.BLOCK_SUSPICIOUS_AUTOMATION, isProduction),
 
   // ── OAuth ─────────────────────────────────────────────────────────────────────
   oauthClientUrl: normalizeOrigin(
@@ -120,7 +131,21 @@ const config = {
   adminEmails: (process.env.ADMIN_EMAILS || '')
     .split(',')
     .map((email) => email.trim().toLowerCase())
-    .filter(Boolean)
+    .filter(Boolean),
+
+  // ── Razorpay ────────────────────────────────────────────────────────────────
+  razorpayKeyId: normalizeText(process.env.RAZORPAY_KEY_ID),
+  razorpayKeySecret: normalizeText(process.env.RAZORPAY_KEY_SECRET),
+  razorpayWebhookSecret: normalizeText(process.env.RAZORPAY_WEBHOOK_SECRET),
+
+  // ── Web Push (VAPID) ───────────────────────────────────────────────────────
+  vapidPublicKey: normalizeText(process.env.VAPID_PUBLIC_KEY),
+  vapidPrivateKey: normalizeText(process.env.VAPID_PRIVATE_KEY),
+  vapidSubject: normalizeText(process.env.VAPID_SUBJECT) || 'mailto:support@hhh-jobs.com',
+
+  // ── WhatsApp Cloud API ─────────────────────────────────────────────────────
+  whatsappPhoneId: normalizeText(process.env.WHATSAPP_PHONE_ID),
+  whatsappToken: normalizeText(process.env.WHATSAPP_TOKEN)
 };
 
 module.exports = config;

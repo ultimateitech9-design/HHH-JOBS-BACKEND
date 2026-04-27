@@ -2,7 +2,7 @@ const express = require('express');
 
 const { supabase, sendSupabaseError } = require('../supabase');
 const { asyncHandler } = require('../utils/helpers');
-const { JOB_APPROVAL_STATUSES, JOB_STATUSES } = require('../constants');
+const { JOB_STATUSES } = require('../constants');
 const { mapJobFromRow } = require('../utils/mappers');
 const { buildCompanyBrandIndex, buildDomainLogoUrl, resolveCompanyBrand } = require('../services/companyBranding');
 const {
@@ -78,7 +78,7 @@ const getDirectorySourceData = async (nowIso) => {
         updated_at
       `)
       .eq('status', JOB_STATUSES.OPEN)
-      .eq('approval_status', JOB_APPROVAL_STATUSES.APPROVED)
+      .neq('approval_status', 'rejected')
       .gte('valid_till', nowIso),
     supabase
       .from('external_jobs')

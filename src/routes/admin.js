@@ -15,13 +15,11 @@ const { requireAuth } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { mapJobFromRow, mapApplicationFromRow, mapReportFromRow } = require('../utils/mappers');
 const { asyncHandler, clamp, normalizeEmail } = require('../utils/helpers');
-const { notifyMatchingJobAlerts, createNotification } = require('../services/notifications');
+const { createNotification } = require('../services/notifications');
 const { logAudit, getClientIp } = require('../services/audit');
-const { sendWelcomeEmail } = require('../services/email');
 const { isStudentPortalRole } = require('../services/accountRoles');
 const { upsertRoleProfile } = require('../services/profileTables');
-const { notifyRecommendedStudentsForJob } = require('../services/recommendations');
-const { processAutoApplyForJob } = require('../services/autoApply');
+const { enqueueWelcomeEmail } = require('../services/sideEffectQueue');
 
 const router = express.Router();
 
@@ -274,69 +272,10 @@ router.patch('/jobs/:id/status', asyncHandler(async (req, res) => {
 }));
 
 router.patch('/jobs/:id/approval', asyncHandler(async (req, res) => {
-  const jobId = req.params.id;
-  const approvalStatus = String(req.body?.approvalStatus || '').toLowerCase();
-  const approvalNote = String(req.body?.approvalNote || '').trim() || null;
-
-  if (!Object.values(JOB_APPROVAL_STATUSES).includes(approvalStatus)) {
-    res.status(400).send({ status: false, message: 'Invalid job approval status' });
-    return;
-  }
-
-  const { data, error } = await supabase
-    .from('jobs')
-    .update({
-      approval_status: approvalStatus,
-      approval_note: approvalNote,
-      reviewed_by: req.user.id,
-      reviewed_at: new Date().toISOString()
-    })
-    .eq('id', jobId)
-    .select('*')
-    .maybeSingle();
-
-  if (error) {
-    sendSupabaseError(res, error);
-    return;
-  }
-  if (!data) {
-    res.status(404).send({ status: false, message: 'Job not found' });
-    return;
-  }
-
-  await createNotification({
-    userId: data.created_by,
-    type: 'job_moderation',
-    title: `Job ${approvalStatus}`,
-    message: `Your job "${data.job_title}" was ${approvalStatus} by admin.`,
-    link: '/hr',
-    meta: { jobId: data.id, approvalStatus, approvalNote }
+  res.status(410).send({
+    status: false,
+    message: 'Job approval flow has been removed. Jobs now go live immediately unless blocked by content safeguards.'
   });
-
-  if (approvalStatus === JOB_APPROVAL_STATUSES.APPROVED && data.status === JOB_STATUSES.OPEN) {
-    const results = await Promise.allSettled([
-      notifyMatchingJobAlerts(data),
-      notifyRecommendedStudentsForJob(data),
-      processAutoApplyForJob(data, { triggerSource: 'job_approved' })
-    ]);
-
-    results
-      .filter((result) => result.status === 'rejected')
-      .forEach((result) => {
-        console.warn('[ADMIN JOB APPROVAL NOTIFY]', result.reason?.message || result.reason || 'Unknown error');
-      });
-  }
-
-  await logAudit({
-    userId: req.user.id,
-    action: AUDIT_ACTIONS.JOB_APPROVED,
-    entityType: 'job',
-    entityId: jobId,
-    details: { approvalStatus, approvalNote },
-    ipAddress: getClientIp(req)
-  });
-
-  res.send({ status: true, job: mapJobFromRow(data) });
 }));
 
 router.delete('/jobs/:id', asyncHandler(async (req, res) => {
@@ -1162,17 +1101,18 @@ router.post('/bulk-register', asyncHandler(async (req, res) => {
 
     // ── Send welcome email ────────────────────────────────────
     let emailSent = false;
+    let emailQueued = false;
     if (sendEmail) {
       try {
-        const emailResult = await sendWelcomeEmail({ to: email, name, password, loginUrl });
-        emailSent = emailResult.sent;
+        await enqueueWelcomeEmail({ to: email, name, password, loginUrl });
+        emailQueued = true;
       } catch (_) {
         // email failure is non-fatal
       }
     }
 
     succeeded.push({ email, userId: newUser.id });
-    results.push({ email, status: 'success', userId: newUser.id, emailSent });
+    results.push({ email, status: 'success', userId: newUser.id, emailSent, emailQueued });
   }
 
   // ── Audit log ─────────────────────────────────────────────

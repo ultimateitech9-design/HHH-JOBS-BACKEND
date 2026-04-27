@@ -6,6 +6,7 @@ const { askAi, logAiInteraction } = require('./ai');
 const { createNotification } = require('./notifications');
 const { submitApplicationForUser } = require('./applications');
 const { JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
+const { enqueueAutoApplyDigest } = require('./sideEffectQueue');
 
 const AUTO_APPLY_STATUSES = {
   APPLIED: 'applied',
@@ -786,7 +787,7 @@ const processAutoApplyForStudentJobs = async ({
 
 const processAutoApplyForJob = async (job, { triggerSource = 'new_job' } = {}) => {
   if (!job || !job.id) return { processedStudents: 0 };
-  if (normalizeLowerText(job.status) !== JOB_STATUSES.OPEN || normalizeLowerText(job.approval_status) !== JOB_APPROVAL_STATUSES.APPROVED) {
+  if (normalizeLowerText(job.status) !== JOB_STATUSES.OPEN || normalizeLowerText(job.approval_status) === JOB_APPROVAL_STATUSES.REJECTED) {
     return { processedStudents: 0 };
   }
 
@@ -937,7 +938,7 @@ const processScheduledAutoApplyDigests = async () => {
         .maybeSingle();
 
       if (!existingDaily.error && !existingDaily.data) {
-        results.push(sendStudentAutoApplyDigest({ userId: row.user_id, cadence: 'daily' }));
+        results.push(enqueueAutoApplyDigest({ userId: row.user_id, cadence: 'daily' }));
       }
     }
 
@@ -955,7 +956,7 @@ const processScheduledAutoApplyDigests = async () => {
         .maybeSingle();
 
       if (!existingWeekly.error && !existingWeekly.data) {
-        results.push(sendStudentAutoApplyDigest({ userId: row.user_id, cadence: 'weekly' }));
+        results.push(enqueueAutoApplyDigest({ userId: row.user_id, cadence: 'weekly' }));
       }
     }
   }

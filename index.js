@@ -11,19 +11,48 @@ const { requireAuth } = require('./src/middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('./src/middleware/roles');
 const errorHandler = require('./src/middleware/errorHandler');
 const { createRateLimitMiddleware } = require('./src/middleware/rateLimit');
+const { createAutomationProtection, createBrowserWriteProtection } = require('./src/middleware/requestProtection');
 const { ROLES, JOB_STATUSES } = require('./src/constants');
 const { createHrJob, updateHrJob, deleteHrJob, getJobByIdAndOptionallyTrackView, applyJobFilters } = require('./src/services/jobs');
 const { applyToJob } = require('./src/services/applications');
 const { auditMiddleware } = require('./src/middleware/audit');
+const { closeRedisClient } = require('./src/services/redis');
+const { startSideEffectWorkers, stopSideEffectWorkers } = require('./src/services/sideEffectQueue');
 
 const app = express();
+app.set('trust proxy', 1);
 const authRateLimiter = config.nodeEnv === 'development'
   ? (_req, _res, next) => next()
   : createRateLimitMiddleware({
+      namespace: 'auth',
       windowMs: 15 * 60 * 1000,
       max: 20,
       message: 'Too many authentication requests. Please try again later.'
     });
+const publicCatalogRateLimiter = config.nodeEnv === 'development'
+  ? (_req, _res, next) => next()
+  : createRateLimitMiddleware({
+      namespace: 'public_catalog_legacy',
+      windowMs: 60 * 1000,
+      max: 180,
+      message: 'Too many public catalog requests. Please slow down and try again shortly.'
+    });
+const legacyApplyRateLimiter = config.nodeEnv === 'development'
+  ? (_req, _res, next) => next()
+  : createRateLimitMiddleware({
+      namespace: 'legacy_apply',
+      windowMs: 10 * 60 * 1000,
+      max: 25,
+      message: 'Too many application attempts. Please wait before trying again.',
+      keyGenerator: (req) => req.user?.id || normalizeEmail(req.user?.email) || req.ip || req.socket?.remoteAddress || 'unknown',
+      skip: (req) => [ROLES.ADMIN].includes(req.user?.role)
+    });
+const browserWriteProtection = createBrowserWriteProtection();
+const automationProtection = createAutomationProtection();
+const setCatalogCacheHeaders = (_req, res, next) => {
+  res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
+  next();
+};
 
 app.disable('x-powered-by');
 
@@ -36,6 +65,9 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+  if (config.nodeEnv === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  }
   next();
 });
 
@@ -160,7 +192,7 @@ if (shouldUseUpstreamProxy) {
 
 const authRoutes = safeRequireRoute('./src/routes/auth', 'auth');
 if (authRoutes) {
-  app.use('/auth', authRateLimiter, authRoutes);
+  app.use('/auth', browserWriteProtection, automationProtection, authRateLimiter, authRoutes);
 }
 mountRoute('/admin', safeRequireRoute('./src/routes/admin', 'admin'));
 mountRoute('/hr', safeRequireRoute('./src/routes/hr', 'hr'));
@@ -183,8 +215,10 @@ mountRoute('/accounts', safeRequireRoute('./src/routes/accounts', 'accounts'));
 mountRoute('/dataentry', safeRequireRoute('./src/routes/dataentry', 'dataentry'));
 mountRoute('/campus-connect', safeRequireRoute('./src/routes/campusConnect', 'campusConnect'));
 mountRoute('/external-jobs', safeRequireRoute('./src/routes/externalJobs', 'externalJobs'));
+mountRoute('/features', safeRequireRoute('./src/routes/features', 'features'));
+mountRoute('/payments', safeRequireRoute('./src/routes/payments', 'payments'));
 
-app.get('/all-jobs', asyncHandler(async (req, res) => {
+app.get('/all-jobs', automationProtection, publicCatalogRateLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!ensureServerConfig(res)) return;
 
   let query = supabase
@@ -212,7 +246,7 @@ app.get('/all-jobs', asyncHandler(async (req, res) => {
   res.send((data || []).map(mapJobFromRow));
 }));
 
-app.get('/all-jobs/:id', asyncHandler(async (req, res) => {
+app.get('/all-jobs/:id', automationProtection, publicCatalogRateLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!ensureServerConfig(res)) return;
   const { data, error, statusCode } = await getJobByIdAndOptionallyTrackView(req.params.id, true);
   if (error) {
@@ -225,7 +259,7 @@ app.get('/all-jobs/:id', asyncHandler(async (req, res) => {
 app.post('/post-job', requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN), requireApprovedHr, asyncHandler(createHrJob));
 app.patch('/update-job/:id', requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN), requireApprovedHr, asyncHandler(updateHrJob));
 app.delete('/job/:id', requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN), requireApprovedHr, asyncHandler(deleteHrJob));
-app.post('/job/:id', requireAuth, requireActiveUser, requireRole(ROLES.STUDENT, ROLES.ADMIN), asyncHandler(applyToJob));
+app.post('/job/:id', automationProtection, browserWriteProtection, requireAuth, requireActiveUser, requireRole(ROLES.STUDENT, ROLES.ADMIN), legacyApplyRateLimiter, asyncHandler(applyToJob));
 
 app.get('/myJobs/:email?', requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN), asyncHandler(async (req, res) => {
   const emailParam = normalizeEmail(req.params.email || req.user.email);
@@ -333,6 +367,7 @@ const startServer = () => {
 
   server.on('listening', () => {
     logStartupMode();
+    startSideEffectWorkers();
     startExternalJobsScheduler();
     startAutoApplyScheduler();
   });
@@ -354,36 +389,52 @@ const startServer = () => {
   return server;
 };
 
-const shutdown = (signal) => {
+const shutdown = async (signal) => {
   if (externalJobsScheduler) {
     try { externalJobsScheduler.stop(); } catch {}
   }
   if (autoApplyScheduler) {
     try { autoApplyScheduler.stop(); } catch {}
   }
+  await stopSideEffectWorkers();
 
   if (!server) {
+    await closeRedisClient();
     process.exit(0);
     return;
   }
 
   console.log(`${signal} received. Shutting down HHH Job API...`);
 
-  server.close(() => {
-    process.exit(0);
-  });
-
-  setTimeout(() => {
+  const forceShutdownTimer = setTimeout(() => {
     console.error('Forced shutdown after timeout.');
     process.exit(1);
-  }, 5000).unref();
+  }, 5000);
+  forceShutdownTimer.unref();
+
+  try {
+    await Promise.allSettled([
+      new Promise((resolve) => {
+        server.close(() => resolve());
+      }),
+      closeRedisClient()
+    ]);
+    clearTimeout(forceShutdownTimer);
+    process.exit(0);
+  } catch (error) {
+    clearTimeout(forceShutdownTimer);
+    console.error('Shutdown error:', error);
+    process.exit(1);
+  }
 };
 
 if (require.main === module) {
   startServer();
 
   ['SIGINT', 'SIGTERM'].forEach((signal) => {
-    process.on(signal, () => shutdown(signal));
+    process.on(signal, () => {
+      shutdown(signal);
+    });
   });
 }
 

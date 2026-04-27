@@ -10,7 +10,11 @@ const { supabase, ensureServerConfig, sendSupabaseError } = require('../supabase
 const { isValidUuid, asyncHandler, normalizeEmail, stripUndefined } = require('../utils/helpers');
 const { createNotification } = require('../services/notifications');
 const { ensureRoleProfile } = require('../services/profileTables');
-const { sendCampusInviteEmail } = require('../services/email');
+const {
+  countEligibleCampusStudentsForDrive,
+  enqueueCampusDriveFanout,
+  enqueueCampusInviteEmail
+} = require('../services/sideEffectQueue');
 
 const router = express.Router();
 const ELIGIBLE_ACCOUNT_STATUSES = new Set(['active', 'linked_existing']);
@@ -506,7 +510,7 @@ router.post('/students/import', upload.single('csv'), asyncHandler(async (req, r
       accountStatus = resolveCampusStudentStatus({ user: resolvedUser, existingRow });
       invited += 1;
 
-      await sendCampusInviteEmail({
+      await enqueueCampusInviteEmail({
         to: row.email,
         name: row.name,
         collegeName,
@@ -684,11 +688,22 @@ router.post('/drives', asyncHandler(async (req, res) => {
 
   if (error) { sendSupabaseError(res, error); return; }
 
-  const notificationSummary = await notifyEligibleCampusStudents({
+  const eligibleStudents = await countEligibleCampusStudentsForDrive({
     collegeId,
-    drive: data,
+    drive: data
+  });
+
+  await enqueueCampusDriveFanout({
+    collegeId,
+    driveId: data.id,
     actorUserId: req.user.id
   });
+
+  const notificationSummary = {
+    queued: true,
+    eligibleStudents,
+    notificationsSent: 0
+  };
 
   res.status(201).send({ status: true, drive: data, notificationSummary });
 }));

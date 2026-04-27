@@ -12,8 +12,7 @@ const { syncHhhCandidateToEimager } = require('../services/eimagerSync');
 const { createNotification } = require('../services/notifications');
 const {
   getPersonalizedRecommendations,
-  trackStudentJobView,
-  sendDailyRecommendationDigest
+  trackStudentJobView
 } = require('../services/recommendations');
 const {
   getStudentAutoApplyState,
@@ -21,6 +20,7 @@ const {
   processAutoApplyForStudentJobs,
   sendStudentAutoApplyDigest
 } = require('../services/autoApply');
+const { enqueueRecommendationDigest } = require('../services/sideEffectQueue');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -193,6 +193,214 @@ const calculateProfileCompletion = ({ profile = {}, user = {} }) => {
   return Math.round((checks.filter(Boolean).length / checks.length) * 100);
 };
 
+const isMissingCampusConnectTable = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.code === '42P01'
+    || message.includes('campus_students')
+    || message.includes('campus_drives')
+    || message.includes('colleges');
+};
+
+const getNormalizedCampusBranches = (branches = []) => (
+  Array.isArray(branches)
+    ? branches.map((branch) => String(branch || '').trim().toLowerCase()).filter(Boolean)
+    : []
+);
+
+const isCampusDriveUpcoming = (drive = {}) => {
+  const status = String(drive.status || '').trim().toLowerCase();
+  if (['completed', 'closed', 'cancelled', 'archived', 'past'].includes(status)) {
+    return false;
+  }
+
+  if (!drive.drive_date) return true;
+
+  const driveDate = new Date(`${drive.drive_date}T23:59:59`);
+  if (Number.isNaN(driveDate.getTime())) return true;
+
+  return driveDate.getTime() >= Date.now();
+};
+
+const isCampusDriveEligibleForStudent = ({ student = {}, drive = {} }) => {
+  if (!student || student.is_placed) return false;
+
+  const eligibleBranches = getNormalizedCampusBranches(drive.eligible_branches);
+  const branch = String(student.branch || '').trim().toLowerCase();
+  const isAllBranchesDrive = eligibleBranches.length === 0 || eligibleBranches.includes('all branches');
+
+  if (!isAllBranchesDrive && branch && !eligibleBranches.includes(branch)) return false;
+  if (!isAllBranchesDrive && !branch) return false;
+
+  const eligibleCgpa = Number(drive.eligible_cgpa || 0);
+  const cgpa = Number(student.cgpa || 0);
+
+  if (eligibleCgpa > 0 && cgpa > 0 && cgpa < eligibleCgpa) return false;
+  if (eligibleCgpa > 0 && cgpa === 0) return false;
+
+  return true;
+};
+
+const buildStudentCampusConnectPayload = ({ campusStudent = null, drives = [] } = {}) => {
+  if (!campusStudent) {
+    return {
+      connected: false,
+      student: null,
+      college: null,
+      upcomingDrives: [],
+      counts: { eligibleUpcomingDrives: 0 }
+    };
+  }
+
+  return {
+    connected: true,
+    student: {
+      id: campusStudent.id,
+      name: campusStudent.name || '',
+      email: campusStudent.email || '',
+      phone: campusStudent.phone || '',
+      degree: campusStudent.degree || '',
+      branch: campusStudent.branch || '',
+      graduationYear: campusStudent.graduation_year || null,
+      cgpa: campusStudent.cgpa ?? null,
+      isPlaced: Boolean(campusStudent.is_placed),
+      placedCompany: campusStudent.placed_company || '',
+      placedRole: campusStudent.placed_role || '',
+      placedSalary: campusStudent.placed_salary ?? null,
+      accountStatus: campusStudent.account_status || '',
+      inviteSentAt: campusStudent.invite_sent_at || null
+    },
+    college: campusStudent.college ? {
+      id: campusStudent.college.id,
+      name: campusStudent.college.name || '',
+      city: campusStudent.college.city || '',
+      state: campusStudent.college.state || '',
+      website: campusStudent.college.website || '',
+      logoUrl: campusStudent.college.logo_url || '',
+      contactEmail: campusStudent.college.contact_email || '',
+      contactPhone: campusStudent.college.contact_phone || '',
+      placementOfficerName: campusStudent.college.placement_officer_name || ''
+    } : null,
+    upcomingDrives: (drives || []).map((drive) => ({
+      id: drive.id,
+      companyName: drive.company_name || '',
+      jobTitle: drive.job_title || '',
+      driveDate: drive.drive_date || null,
+      driveMode: drive.drive_mode || '',
+      location: drive.location || '',
+      eligibleBranches: Array.isArray(drive.eligible_branches) ? drive.eligible_branches : [],
+      eligibleCgpa: drive.eligible_cgpa ?? null,
+      description: drive.description || '',
+      packageMin: drive.package_min ?? null,
+      packageMax: drive.package_max ?? null,
+      status: drive.status || ''
+    })),
+    counts: {
+      eligibleUpcomingDrives: (drives || []).length
+    }
+  };
+};
+
+const getStudentCampusConnectPayload = async ({ userId, email = '' } = {}) => {
+  const selectCampusStudent = `
+    id,
+    college_id,
+    name,
+    email,
+    phone,
+    degree,
+    branch,
+    graduation_year,
+    cgpa,
+    is_placed,
+    placed_company,
+    placed_role,
+    placed_salary,
+    account_status,
+    invite_sent_at,
+    imported_at,
+    college:colleges!campus_students_college_id_fkey(
+      id,
+      name,
+      city,
+      state,
+      website,
+      logo_url,
+      contact_email,
+      contact_phone,
+      placement_officer_name
+    )
+  `;
+
+  let campusStudent = null;
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+
+  const byUserResponse = await supabase
+    .from('campus_students')
+    .select(selectCampusStudent)
+    .eq('student_user_id', userId)
+    .order('imported_at', { ascending: false })
+    .limit(1);
+
+  if (byUserResponse.error) {
+    if (isMissingCampusConnectTable(byUserResponse.error)) {
+      return { data: buildStudentCampusConnectPayload(), error: null };
+    }
+
+    return { data: null, error: byUserResponse.error };
+  }
+
+  campusStudent = byUserResponse.data?.[0] || null;
+
+  if (!campusStudent && normalizedEmail) {
+    const byEmailResponse = await supabase
+      .from('campus_students')
+      .select(selectCampusStudent)
+      .eq('email', normalizedEmail)
+      .order('imported_at', { ascending: false })
+      .limit(1);
+
+    if (byEmailResponse.error) {
+      if (isMissingCampusConnectTable(byEmailResponse.error)) {
+        return { data: buildStudentCampusConnectPayload(), error: null };
+      }
+
+      return { data: null, error: byEmailResponse.error };
+    }
+
+    campusStudent = byEmailResponse.data?.[0] || null;
+  }
+
+  if (!campusStudent?.college_id) {
+    return { data: buildStudentCampusConnectPayload(), error: null };
+  }
+
+  const drivesResponse = await supabase
+    .from('campus_drives')
+    .select('*')
+    .eq('college_id', campusStudent.college_id)
+    .order('drive_date', { ascending: true });
+
+  if (drivesResponse.error) {
+    if (isMissingCampusConnectTable(drivesResponse.error)) {
+      return { data: buildStudentCampusConnectPayload({ campusStudent }), error: null };
+    }
+
+    return { data: null, error: drivesResponse.error };
+  }
+
+  const eligibleDrives = (drivesResponse.data || [])
+    .filter((drive) => isCampusDriveUpcoming(drive))
+    .filter((drive) => isCampusDriveEligibleForStudent({ student: campusStudent, drive }));
+
+  return {
+    data: buildStudentCampusConnectPayload({
+      campusStudent,
+      drives: eligibleDrives
+    }),
+    error: null
+  };
+};
+
 const ensureStudentProfile = async (targetUserId, res) => {
   let { data, error } = await supabase
     .from('student_profiles')
@@ -354,6 +562,15 @@ router.get('/overview', asyncHandler(async (req, res) => {
   const profile = await ensureStudentProfile(targetUserId, res);
   if (!profile) return;
 
+  const campusConnectResponse = await getStudentCampusConnectPayload({
+    userId: targetUserId,
+    email: user.email
+  });
+  if (campusConnectResponse.error) {
+    sendSupabaseError(res, campusConnectResponse.error);
+    return;
+  }
+
   const [applicationsResp, savedResp, interviewsResp, notificationsResp, atsResp, jobsResp] = await Promise.all([
     supabase
       .from('applications')
@@ -384,7 +601,7 @@ router.get('/overview', asyncHandler(async (req, res) => {
       .from('jobs')
       .select('*')
       .eq('status', 'open')
-      .eq('approval_status', 'approved')
+      .neq('approval_status', 'rejected')
       .order('is_featured', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(80)
@@ -508,8 +725,30 @@ router.get('/overview', asyncHandler(async (req, res) => {
       })),
       upcomingInterviews: upcomingInterviews.slice(0, 6),
       recentNotifications: notifications.slice(0, 6),
-      nextInterview: upcomingInterviews[0] || null
+      nextInterview: upcomingInterviews[0] || null,
+      campusConnect: campusConnectResponse.data || buildStudentCampusConnectPayload()
     }
+  });
+}));
+
+router.get('/campus-connect', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'query');
+
+  const user = await getStudentUserRow(targetUserId, res);
+  if (!user) return;
+
+  const campusConnectResponse = await getStudentCampusConnectPayload({
+    userId: targetUserId,
+    email: user.email
+  });
+  if (campusConnectResponse.error) {
+    sendSupabaseError(res, campusConnectResponse.error);
+    return;
+  }
+
+  res.send({
+    status: true,
+    campusConnection: campusConnectResponse.data || buildStudentCampusConnectPayload()
   });
 }));
 
@@ -580,14 +819,18 @@ router.post('/recommendations/digest', asyncHandler(async (req, res) => {
   const limit = Math.min(10, Math.max(1, parseInt(req.body?.limit || '5', 10)));
 
   try {
-    const digestResult = await sendDailyRecommendationDigest({
+    await enqueueRecommendationDigest({
       userId: targetUserId,
       limit
     });
 
     res.send({
       status: true,
-      digest: digestResult
+      digest: {
+        queued: true,
+        sent: false,
+        reason: 'queued'
+      }
     });
   } catch (error) {
     if (error?.code) {
@@ -1082,7 +1325,7 @@ router.put('/auto-apply', asyncHandler(async (req, res) => {
         .from('jobs')
         .select('*')
         .eq('status', 'open')
-        .eq('approval_status', 'approved')
+        .neq('approval_status', 'rejected')
         .order('is_featured', { ascending: false })
         .order('created_at', { ascending: false })
         .limit(40);
@@ -1128,7 +1371,7 @@ router.post('/auto-apply/run', asyncHandler(async (req, res) => {
     .from('jobs')
     .select('*')
     .eq('status', 'open')
-    .eq('approval_status', 'approved')
+    .neq('approval_status', 'rejected')
     .order('is_featured', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(Math.max(limit * 2, 20));
