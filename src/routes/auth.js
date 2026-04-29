@@ -23,6 +23,7 @@ const {
   isAuthSignupRole,
   getRoleRedirectPath
 } = require('../services/accountRoles');
+const { backfillCampusDriveNotificationsForStudent } = require('../services/campusDrives');
 const {
   isEmployeeProfileRole,
   getProfileRoleKey,
@@ -1444,6 +1445,14 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
       sendSupabaseError(res, profileError);
       return;
     }
+
+    runAsyncSideEffect('campus-drive-activation-backfill', async () => {
+      try {
+        await backfillCampusDriveNotificationsForStudent({ userId: user.id, email });
+      } catch (error) {
+        console.warn(`[campus-drive-activation-backfill] ${error.message}`);
+      }
+    });
   } else {
     authStore.updateUserById(user.id, {
       is_email_verified: true,

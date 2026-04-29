@@ -10,10 +10,16 @@ const { extractResumeText } = require('../utils/resumeExtraction');
 const { extractStudentProfileFromResume } = require('../utils/studentResumeProfileImport');
 const { syncHhhCandidateToEimager } = require('../services/eimagerSync');
 const { createNotification } = require('../services/notifications');
+const { resolveResumeForApplication } = require('../services/applications');
 const {
   getPersonalizedRecommendations,
   trackStudentJobView
 } = require('../services/recommendations');
+const {
+  CAMPUS_DRIVE_NOTIFICATION_LINK,
+  isCampusDriveUpcoming: isActiveCampusDrive,
+  isStudentEligibleForDrive
+} = require('../services/campusDrives');
 const {
   getStudentAutoApplyState,
   updateAutoApplyPreferences,
@@ -201,6 +207,11 @@ const isMissingCampusConnectTable = (error) => {
     || message.includes('colleges');
 };
 
+const isMissingCampusDriveApplicationsTable = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.code === '42P01' || message.includes('campus_drive_applications');
+};
+
 const getNormalizedCampusBranches = (branches = []) => (
   Array.isArray(branches)
     ? branches.map((branch) => String(branch || '').trim().toLowerCase()).filter(Boolean)
@@ -240,7 +251,82 @@ const isCampusDriveEligibleForStudent = ({ student = {}, drive = {} }) => {
   return true;
 };
 
-const buildStudentCampusConnectPayload = ({ campusStudent = null, drives = [] } = {}) => {
+const CAMPUS_STUDENT_SELECT = `
+  id,
+  college_id,
+  name,
+  email,
+  phone,
+  degree,
+  branch,
+  graduation_year,
+  cgpa,
+  is_placed,
+  placed_company,
+  placed_role,
+  placed_salary,
+  account_status,
+  invite_sent_at,
+  imported_at,
+  student_user_id,
+  college:colleges!campus_students_college_id_fkey(
+    id,
+    name,
+    city,
+    state,
+    website,
+    logo_url,
+    contact_email,
+    contact_phone,
+    placement_officer_name,
+    user_id
+  )
+`;
+
+const getCampusStudentForUser = async ({ userId, email = '' } = {}) => {
+  let campusStudent = null;
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+
+  const byUserResponse = await supabase
+    .from('campus_students')
+    .select(CAMPUS_STUDENT_SELECT)
+    .eq('student_user_id', userId)
+    .order('imported_at', { ascending: false })
+    .limit(1);
+
+  if (byUserResponse.error) {
+    if (isMissingCampusConnectTable(byUserResponse.error)) {
+      return { campusStudent: null, error: null };
+    }
+
+    return { campusStudent: null, error: byUserResponse.error };
+  }
+
+  campusStudent = byUserResponse.data?.[0] || null;
+
+  if (!campusStudent && normalizedEmail) {
+    const byEmailResponse = await supabase
+      .from('campus_students')
+      .select(CAMPUS_STUDENT_SELECT)
+      .eq('email', normalizedEmail)
+      .order('imported_at', { ascending: false })
+      .limit(1);
+
+    if (byEmailResponse.error) {
+      if (isMissingCampusConnectTable(byEmailResponse.error)) {
+        return { campusStudent: null, error: null };
+      }
+
+      return { campusStudent: null, error: byEmailResponse.error };
+    }
+
+    campusStudent = byEmailResponse.data?.[0] || null;
+  }
+
+  return { campusStudent, error: null };
+};
+
+const buildStudentCampusConnectPayload = ({ campusStudent = null, drives = [], applicationsByDriveId = {} } = {}) => {
   if (!campusStudent) {
     return {
       connected: false,
@@ -280,20 +366,29 @@ const buildStudentCampusConnectPayload = ({ campusStudent = null, drives = [] } 
       contactPhone: campusStudent.college.contact_phone || '',
       placementOfficerName: campusStudent.college.placement_officer_name || ''
     } : null,
-    upcomingDrives: (drives || []).map((drive) => ({
-      id: drive.id,
-      companyName: drive.company_name || '',
-      jobTitle: drive.job_title || '',
-      driveDate: drive.drive_date || null,
-      driveMode: drive.drive_mode || '',
-      location: drive.location || '',
-      eligibleBranches: Array.isArray(drive.eligible_branches) ? drive.eligible_branches : [],
-      eligibleCgpa: drive.eligible_cgpa ?? null,
-      description: drive.description || '',
-      packageMin: drive.package_min ?? null,
-      packageMax: drive.package_max ?? null,
-      status: drive.status || ''
-    })),
+    upcomingDrives: (drives || []).map((drive) => {
+      const application = applicationsByDriveId?.[drive.id] || null;
+
+      return {
+        id: drive.id,
+        companyName: drive.company_name || '',
+        jobTitle: drive.job_title || '',
+        driveDate: drive.drive_date || null,
+        driveMode: drive.drive_mode || '',
+        location: drive.location || '',
+        eligibleBranches: Array.isArray(drive.eligible_branches) ? drive.eligible_branches : [],
+        eligibleCgpa: drive.eligible_cgpa ?? null,
+        description: drive.description || '',
+        packageMin: drive.package_min ?? null,
+        packageMax: drive.package_max ?? null,
+        status: drive.status || '',
+        hasApplied: Boolean(application),
+        applicationStatus: application?.status || 'not_applied',
+        applicationId: application?.id || null,
+        appliedAt: application?.applied_at || application?.created_at || null,
+        canApply: !application
+      };
+    }),
     counts: {
       eligibleUpcomingDrives: (drives || []).length
     }
@@ -301,74 +396,12 @@ const buildStudentCampusConnectPayload = ({ campusStudent = null, drives = [] } 
 };
 
 const getStudentCampusConnectPayload = async ({ userId, email = '' } = {}) => {
-  const selectCampusStudent = `
-    id,
-    college_id,
-    name,
-    email,
-    phone,
-    degree,
-    branch,
-    graduation_year,
-    cgpa,
-    is_placed,
-    placed_company,
-    placed_role,
-    placed_salary,
-    account_status,
-    invite_sent_at,
-    imported_at,
-    college:colleges!campus_students_college_id_fkey(
-      id,
-      name,
-      city,
-      state,
-      website,
-      logo_url,
-      contact_email,
-      contact_phone,
-      placement_officer_name
-    )
-  `;
-
-  let campusStudent = null;
-  const normalizedEmail = String(email || '').trim().toLowerCase();
-
-  const byUserResponse = await supabase
-    .from('campus_students')
-    .select(selectCampusStudent)
-    .eq('student_user_id', userId)
-    .order('imported_at', { ascending: false })
-    .limit(1);
-
-  if (byUserResponse.error) {
-    if (isMissingCampusConnectTable(byUserResponse.error)) {
-      return { data: buildStudentCampusConnectPayload(), error: null };
-    }
-
-    return { data: null, error: byUserResponse.error };
+  const campusStudentResponse = await getCampusStudentForUser({ userId, email });
+  if (campusStudentResponse.error) {
+    return { data: null, error: campusStudentResponse.error };
   }
 
-  campusStudent = byUserResponse.data?.[0] || null;
-
-  if (!campusStudent && normalizedEmail) {
-    const byEmailResponse = await supabase
-      .from('campus_students')
-      .select(selectCampusStudent)
-      .eq('email', normalizedEmail)
-      .order('imported_at', { ascending: false })
-      .limit(1);
-
-    if (byEmailResponse.error) {
-      if (isMissingCampusConnectTable(byEmailResponse.error)) {
-        return { data: buildStudentCampusConnectPayload(), error: null };
-      }
-
-      return { data: null, error: byEmailResponse.error };
-    }
-
-    campusStudent = byEmailResponse.data?.[0] || null;
-  }
+  const campusStudent = campusStudentResponse.campusStudent;
 
   if (!campusStudent?.college_id) {
     return { data: buildStudentCampusConnectPayload(), error: null };
@@ -392,10 +425,32 @@ const getStudentCampusConnectPayload = async ({ userId, email = '' } = {}) => {
     .filter((drive) => isCampusDriveUpcoming(drive))
     .filter((drive) => isCampusDriveEligibleForStudent({ student: campusStudent, drive }));
 
+  const driveIds = eligibleDrives.map((drive) => drive.id).filter(Boolean);
+  let applicationsByDriveId = {};
+
+  if (driveIds.length > 0) {
+    const applicationsResponse = await supabase
+      .from('campus_drive_applications')
+      .select('id, drive_id, status, applied_at, created_at')
+      .eq('student_user_id', userId)
+      .in('drive_id', driveIds);
+
+    if (applicationsResponse.error) {
+      if (!isMissingCampusDriveApplicationsTable(applicationsResponse.error)) {
+        return { data: null, error: applicationsResponse.error };
+      }
+    } else {
+      applicationsByDriveId = Object.fromEntries(
+        (applicationsResponse.data || []).map((application) => [application.drive_id, application])
+      );
+    }
+  }
+
   return {
     data: buildStudentCampusConnectPayload({
       campusStudent,
-      drives: eligibleDrives
+      drives: eligibleDrives,
+      applicationsByDriveId
     }),
     error: null
   };
@@ -749,6 +804,171 @@ router.get('/campus-connect', asyncHandler(async (req, res) => {
   res.send({
     status: true,
     campusConnection: campusConnectResponse.data || buildStudentCampusConnectPayload()
+  });
+}));
+
+router.post('/campus-connect/drives/:driveId/apply', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'body');
+  const { driveId } = req.params;
+
+  if (!isValidUuid(driveId)) {
+    res.status(400).send({ status: false, message: 'Invalid drive id' });
+    return;
+  }
+
+  const user = await getStudentUserRow(targetUserId, res);
+  if (!user) return;
+
+  const campusStudentResponse = await getCampusStudentForUser({
+    userId: targetUserId,
+    email: user.email
+  });
+  if (campusStudentResponse.error) {
+    sendSupabaseError(res, campusStudentResponse.error);
+    return;
+  }
+
+  const campusStudent = campusStudentResponse.campusStudent;
+  if (!campusStudent?.college_id) {
+    res.status(403).send({ status: false, message: 'No campus is linked to this student yet.' });
+    return;
+  }
+
+  const accountStatus = String(campusStudent.account_status || '').trim().toLowerCase();
+  if (!campusStudent.student_user_id || !['active', 'linked_existing'].includes(accountStatus)) {
+    res.status(403).send({
+      status: false,
+      message: 'Campus account activation is still pending. Verify your account first, then try again.'
+    });
+    return;
+  }
+
+  const driveResponse = await supabase
+    .from('campus_drives')
+    .select('*')
+    .eq('id', driveId)
+    .eq('college_id', campusStudent.college_id)
+    .maybeSingle();
+
+  if (driveResponse.error) {
+    sendSupabaseError(res, driveResponse.error);
+    return;
+  }
+
+  const drive = driveResponse.data;
+  if (!drive) {
+    res.status(404).send({ status: false, message: 'Campus drive not found for your college.' });
+    return;
+  }
+
+  if (!isActiveCampusDrive(drive)) {
+    res.status(410).send({ status: false, message: 'This campus drive has expired or is no longer open.' });
+    return;
+  }
+
+  if (!isStudentEligibleForDrive(campusStudent, drive)) {
+    res.status(403).send({ status: false, message: 'You are not eligible to apply for this campus drive.' });
+    return;
+  }
+
+  let resolvedResume;
+  try {
+    resolvedResume = await resolveResumeForApplication({
+      userId: targetUserId,
+      resumeUrl: req.body?.resumeUrl || '',
+      resumeText: req.body?.resumeText || '',
+      useProfileResume: true
+    });
+  } catch (error) {
+    if (error?.statusCode) {
+      res.status(error.statusCode).send({ status: false, message: error.message });
+      return;
+    }
+
+    sendSupabaseError(res, error);
+    return;
+  }
+
+  const applicationInsert = {
+    drive_id: drive.id,
+    college_id: campusStudent.college_id,
+    campus_student_id: campusStudent.id,
+    student_user_id: targetUserId,
+    applicant_email: normalizeEmail(user.email),
+    resume_url: resolvedResume.resumeUrl,
+    resume_text: resolvedResume.resumeText,
+    status: 'applied'
+  };
+
+  const insertResponse = await supabase
+    .from('campus_drive_applications')
+    .insert(applicationInsert)
+    .select('id, drive_id, status, applied_at, created_at')
+    .single();
+
+  if (insertResponse.error) {
+    if (isMissingCampusDriveApplicationsTable(insertResponse.error)) {
+      res.status(503).send({
+        status: false,
+        message: 'Campus drive applications are not enabled on this server yet. Run the latest migration first.'
+      });
+      return;
+    }
+
+    if (insertResponse.error.code === '23505') {
+      res.status(409).send({ status: false, message: 'You already applied to this campus drive.' });
+      return;
+    }
+
+    sendSupabaseError(res, insertResponse.error);
+    return;
+  }
+
+  const collegeOwnerId = campusStudent.college?.user_id || null;
+  const applicationPayload = {
+    id: insertResponse.data.id,
+    driveId: insertResponse.data.drive_id,
+    status: insertResponse.data.status,
+    appliedAt: insertResponse.data.applied_at || insertResponse.data.created_at || null
+  };
+
+  const notificationTasks = [
+    createNotification({
+      userId: targetUserId,
+      type: 'campus_drive_application',
+      title: 'Campus drive application submitted',
+      message: `Your application for ${drive.job_title} at ${drive.company_name} has been submitted.`,
+      link: CAMPUS_DRIVE_NOTIFICATION_LINK,
+      meta: {
+        driveId: drive.id,
+        applicationId: applicationPayload.id,
+        collegeId: campusStudent.college_id
+      }
+    })
+  ];
+
+  if (collegeOwnerId) {
+    notificationTasks.push(
+      createNotification({
+        userId: collegeOwnerId,
+        type: 'campus_drive_application',
+        title: `New application for ${drive.company_name}`,
+        message: `${user.name || user.email} applied for ${drive.job_title}.`,
+        link: '/portal/campus-connect/drives',
+        meta: {
+          driveId: drive.id,
+          applicationId: applicationPayload.id,
+          campusStudentId: campusStudent.id
+        }
+      })
+    );
+  }
+
+  await Promise.allSettled(notificationTasks);
+
+  res.status(201).send({
+    status: true,
+    application: applicationPayload
   });
 }));
 
