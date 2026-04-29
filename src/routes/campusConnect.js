@@ -18,6 +18,8 @@ const {
 
 const router = express.Router();
 const ELIGIBLE_ACCOUNT_STATUSES = new Set(['active', 'linked_existing']);
+const DRIVE_VISIBILITY_SCOPES = new Set(['campus_only', 'platform_open']);
+const CAMPUS_APPLICATION_STATUSES = new Set(['applied', 'shortlisted', 'rejected', 'withdrawn', 'selected']);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -150,6 +152,160 @@ const isStudentEligibleForDrive = (student = {}, drive = {}) => {
   }
 
   return true;
+};
+const isMissingCampusDriveApplicationsTable = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.code === '42P01' || message.includes('campus_drive_applications');
+};
+const getDriveApplicationDeadline = (drive = {}) => {
+  const rawValue = drive.application_deadline || drive.drive_date || null;
+  if (!rawValue) return null;
+
+  const date = new Date(`${rawValue}T23:59:59`);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+const isDriveAcceptingApplications = (drive = {}) => {
+  const status = String(drive.status || '').trim().toLowerCase();
+  if (['completed', 'closed', 'cancelled', 'archived', 'past'].includes(status)) return false;
+
+  const deadline = getDriveApplicationDeadline(drive);
+  if (!deadline) return true;
+
+  return deadline.getTime() >= Date.now();
+};
+const buildCampusApplicationSummary = (applications = []) => ({
+  total: applications.length,
+  applied: applications.filter((item) => item.status === 'applied').length,
+  shortlisted: applications.filter((item) => item.status === 'shortlisted').length,
+  selected: applications.filter((item) => item.status === 'selected').length,
+  rejected: applications.filter((item) => item.status === 'rejected').length,
+  withdrawn: applications.filter((item) => item.status === 'withdrawn').length
+});
+const buildCampusStatusNotification = ({ drive, nextStatus, currentRound = '' } = {}) => {
+  const roundSuffix = currentRound ? ` in ${currentRound}` : '';
+
+  if (nextStatus === 'selected') {
+    return {
+      title: `Selected for ${drive.job_title}`,
+      message: `Congratulations. You have been marked selected for ${drive.job_title} at ${drive.company_name}${roundSuffix}.`
+    };
+  }
+
+  if (nextStatus === 'shortlisted') {
+    return {
+      title: `Shortlisted for ${drive.job_title}`,
+      message: `You have been shortlisted for ${drive.job_title} at ${drive.company_name}${roundSuffix}.`
+    };
+  }
+
+  if (nextStatus === 'rejected') {
+    return {
+      title: `Update for ${drive.job_title}`,
+      message: `Your campus application for ${drive.job_title} at ${drive.company_name} was closed${roundSuffix}.`
+    };
+  }
+
+  if (nextStatus === 'withdrawn') {
+    return {
+      title: `Application updated for ${drive.job_title}`,
+      message: `Your campus application for ${drive.job_title} at ${drive.company_name} is marked withdrawn.`
+    };
+  }
+
+  return {
+    title: `Application updated for ${drive.job_title}`,
+    message: `Your campus application for ${drive.job_title} at ${drive.company_name} has been updated${roundSuffix}.`
+  };
+};
+const loadDriveApplicationOverview = async ({ collegeId, driveId }) => {
+  const applicationsResponse = await supabase
+    .from('campus_drive_applications')
+    .select('*')
+    .eq('college_id', collegeId)
+    .eq('drive_id', driveId)
+    .order('applied_at', { ascending: false });
+
+  if (applicationsResponse.error) {
+    if (isMissingCampusDriveApplicationsTable(applicationsResponse.error)) {
+      return {
+        applications: [],
+        summary: buildCampusApplicationSummary([])
+      };
+    }
+
+    throw applicationsResponse.error;
+  }
+
+  const applicationRows = applicationsResponse.data || [];
+  if (applicationRows.length === 0) {
+    return {
+      applications: [],
+      summary: buildCampusApplicationSummary([])
+    };
+  }
+
+  const campusStudentIds = [...new Set(applicationRows.map((item) => item.campus_student_id).filter(Boolean))];
+  const userIds = [...new Set([
+    ...applicationRows.map((item) => item.student_user_id),
+    ...applicationRows.map((item) => item.reviewed_by_user_id)
+  ].filter(Boolean))];
+
+  const [campusStudentsResponse, usersResponse] = await Promise.all([
+    campusStudentIds.length > 0
+      ? supabase
+        .from('campus_students')
+        .select('id, name, email, phone, degree, branch, graduation_year, cgpa, is_placed')
+        .in('id', campusStudentIds)
+      : Promise.resolve({ data: [], error: null }),
+    userIds.length > 0
+      ? supabase
+        .from('users')
+        .select('id, name, email, mobile')
+        .in('id', userIds)
+      : Promise.resolve({ data: [], error: null })
+  ]);
+
+  if (campusStudentsResponse.error) throw campusStudentsResponse.error;
+  if (usersResponse.error) throw usersResponse.error;
+
+  const campusStudentsById = Object.fromEntries((campusStudentsResponse.data || []).map((item) => [item.id, item]));
+  const usersById = Object.fromEntries((usersResponse.data || []).map((item) => [item.id, item]));
+
+  return {
+    applications: applicationRows.map((application) => {
+      const campusStudent = application.campus_student_id ? campusStudentsById[application.campus_student_id] || null : null;
+      const studentUser = application.student_user_id ? usersById[application.student_user_id] || null : null;
+      const reviewer = application.reviewed_by_user_id ? usersById[application.reviewed_by_user_id] || null : null;
+
+      return {
+        id: application.id,
+        driveId: application.drive_id,
+        applicantEmail: application.applicant_email || campusStudent?.email || studentUser?.email || '',
+        status: application.status || 'applied',
+        currentRound: application.current_round || '',
+        eliminatedInRound: application.eliminated_in_round || '',
+        notes: application.notes || '',
+        appliedAt: application.applied_at || application.created_at || null,
+        reviewedAt: application.reviewed_at || null,
+        decisionAt: application.decision_at || null,
+        resumeUrl: application.resume_url || '',
+        hasResumeText: Boolean(application.resume_text),
+        source: campusStudent ? 'campus_pool' : 'platform_open',
+        candidate: {
+          name: campusStudent?.name || studentUser?.name || application.applicant_email || 'Applicant',
+          email: application.applicant_email || campusStudent?.email || studentUser?.email || '',
+          phone: campusStudent?.phone || studentUser?.mobile || '',
+          degree: campusStudent?.degree || '',
+          branch: campusStudent?.branch || '',
+          graduationYear: campusStudent?.graduation_year || null,
+          cgpa: campusStudent?.cgpa ?? null,
+          isPlaced: Boolean(campusStudent?.is_placed)
+        },
+        reviewer: reviewer ? { id: reviewer.id, name: reviewer.name || reviewer.email || 'CRD' } : null
+      };
+    }),
+    summary: buildCampusApplicationSummary(applicationRows)
+  };
 };
 const findAuthUserByEmail = async (email) => {
   const perPage = 200;
@@ -648,7 +804,49 @@ router.get('/drives', asyncHandler(async (req, res) => {
 
   if (error) { sendSupabaseError(res, error); return; }
 
-  res.send({ status: true, drives: data || [] });
+  let driveCounts = {};
+  const driveIds = (data || []).map((drive) => drive.id).filter(Boolean);
+
+  if (driveIds.length > 0) {
+    const applicationsResponse = await supabase
+      .from('campus_drive_applications')
+      .select('drive_id, status')
+      .eq('college_id', collegeId)
+      .in('drive_id', driveIds);
+
+    if (applicationsResponse.error) {
+      if (!isMissingCampusDriveApplicationsTable(applicationsResponse.error)) {
+        sendSupabaseError(res, applicationsResponse.error);
+        return;
+      }
+    } else {
+      driveCounts = (applicationsResponse.data || []).reduce((accumulator, application) => {
+        const driveId = application.drive_id;
+        if (!accumulator[driveId]) {
+          accumulator[driveId] = {
+            applicantCount: 0,
+            shortlistedCount: 0,
+            selectedCount: 0
+          };
+        }
+
+        accumulator[driveId].applicantCount += 1;
+        if (application.status === 'shortlisted') accumulator[driveId].shortlistedCount += 1;
+        if (application.status === 'selected') accumulator[driveId].selectedCount += 1;
+        return accumulator;
+      }, {});
+    }
+  }
+
+  res.send({
+    status: true,
+    drives: (data || []).map((drive) => ({
+      ...drive,
+      applicant_count: driveCounts[drive.id]?.applicantCount || 0,
+      shortlisted_count: driveCounts[drive.id]?.shortlistedCount || 0,
+      selected_count: driveCounts[drive.id]?.selectedCount || 0
+    }))
+  });
 }));
 
 router.post('/drives', asyncHandler(async (req, res) => {
@@ -659,7 +857,7 @@ router.post('/drives', asyncHandler(async (req, res) => {
 
   const {
     companyName, jobTitle, driveDate, driveMode, location,
-    eligibleBranches, eligibleCgpa, description, packageMin, packageMax
+    eligibleBranches, eligibleCgpa, description, packageMin, packageMax, visibilityScope, applicationDeadline
   } = req.body || {};
 
   if (!companyName || !jobTitle || !driveDate) {
@@ -681,6 +879,8 @@ router.post('/drives', asyncHandler(async (req, res) => {
       description: description || null,
       package_min: packageMin ? parseFloat(packageMin) : null,
       package_max: packageMax ? parseFloat(packageMax) : null,
+      visibility_scope: DRIVE_VISIBILITY_SCOPES.has(String(visibilityScope || '').trim()) ? visibilityScope : 'campus_only',
+      application_deadline: applicationDeadline || driveDate,
       status: 'upcoming'
     })
     .select('*')
@@ -728,7 +928,9 @@ router.patch('/drives/:id', asyncHandler(async (req, res) => {
     description: req.body?.description || undefined,
     status: req.body?.status || undefined,
     package_min: req.body?.packageMin ? parseFloat(req.body.packageMin) : undefined,
-    package_max: req.body?.packageMax ? parseFloat(req.body.packageMax) : undefined
+    package_max: req.body?.packageMax ? parseFloat(req.body.packageMax) : undefined,
+    visibility_scope: DRIVE_VISIBILITY_SCOPES.has(String(req.body?.visibilityScope || '').trim()) ? req.body.visibilityScope : undefined,
+    application_deadline: req.body?.applicationDeadline || undefined
   });
 
   const { data, error } = await supabase
@@ -743,6 +945,156 @@ router.patch('/drives/:id', asyncHandler(async (req, res) => {
   if (!data) { res.status(404).send({ status: false, message: 'Drive not found.' }); return; }
 
   res.send({ status: true, drive: data });
+}));
+
+router.get('/drives/:id/applications', asyncHandler(async (req, res) => {
+  if (!ensureServerConfig(res)) return;
+
+  const collegeId = await getCollegeId(req.user.id);
+  if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
+
+  const { id } = req.params;
+  if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid drive id.' }); return; }
+
+  const driveResponse = await supabase
+    .from('campus_drives')
+    .select('*')
+    .eq('id', id)
+    .eq('college_id', collegeId)
+    .maybeSingle();
+
+  if (driveResponse.error) { sendSupabaseError(res, driveResponse.error); return; }
+  if (!driveResponse.data) { res.status(404).send({ status: false, message: 'Drive not found.' }); return; }
+
+  try {
+    const overview = await loadDriveApplicationOverview({
+      collegeId,
+      driveId: id
+    });
+
+    res.send({
+      status: true,
+      drive: driveResponse.data,
+      applications: overview.applications,
+      summary: overview.summary
+    });
+  } catch (error) {
+    sendSupabaseError(res, error);
+  }
+}));
+
+router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async (req, res) => {
+  if (!ensureServerConfig(res)) return;
+
+  const collegeId = await getCollegeId(req.user.id);
+  if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
+
+  const { driveId, applicationId } = req.params;
+  if (!isValidUuid(driveId) || !isValidUuid(applicationId)) {
+    res.status(400).send({ status: false, message: 'Invalid drive or application id.' });
+    return;
+  }
+
+  const [driveResponse, applicationResponse] = await Promise.all([
+    supabase
+      .from('campus_drives')
+      .select('*')
+      .eq('id', driveId)
+      .eq('college_id', collegeId)
+      .maybeSingle(),
+    supabase
+      .from('campus_drive_applications')
+      .select('*')
+      .eq('id', applicationId)
+      .eq('drive_id', driveId)
+      .eq('college_id', collegeId)
+      .maybeSingle()
+  ]);
+
+  if (driveResponse.error) { sendSupabaseError(res, driveResponse.error); return; }
+  if (applicationResponse.error) {
+    if (isMissingCampusDriveApplicationsTable(applicationResponse.error)) {
+      res.status(503).send({ status: false, message: 'Campus drive workflow tables are not available yet.' });
+      return;
+    }
+    sendSupabaseError(res, applicationResponse.error);
+    return;
+  }
+  if (!driveResponse.data) { res.status(404).send({ status: false, message: 'Drive not found.' }); return; }
+  if (!applicationResponse.data) { res.status(404).send({ status: false, message: 'Application not found.' }); return; }
+
+  const existingApplication = applicationResponse.data;
+  const nextStatus = req.body?.status ? String(req.body.status).trim().toLowerCase() : existingApplication.status;
+  if (!CAMPUS_APPLICATION_STATUSES.has(nextStatus)) {
+    res.status(400).send({ status: false, message: 'Invalid application status.' });
+    return;
+  }
+
+  const nextRound = String(req.body?.currentRound || existingApplication.current_round || '').trim();
+  const nextNotes = req.body?.notes !== undefined ? String(req.body.notes || '').trim() : existingApplication.notes;
+  const now = new Date().toISOString();
+
+  const updatePayload = stripUndefined({
+    status: nextStatus,
+    current_round: nextRound || null,
+    eliminated_in_round: nextStatus === 'rejected'
+      ? (String(req.body?.eliminatedInRound || '').trim() || nextRound || existingApplication.eliminated_in_round || null)
+      : (req.body?.eliminatedInRound !== undefined ? String(req.body.eliminatedInRound || '').trim() || null : existingApplication.eliminated_in_round),
+    notes: nextNotes || null,
+    reviewed_at: now,
+    reviewed_by_user_id: req.user.id,
+    decision_at: ['selected', 'rejected', 'withdrawn'].includes(nextStatus) ? now : existingApplication.decision_at
+  });
+
+  const updateResponse = await supabase
+    .from('campus_drive_applications')
+    .update(updatePayload)
+    .eq('id', applicationId)
+    .eq('drive_id', driveId)
+    .eq('college_id', collegeId)
+    .select('*')
+    .single();
+
+  if (updateResponse.error) { sendSupabaseError(res, updateResponse.error); return; }
+
+  const updatedApplication = updateResponse.data;
+
+  if (nextStatus === 'selected' && updatedApplication.campus_student_id) {
+    await supabase
+      .from('campus_students')
+      .update({
+        is_placed: true,
+        placed_company: driveResponse.data.company_name,
+        placed_role: driveResponse.data.job_title,
+        placed_salary: driveResponse.data.package_max || driveResponse.data.package_min || null
+      })
+      .eq('id', updatedApplication.campus_student_id);
+  }
+
+  const notificationMeta = buildCampusStatusNotification({
+    drive: driveResponse.data,
+    nextStatus,
+    currentRound: nextRound
+  });
+
+  await createNotification({
+    userId: updatedApplication.student_user_id,
+    type: 'campus_drive_status',
+    title: notificationMeta.title,
+    message: notificationMeta.message,
+    link: '/portal/student/campus-connect',
+    meta: {
+      driveId,
+      applicationId: updatedApplication.id,
+      status: nextStatus,
+      currentRound: nextRound || null
+    }
+  });
+
+  res.send({
+    status: true,
+    application: updatedApplication
+  });
 }));
 
 router.delete('/drives/:id', asyncHandler(async (req, res) => {

@@ -4,7 +4,7 @@ const { ROLES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { supabase, ensureServerConfig, sendSupabaseError } = require('../supabase');
-const { isValidUuid, toArray, asyncHandler, stripUndefined } = require('../utils/helpers');
+const { isValidUuid, toArray, asyncHandler, normalizeEmail, stripUndefined } = require('../utils/helpers');
 const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
 const { extractResumeText } = require('../utils/resumeExtraction');
 const { extractStudentProfileFromResume } = require('../utils/studentResumeProfileImport');
@@ -251,6 +251,23 @@ const isCampusDriveEligibleForStudent = ({ student = {}, drive = {} }) => {
   return true;
 };
 
+const getCampusDriveApplicationDeadline = (drive = {}) => {
+  const rawValue = drive.application_deadline || drive.drive_date || null;
+  if (!rawValue) return null;
+
+  const date = new Date(`${rawValue}T23:59:59`);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const isCampusDriveOpenForApplications = (drive = {}) => {
+  if (!isCampusDriveUpcoming(drive)) return false;
+
+  const deadline = getCampusDriveApplicationDeadline(drive);
+  if (!deadline) return true;
+
+  return deadline.getTime() >= Date.now();
+};
+
 const CAMPUS_STUDENT_SELECT = `
   id,
   college_id,
@@ -326,18 +343,37 @@ const getCampusStudentForUser = async ({ userId, email = '' } = {}) => {
   return { campusStudent, error: null };
 };
 
-const buildStudentCampusConnectPayload = ({ campusStudent = null, drives = [], applicationsByDriveId = {} } = {}) => {
-  if (!campusStudent) {
-    return {
-      connected: false,
-      student: null,
-      college: null,
-      upcomingDrives: [],
-      counts: { eligibleUpcomingDrives: 0 }
-    };
-  }
+const formatStudentDriveCard = ({ drive = {}, application = null, college = null }) => ({
+  id: drive.id,
+  companyName: drive.company_name || '',
+  jobTitle: drive.job_title || '',
+  driveDate: drive.drive_date || null,
+  driveMode: drive.drive_mode || '',
+  location: drive.location || '',
+  eligibleBranches: Array.isArray(drive.eligible_branches) ? drive.eligible_branches : [],
+  eligibleCgpa: drive.eligible_cgpa ?? null,
+  description: drive.description || '',
+  packageMin: drive.package_min ?? null,
+  packageMax: drive.package_max ?? null,
+  status: drive.status || '',
+  visibilityScope: drive.visibility_scope || 'campus_only',
+  applicationDeadline: drive.application_deadline || drive.drive_date || null,
+  collegeName: college?.name || '',
+  collegeLocation: [college?.city, college?.state].filter(Boolean).join(', '),
+  hasApplied: Boolean(application),
+  applicationStatus: application?.status || 'not_applied',
+  applicationId: application?.id || null,
+  appliedAt: application?.applied_at || application?.created_at || null,
+  canApply: isCampusDriveOpenForApplications(drive) && !application
+});
 
-  return {
+const buildStudentCampusConnectPayload = ({
+  campusStudent = null,
+  drives = [],
+  openPlatformDrives = [],
+  applicationsByDriveId = {}
+} = {}) => {
+  const connectedPayload = campusStudent ? {
     connected: true,
     student: {
       id: campusStudent.id,
@@ -365,33 +401,58 @@ const buildStudentCampusConnectPayload = ({ campusStudent = null, drives = [], a
       contactEmail: campusStudent.college.contact_email || '',
       contactPhone: campusStudent.college.contact_phone || '',
       placementOfficerName: campusStudent.college.placement_officer_name || ''
-    } : null,
-    upcomingDrives: (drives || []).map((drive) => {
-      const application = applicationsByDriveId?.[drive.id] || null;
+    } : null
+  } : {
+    connected: false,
+    student: null,
+    college: null
+  };
 
-      return {
-        id: drive.id,
-        companyName: drive.company_name || '',
-        jobTitle: drive.job_title || '',
-        driveDate: drive.drive_date || null,
-        driveMode: drive.drive_mode || '',
-        location: drive.location || '',
-        eligibleBranches: Array.isArray(drive.eligible_branches) ? drive.eligible_branches : [],
-        eligibleCgpa: drive.eligible_cgpa ?? null,
-        description: drive.description || '',
-        packageMin: drive.package_min ?? null,
-        packageMax: drive.package_max ?? null,
-        status: drive.status || '',
-        hasApplied: Boolean(application),
-        applicationStatus: application?.status || 'not_applied',
-        applicationId: application?.id || null,
-        appliedAt: application?.applied_at || application?.created_at || null,
-        canApply: !application
-      };
-    }),
+  return {
+    ...connectedPayload,
+    upcomingDrives: (drives || []).map((drive) => formatStudentDriveCard({
+      drive,
+      application: applicationsByDriveId?.[drive.id] || null,
+      college: campusStudent?.college || null
+    })),
+    openPlatformDrives: (openPlatformDrives || []).map((drive) => formatStudentDriveCard({
+      drive,
+      application: applicationsByDriveId?.[drive.id] || null,
+      college: drive.college || null
+    })),
     counts: {
-      eligibleUpcomingDrives: (drives || []).length
+      eligibleUpcomingDrives: (drives || []).length,
+      openPlatformDrives: (openPlatformDrives || []).length
     }
+  };
+};
+
+const getOpenPlatformCampusDrives = async () => {
+  const response = await supabase
+    .from('campus_drives')
+    .select(`
+      *,
+      college:colleges!campus_drives_college_id_fkey(
+        id,
+        name,
+        city,
+        state
+      )
+    `)
+    .eq('visibility_scope', 'platform_open')
+    .order('drive_date', { ascending: true });
+
+  if (response.error) {
+    if (isMissingCampusConnectTable(response.error)) {
+      return { drives: [], error: null };
+    }
+
+    return { drives: [], error: response.error };
+  }
+
+  return {
+    drives: (response.data || []).filter((drive) => isCampusDriveOpenForApplications(drive)),
+    error: null
   };
 };
 
@@ -402,30 +463,49 @@ const getStudentCampusConnectPayload = async ({ userId, email = '' } = {}) => {
   }
 
   const campusStudent = campusStudentResponse.campusStudent;
-
-  if (!campusStudent?.college_id) {
-    return { data: buildStudentCampusConnectPayload(), error: null };
+  const platformOpenResponse = await getOpenPlatformCampusDrives();
+  if (platformOpenResponse.error) {
+    return { data: null, error: platformOpenResponse.error };
   }
 
-  const drivesResponse = await supabase
-    .from('campus_drives')
-    .select('*')
-    .eq('college_id', campusStudent.college_id)
-    .order('drive_date', { ascending: true });
+  let eligibleDrives = [];
 
-  if (drivesResponse.error) {
-    if (isMissingCampusConnectTable(drivesResponse.error)) {
-      return { data: buildStudentCampusConnectPayload({ campusStudent }), error: null };
+  if (campusStudent?.college_id) {
+    const drivesResponse = await supabase
+      .from('campus_drives')
+      .select('*')
+      .eq('college_id', campusStudent.college_id)
+      .order('drive_date', { ascending: true });
+
+    if (drivesResponse.error) {
+      if (isMissingCampusConnectTable(drivesResponse.error)) {
+        return {
+          data: buildStudentCampusConnectPayload({
+            campusStudent,
+            openPlatformDrives: platformOpenResponse.drives
+          }),
+          error: null
+        };
+      }
+
+      return { data: null, error: drivesResponse.error };
     }
 
-    return { data: null, error: drivesResponse.error };
+    eligibleDrives = (drivesResponse.data || [])
+      .filter((drive) => isCampusDriveOpenForApplications(drive))
+      .filter((drive) => isCampusDriveEligibleForStudent({ student: campusStudent, drive }));
   }
 
-  const eligibleDrives = (drivesResponse.data || [])
-    .filter((drive) => isCampusDriveUpcoming(drive))
-    .filter((drive) => isCampusDriveEligibleForStudent({ student: campusStudent, drive }));
+  const eligibleDriveIds = new Set(eligibleDrives.map((drive) => drive.id));
+  const openPlatformDrives = (platformOpenResponse.drives || [])
+    .filter((drive) => !eligibleDriveIds.has(drive.id));
 
-  const driveIds = eligibleDrives.map((drive) => drive.id).filter(Boolean);
+  const driveIds = [
+    ...new Set([
+      ...eligibleDrives.map((drive) => drive.id),
+      ...openPlatformDrives.map((drive) => drive.id)
+    ].filter(Boolean))
+  ];
   let applicationsByDriveId = {};
 
   if (driveIds.length > 0) {
@@ -450,6 +530,7 @@ const getStudentCampusConnectPayload = async ({ userId, email = '' } = {}) => {
     data: buildStudentCampusConnectPayload({
       campusStudent,
       drives: eligibleDrives,
+      openPlatformDrives,
       applicationsByDriveId
     }),
     error: null
@@ -829,25 +910,11 @@ router.post('/campus-connect/drives/:driveId/apply', asyncHandler(async (req, re
   }
 
   const campusStudent = campusStudentResponse.campusStudent;
-  if (!campusStudent?.college_id) {
-    res.status(403).send({ status: false, message: 'No campus is linked to this student yet.' });
-    return;
-  }
-
-  const accountStatus = String(campusStudent.account_status || '').trim().toLowerCase();
-  if (!campusStudent.student_user_id || !['active', 'linked_existing'].includes(accountStatus)) {
-    res.status(403).send({
-      status: false,
-      message: 'Campus account activation is still pending. Verify your account first, then try again.'
-    });
-    return;
-  }
 
   const driveResponse = await supabase
     .from('campus_drives')
     .select('*')
     .eq('id', driveId)
-    .eq('college_id', campusStudent.college_id)
     .maybeSingle();
 
   if (driveResponse.error) {
@@ -857,18 +924,37 @@ router.post('/campus-connect/drives/:driveId/apply', asyncHandler(async (req, re
 
   const drive = driveResponse.data;
   if (!drive) {
-    res.status(404).send({ status: false, message: 'Campus drive not found for your college.' });
+    res.status(404).send({ status: false, message: 'Campus drive not found.' });
     return;
   }
 
-  if (!isActiveCampusDrive(drive)) {
+  if (!isCampusDriveOpenForApplications(drive) || !isActiveCampusDrive(drive)) {
     res.status(410).send({ status: false, message: 'This campus drive has expired or is no longer open.' });
     return;
   }
 
-  if (!isStudentEligibleForDrive(campusStudent, drive)) {
-    res.status(403).send({ status: false, message: 'You are not eligible to apply for this campus drive.' });
-    return;
+  const isPlatformOpenDrive = String(drive.visibility_scope || 'campus_only') === 'platform_open';
+  const isSameCampusDrive = campusStudent?.college_id && drive.college_id === campusStudent.college_id;
+
+  if (!isPlatformOpenDrive) {
+    if (!campusStudent?.college_id || !isSameCampusDrive) {
+      res.status(403).send({ status: false, message: 'This campus drive is only available to linked campus students.' });
+      return;
+    }
+
+    const accountStatus = String(campusStudent.account_status || '').trim().toLowerCase();
+    if (!campusStudent.student_user_id || !['active', 'linked_existing'].includes(accountStatus)) {
+      res.status(403).send({
+        status: false,
+        message: 'Campus account activation is still pending. Verify your account first, then try again.'
+      });
+      return;
+    }
+
+    if (!isStudentEligibleForDrive(campusStudent, drive)) {
+      res.status(403).send({ status: false, message: 'You are not eligible to apply for this campus drive.' });
+      return;
+    }
   }
 
   let resolvedResume;
@@ -891,8 +977,8 @@ router.post('/campus-connect/drives/:driveId/apply', asyncHandler(async (req, re
 
   const applicationInsert = {
     drive_id: drive.id,
-    college_id: campusStudent.college_id,
-    campus_student_id: campusStudent.id,
+    college_id: drive.college_id,
+    campus_student_id: isSameCampusDrive ? campusStudent.id : null,
     student_user_id: targetUserId,
     applicant_email: normalizeEmail(user.email),
     resume_url: resolvedResume.resumeUrl,
@@ -924,12 +1010,24 @@ router.post('/campus-connect/drives/:driveId/apply', asyncHandler(async (req, re
     return;
   }
 
-  const collegeOwnerId = campusStudent.college?.user_id || null;
+  const collegeResponse = await supabase
+    .from('colleges')
+    .select('id, user_id, name')
+    .eq('id', drive.college_id)
+    .maybeSingle();
+
+  if (collegeResponse.error) {
+    sendSupabaseError(res, collegeResponse.error);
+    return;
+  }
+
+  const collegeOwnerId = collegeResponse.data?.user_id || null;
   const applicationPayload = {
     id: insertResponse.data.id,
     driveId: insertResponse.data.drive_id,
     status: insertResponse.data.status,
-    appliedAt: insertResponse.data.applied_at || insertResponse.data.created_at || null
+    appliedAt: insertResponse.data.applied_at || insertResponse.data.created_at || null,
+    currentRound: null
   };
 
   const notificationTasks = [
@@ -942,7 +1040,7 @@ router.post('/campus-connect/drives/:driveId/apply', asyncHandler(async (req, re
       meta: {
         driveId: drive.id,
         applicationId: applicationPayload.id,
-        collegeId: campusStudent.college_id
+        collegeId: drive.college_id
       }
     })
   ];
