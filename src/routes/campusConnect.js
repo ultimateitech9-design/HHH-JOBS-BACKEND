@@ -157,6 +157,92 @@ const isMissingCampusDriveApplicationsTable = (error) => {
   const message = String(error?.message || '').toLowerCase();
   return error?.code === '42P01' || message.includes('campus_drive_applications');
 };
+const buildIsoDateString = (year, month, day) => {
+  const normalizedYear = Number(year);
+  const normalizedMonth = Number(month);
+  const normalizedDay = Number(day);
+  if (
+    !Number.isInteger(normalizedYear)
+    || !Number.isInteger(normalizedMonth)
+    || !Number.isInteger(normalizedDay)
+    || normalizedMonth < 1
+    || normalizedMonth > 12
+    || normalizedDay < 1
+    || normalizedDay > 31
+  ) {
+    return null;
+  }
+
+  const date = new Date(Date.UTC(normalizedYear, normalizedMonth - 1, normalizedDay));
+  if (
+    date.getUTCFullYear() !== normalizedYear
+    || date.getUTCMonth() !== normalizedMonth - 1
+    || date.getUTCDate() !== normalizedDay
+  ) {
+    return null;
+  }
+
+  return date.toISOString().slice(0, 10);
+};
+const getLocalIsoDate = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+const normalizeCampusDriveDateInput = (value) => {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+
+  const text = String(value).trim();
+  if (!text) return null;
+
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return buildIsoDateString(isoMatch[1], isoMatch[2], isoMatch[3]);
+  }
+
+  const slashMatch = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  if (slashMatch) {
+    const first = Number(slashMatch[1]);
+    const second = Number(slashMatch[2]);
+    const year = slashMatch[3];
+
+    if (first > 12 && second <= 12) {
+      return buildIsoDateString(year, second, first);
+    }
+    if (second > 12 && first <= 12) {
+      return buildIsoDateString(year, first, second);
+    }
+
+    // Prefer dd/mm/yyyy for ambiguous manual inputs.
+    return buildIsoDateString(year, second, first);
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  return buildIsoDateString(parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate());
+};
+const validateCampusDriveDates = ({ driveDate, applicationDeadline }) => {
+  if (!driveDate) return 'A valid drive date is required.';
+
+  const today = getLocalIsoDate();
+  const effectiveDeadline = applicationDeadline || driveDate;
+
+  if (driveDate < today) {
+    return 'Drive date cannot be in the past.';
+  }
+  if (effectiveDeadline < today) {
+    return 'Application deadline cannot be in the past.';
+  }
+  if (effectiveDeadline > driveDate) {
+    return 'Application deadline cannot be after the drive date.';
+  }
+
+  return '';
+};
 const getDriveApplicationDeadline = (drive = {}) => {
   const rawValue = drive.application_deadline || drive.drive_date || null;
   if (!rawValue) return null;
@@ -865,13 +951,29 @@ router.post('/drives', asyncHandler(async (req, res) => {
     return;
   }
 
+  const normalizedDriveDate = normalizeCampusDriveDateInput(driveDate);
+  const normalizedApplicationDeadline = normalizeCampusDriveDateInput(applicationDeadline || driveDate);
+  if (!normalizedDriveDate || !normalizedApplicationDeadline) {
+    res.status(400).send({ status: false, message: 'Please enter valid drive and application dates.' });
+    return;
+  }
+
+  const dateValidationError = validateCampusDriveDates({
+    driveDate: normalizedDriveDate,
+    applicationDeadline: normalizedApplicationDeadline
+  });
+  if (dateValidationError) {
+    res.status(400).send({ status: false, message: dateValidationError });
+    return;
+  }
+
   const { data, error } = await supabase
     .from('campus_drives')
     .insert({
       college_id: collegeId,
       company_name: companyName,
       job_title: jobTitle,
-      drive_date: driveDate,
+      drive_date: normalizedDriveDate,
       drive_mode: driveMode || 'on-campus',
       location: location || null,
       eligible_branches: Array.isArray(eligibleBranches) ? eligibleBranches : [],
@@ -880,7 +982,7 @@ router.post('/drives', asyncHandler(async (req, res) => {
       package_min: packageMin ? parseFloat(packageMin) : null,
       package_max: packageMax ? parseFloat(packageMax) : null,
       visibility_scope: DRIVE_VISIBILITY_SCOPES.has(String(visibilityScope || '').trim()) ? visibilityScope : 'campus_only',
-      application_deadline: applicationDeadline || driveDate,
+      application_deadline: normalizedApplicationDeadline,
       status: 'upcoming'
     })
     .select('*')
@@ -917,10 +1019,55 @@ router.patch('/drives/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid drive id.' }); return; }
 
+  const existingResponse = await supabase
+    .from('campus_drives')
+    .select('*')
+    .eq('id', id)
+    .eq('college_id', collegeId)
+    .maybeSingle();
+
+  if (existingResponse.error) { sendSupabaseError(res, existingResponse.error); return; }
+  if (!existingResponse.data) { res.status(404).send({ status: false, message: 'Drive not found.' }); return; }
+
+  const existingDrive = existingResponse.data;
+  const hasDriveDateInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'driveDate');
+  const hasDeadlineInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'applicationDeadline');
+  const normalizedDriveDateInput = hasDriveDateInput ? normalizeCampusDriveDateInput(req.body?.driveDate) : undefined;
+  const normalizedDeadlineInput = hasDeadlineInput ? normalizeCampusDriveDateInput(req.body?.applicationDeadline) : undefined;
+
+  if (hasDriveDateInput && req.body?.driveDate && !normalizedDriveDateInput) {
+    res.status(400).send({ status: false, message: 'Please enter a valid drive date.' });
+    return;
+  }
+  if (hasDeadlineInput && req.body?.applicationDeadline && !normalizedDeadlineInput) {
+    res.status(400).send({ status: false, message: 'Please enter a valid application deadline.' });
+    return;
+  }
+
+  const effectiveDriveDate = normalizedDriveDateInput !== undefined
+    ? normalizedDriveDateInput
+    : existingDrive.drive_date;
+  let effectiveApplicationDeadline = normalizedDeadlineInput !== undefined
+    ? normalizedDeadlineInput
+    : existingDrive.application_deadline;
+
+  if (!hasDeadlineInput && hasDriveDateInput && (!existingDrive.application_deadline || existingDrive.application_deadline === existingDrive.drive_date)) {
+    effectiveApplicationDeadline = normalizedDriveDateInput;
+  }
+
+  const dateValidationError = validateCampusDriveDates({
+    driveDate: effectiveDriveDate,
+    applicationDeadline: effectiveApplicationDeadline || effectiveDriveDate
+  });
+  if (dateValidationError) {
+    res.status(400).send({ status: false, message: dateValidationError });
+    return;
+  }
+
   const payload = stripUndefined({
     company_name: req.body?.companyName || undefined,
     job_title: req.body?.jobTitle || undefined,
-    drive_date: req.body?.driveDate || undefined,
+    drive_date: normalizedDriveDateInput !== undefined ? normalizedDriveDateInput : undefined,
     drive_mode: req.body?.driveMode || undefined,
     location: req.body?.location || undefined,
     eligible_branches: Array.isArray(req.body?.eligibleBranches) ? req.body.eligibleBranches : undefined,
@@ -930,7 +1077,11 @@ router.patch('/drives/:id', asyncHandler(async (req, res) => {
     package_min: req.body?.packageMin ? parseFloat(req.body.packageMin) : undefined,
     package_max: req.body?.packageMax ? parseFloat(req.body.packageMax) : undefined,
     visibility_scope: DRIVE_VISIBILITY_SCOPES.has(String(req.body?.visibilityScope || '').trim()) ? req.body.visibilityScope : undefined,
-    application_deadline: req.body?.applicationDeadline || undefined
+    application_deadline: hasDeadlineInput
+      ? (normalizedDeadlineInput || effectiveDriveDate)
+      : ((!existingDrive.application_deadline || existingDrive.application_deadline === existingDrive.drive_date) && hasDriveDateInput
+        ? effectiveDriveDate
+        : undefined)
   });
 
   const { data, error } = await supabase
