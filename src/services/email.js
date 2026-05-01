@@ -14,6 +14,8 @@ const RESEND_FROM_ADDRESS = config.resendFrom || SMTP_FROM_ADDRESS;
 const RESEND_API_KEY = config.resendApiKey || '';
 const SENDGRID_API_KEY = config.sendgridApiKey || '';
 const BRAND = normalizeText(process.env.OTP_FROM_NAME) || 'HHH Jobs';
+const DEFAULT_APP_URL = String(config.oauthClientUrl || config.corsOrigins?.[0] || 'https://hhh-jobs.com').replace(/\/+$/, '');
+const DEFAULT_LOGIN_URL = `${DEFAULT_APP_URL}/login`;
 const EMAIL_CONNECTION_TIMEOUT_MS = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 8000;
 const EMAIL_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 8000;
 const EMAIL_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 10000;
@@ -586,14 +588,122 @@ const sendCampusInviteEmail = async ({
   });
 };
 
-const sendWelcomeEmail = async ({ to, name, password, loginUrl = 'https://hhh-jobs.com/login' }) => {
+const sendWelcomeEmail = async ({ to, name, password, role = '', loginUrl = 'https://hhh-jobs.com/login' }) => {
   if (!isEmailConfigured()) {
     console.log(`[WELCOME EMAIL - NOT CONFIGURED] To: ${to} | Password: ${password}`);
     return { sent: false, reason: 'smtp_not_configured' };
   }
 
-  const subject = `Welcome to ${BRAND} - Your account is ready`;
+  const normalizedLoginUrl = String(loginUrl || DEFAULT_LOGIN_URL).trim() || DEFAULT_LOGIN_URL;
   const displayName = String(name || '').trim() || 'Candidate';
+  const normalizedRole = normalizeText(role).toLowerCase();
+
+  if (!password) {
+    const roleCopy = normalizedRole === 'hr'
+      ? {
+        headline: 'Your recruiter workspace is ready',
+        intro: `Your email is verified and your ${BRAND} recruiter account is live. Start posting roles, reviewing candidates, and moving applicants faster from one dashboard.`,
+        steps: [
+          'Complete your company profile so candidates trust your brand.',
+          'Post your first job and track incoming applicants in real time.',
+          'Review shortlist, interview, and hiring updates from the HR portal.'
+        ]
+      }
+      : normalizedRole === 'campus_connect'
+        ? {
+          headline: 'Your Campus Connect workspace is ready',
+          intro: `Your email is verified and your ${BRAND} Campus Connect account is active. You can now manage campus drives, student imports, and placement workflows from one place.`,
+          steps: [
+            'Complete your college profile and placement contact details.',
+            'Import students or link existing student accounts to your campus.',
+            'Publish drives and track applications, shortlists, and placements.'
+          ]
+        }
+        : {
+          headline: 'Your account is ready',
+          intro: `Your email is verified and your ${BRAND} account is active. Complete your profile, explore opportunities, and stay on top of your application updates.`,
+          steps: [
+            'Complete your profile so your recommendations become more accurate.',
+            'Upload your resume and start applying to jobs or campus drives.',
+            'Turn on alerts and track every shortlist, interview, and result update.'
+          ]
+        };
+
+    const stepsHtml = roleCopy.steps
+      .map((step) => `<li style="margin:0 0 10px;color:#30415f;font-size:14px;line-height:1.6;">${step}</li>`)
+      .join('');
+
+    const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Welcome to ${BRAND}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:32px 0;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(11,22,49,0.10);">
+        <tr>
+          <td style="background:linear-gradient(135deg,#0b1631,#1f5ac7);padding:28px 32px;text-align:center;">
+            <span style="color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;">${BRAND}</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:34px 36px;">
+            <p style="margin:0 0 8px;font-size:12px;font-weight:800;color:#1f5ac7;letter-spacing:0.12em;text-transform:uppercase;">Welcome aboard</p>
+            <h2 style="margin:0 0 10px;font-size:24px;font-weight:800;color:#0b1631;">Hi ${displayName}, ${roleCopy.headline}.</h2>
+            <p style="margin:0 0 22px;color:#4f6584;font-size:15px;line-height:1.7;">
+              ${roleCopy.intro}
+            </p>
+            <div style="margin:0 0 24px;padding:18px 20px;border-radius:14px;background:#f9fbff;border:1px solid #dbe7ff;">
+              <p style="margin:0 0 10px;font-size:13px;font-weight:800;color:#0b1631;letter-spacing:0.04em;text-transform:uppercase;">Start here</p>
+              <ul style="margin:0;padding-left:20px;">
+                ${stepsHtml}
+              </ul>
+            </div>
+            <div style="text-align:center;margin:0 0 18px;">
+              <a href="${normalizedLoginUrl}" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:10px;font-size:15px;font-weight:700;">
+                Sign in to ${BRAND}
+              </a>
+            </div>
+            <p style="margin:0;color:#8a9ab5;font-size:12px;line-height:1.6;text-align:center;">
+              If you did not create this account, reply to this email and our team will help immediately.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#f4f6fb;padding:18px 36px;text-align:center;border-top:1px solid #e8edf8;">
+            <p style="margin:0;color:#8a9ab5;font-size:12px;">&copy; ${new Date().getFullYear()} ${BRAND}</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`.trim();
+
+    const text = [
+      `Welcome to ${BRAND}, ${displayName}.`,
+      '',
+      roleCopy.intro,
+      '',
+      'Start here:',
+      ...roleCopy.steps.map((step, index) => `${index + 1}. ${step}`),
+      '',
+      `Sign in: ${normalizedLoginUrl}`
+    ].join('\n');
+
+    return sendEmailWithFallback({
+      to,
+      subject: `Welcome to ${BRAND} - Your account is ready`,
+      text,
+      html
+    });
+  }
+
+  const subject = `Welcome to ${BRAND} - Your account is ready`;
 
   const html = `
 <!DOCTYPE html>
@@ -634,7 +744,7 @@ const sendWelcomeEmail = async ({ to, name, password, loginUrl = 'https://hhh-jo
               </td></tr>
             </table>
             <div style="text-align:center;margin:0 0 24px;">
-              <a href="${loginUrl}" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 40px;border-radius:8px;font-size:15px;font-weight:700;">
+              <a href="${normalizedLoginUrl}" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 40px;border-radius:8px;font-size:15px;font-weight:700;">
                 Login to ${BRAND}
               </a>
             </div>
@@ -657,7 +767,7 @@ const sendWelcomeEmail = async ({ to, name, password, loginUrl = 'https://hhh-jo
   return sendEmailWithFallback({
     to,
     subject,
-    text: `Welcome to ${BRAND}, ${displayName}!\n\nEmail: ${to}\nPassword: ${password}\n\nLogin: ${loginUrl}\n\nPlease change your password after first login.`,
+    text: `Welcome to ${BRAND}, ${displayName}!\n\nEmail: ${to}\nPassword: ${password}\n\nLogin: ${normalizedLoginUrl}\n\nPlease change your password after first login.`,
     html
   });
 };
@@ -884,6 +994,7 @@ const sendAutoApplyDigestEmail = async ({ to, name, cadence = 'daily', digest = 
 };
 
 module.exports = {
+  sendEmailWithFallback,
   sendOtpEmail,
   sendPasswordResetEmail,
   sendCampusInviteEmail,

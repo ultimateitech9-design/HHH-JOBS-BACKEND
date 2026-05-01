@@ -1,5 +1,6 @@
 const { supabase } = require('../supabase');
 const { createNotification } = require('./notifications');
+const { notifyUser } = require('./notificationOrchestrator');
 
 const ELIGIBLE_ACCOUNT_STATUSES = new Set(['active', 'linked_existing']);
 const CAMPUS_DRIVE_NOTIFICATION_LINK = '/portal/student/campus-connect';
@@ -162,6 +163,26 @@ const publishCampusDriveNotifications = async ({ collegeId, drive, actorUserId =
     ))
   );
 
+  // Email fanout (best-effort, respects user email preferences)
+  await Promise.allSettled(
+    eligibleStudents.map((student) => notifyUser({
+      userId: student.student_user_id,
+      channels: ['email'],
+      notification: {
+        type: 'campus_drive',
+        title: `New campus drive: ${drive.company_name}`,
+        message: `${drive.company_name} scheduled ${drive.job_title} for ${new Date(drive.drive_date).toDateString()}.`,
+        link: CAMPUS_DRIVE_NOTIFICATION_LINK,
+        meta: { driveId: drive.id, collegeId }
+      },
+      emailPayload: {
+        to: null,
+        subject: `Campus drive: ${drive.company_name} — ${drive.job_title}`,
+        html: `<p>${drive.company_name} scheduled <b>${drive.job_title}</b> on ${new Date(drive.drive_date).toDateString()}.</p><p><a href="https://hhh-jobs.com${CAMPUS_DRIVE_NOTIFICATION_LINK}">View details</a></p>`
+      }
+    }))
+  );
+
   await supabase
     .from('campus_students')
     .update({ last_drive_notification_at: new Date().toISOString() })
@@ -232,6 +253,26 @@ const backfillCampusDriveNotificationsForStudent = async ({ userId, email = '' }
         drive
       })
     ))
+  );
+
+  // Email for backfilled notifications as well
+  await Promise.allSettled(
+    drivesToNotify.map((drive) => notifyUser({
+      userId: campusStudent.student_user_id,
+      channels: ['email'],
+      notification: {
+        type: 'campus_drive',
+        title: `New campus drive: ${drive.company_name}`,
+        message: `${drive.company_name} scheduled ${drive.job_title} for ${new Date(drive.drive_date).toDateString()}.`,
+        link: CAMPUS_DRIVE_NOTIFICATION_LINK,
+        meta: { driveId: drive.id, collegeId: campusStudent.college_id }
+      },
+      emailPayload: {
+        to: null,
+        subject: `Campus drive: ${drive.company_name} — ${drive.job_title}`,
+        html: `<p>${drive.company_name} scheduled <b>${drive.job_title}</b> on ${new Date(drive.drive_date).toDateString()}.</p><p><a href="https://hhh-jobs.com${CAMPUS_DRIVE_NOTIFICATION_LINK}">View details</a></p>`
+      }
+    }))
   );
 
   await supabase

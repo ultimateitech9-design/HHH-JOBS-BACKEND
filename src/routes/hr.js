@@ -5,6 +5,7 @@ const { requireActiveUser, requireApprovedHr, requireRole } = require('../middle
 const { supabase, sendSupabaseError } = require('../supabase');
 const { isValidUuid, toArray, maskEmail, maskMobile, asyncHandler } = require('../utils/helpers');
 const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
+const { notifyUser } = require('../services/notificationOrchestrator');
 const { createHrJob, updateHrJob, deleteHrJob, assertJobOwnership } = require('../services/jobs');
 const { createNotification } = require('../services/notifications');
 const {
@@ -279,6 +280,24 @@ router.patch('/applications/:id/status', requireApprovedHr, asyncHandler(async (
     message: `${job.job_title} status is now ${status}.`,
     link: '/student',
     meta: { applicationId: data.id, jobId: job.id, status }
+  });
+
+  // Email the applicant about the status change (respects notification preferences)
+  await notifyUser({
+    userId: application.applicant_id,
+    channels: ['email'],
+    notification: {
+      type: 'application_status',
+      title: `Application status updated: ${status}`,
+      message: `${job.job_title} status is now ${status}.`,
+      link: '/portal/student/applications',
+      meta: { applicationId: data.id, jobId: job.id, status }
+    },
+    emailPayload: {
+      to: null,
+      subject: `Your application is now ${status}: ${job.job_title}`,
+      html: `<p>Your application status for <b>${job.job_title}</b> is now <b>${status}</b>.</p><p><a href="https://hhh-jobs.com/portal/student/applications">View application</a></p>`
+    }
   });
 
   res.send({ status: true, application: mapApplicationFromRow(data) });
@@ -967,7 +986,526 @@ router.post('/jobs/:id/applicants/bulk', requireApprovedHr, asyncHandler(async (
     )
   );
 
+  await Promise.allSettled(
+    updated.map((app) =>
+      notifyUser({
+        userId: app.applicant_id,
+        channels: ['email'],
+        notification: {
+          type: 'application_status',
+          title: `Application status updated: ${newStatus}`,
+          message: `${job.job_title} — your application is now ${newStatus}.`,
+          link: '/portal/student/applications',
+          meta: { applicationId: app.id, jobId, status: newStatus }
+        },
+        emailPayload: {
+          subject: `Your application is now ${newStatus}: ${job.job_title}`,
+          text: [
+            `Your application for ${job.job_title} is now ${newStatus}.`,
+            '',
+            'View application: https://hhh-jobs.com/portal/student/applications'
+          ].join('\n'),
+          html: `<p>Your application for <strong>${job.job_title}</strong> is now <strong>${newStatus}</strong>.</p><p><a href="https://hhh-jobs.com/portal/student/applications">View application</a></p>`
+        }
+      })
+    )
+  );
+
   res.send({ status: true, updatedCount: updated.length, status: newStatus });
+}));
+
+// ── HR Campus Drives (Company-side result updates) ──────────────────────────
+// Allows companies to view campus drives where they are the hiring company
+// and update student application statuses (shortlist / select / reject).
+// The college CRD gets a notification for every result change.
+
+const CAMPUS_APPLICATION_STATUSES = new Set(['applied', 'shortlisted', 'rejected', 'withdrawn', 'selected']);
+
+const isMissingCampusTable = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.code === '42P01'
+    || message.includes('campus_drives')
+    || message.includes('campus_drive_applications')
+    || message.includes('campus_connections')
+    || message.includes('campus_students')
+    || message.includes('colleges');
+};
+
+const buildHrCampusStatusNotification = ({ drive, nextStatus, currentRound = '' } = {}) => {
+  const roundSuffix = currentRound ? ` in ${currentRound}` : '';
+
+  if (nextStatus === 'selected') {
+    return {
+      title: `Selected for ${drive.job_title}`,
+      message: `Congratulations! You have been selected for ${drive.job_title} at ${drive.company_name}${roundSuffix}.`
+    };
+  }
+  if (nextStatus === 'shortlisted') {
+    return {
+      title: `Shortlisted for ${drive.job_title}`,
+      message: `You have been shortlisted for ${drive.job_title} at ${drive.company_name}${roundSuffix}.`
+    };
+  }
+  if (nextStatus === 'rejected') {
+    return {
+      title: `Update for ${drive.job_title}`,
+      message: `Your campus application for ${drive.job_title} at ${drive.company_name} was closed${roundSuffix}.`
+    };
+  }
+  return {
+    title: `Application updated for ${drive.job_title}`,
+    message: `Your campus application for ${drive.job_title} at ${drive.company_name} has been updated${roundSuffix}.`
+  };
+};
+
+// GET /hr/campus-drives — list all campus drives where the HR user's company name matches
+router.get('/campus-drives', asyncHandler(async (req, res) => {
+  const { data: hrProfile } = await supabase
+    .from('hr_profiles')
+    .select('company_name')
+    .eq('user_id', req.user.id)
+    .maybeSingle();
+
+  const companyName = (hrProfile?.company_name || '').trim();
+  if (!companyName) {
+    res.send({ status: true, drives: [], message: 'Complete your company profile first.' });
+    return;
+  }
+
+  // Find colleges where this HR has an accepted connection
+  const { data: connections, error: connError } = await supabase
+    .from('campus_connections')
+    .select('college_id')
+    .eq('company_user_id', req.user.id)
+    .eq('status', 'accepted');
+
+  if (connError) {
+    if (isMissingCampusTable(connError)) {
+      res.send({ status: true, drives: [] });
+      return;
+    }
+    sendSupabaseError(res, connError);
+    return;
+  }
+
+  const connectedCollegeIds = (connections || []).map((c) => c.college_id).filter(Boolean);
+
+  // Find drives where company_name matches (case-insensitive) in connected colleges
+  let query = supabase
+    .from('campus_drives')
+    .select('*, college:colleges!campus_drives_college_id_fkey(id, name, city, state, logo_url, contact_email, placement_officer_name)')
+    .ilike('company_name', companyName)
+    .order('drive_date', { ascending: false });
+
+  if (connectedCollegeIds.length > 0) {
+    query = query.in('college_id', connectedCollegeIds);
+  } else {
+    // No connections — return empty
+    res.send({ status: true, drives: [] });
+    return;
+  }
+
+  const { data: drives, error: driveError } = await query;
+
+  if (driveError) {
+    if (isMissingCampusTable(driveError)) {
+      res.send({ status: true, drives: [] });
+      return;
+    }
+    sendSupabaseError(res, driveError);
+    return;
+  }
+
+  // Attach application counts per drive
+  const driveIds = (drives || []).map((d) => d.id).filter(Boolean);
+  let driveCounts = {};
+
+  if (driveIds.length > 0) {
+    const { data: apps } = await supabase
+      .from('campus_drive_applications')
+      .select('drive_id, status')
+      .in('drive_id', driveIds);
+
+    driveCounts = (apps || []).reduce((acc, app) => {
+      if (!acc[app.drive_id]) acc[app.drive_id] = { total: 0, shortlisted: 0, selected: 0, rejected: 0 };
+      acc[app.drive_id].total += 1;
+      if (app.status === 'shortlisted') acc[app.drive_id].shortlisted += 1;
+      if (app.status === 'selected') acc[app.drive_id].selected += 1;
+      if (app.status === 'rejected') acc[app.drive_id].rejected += 1;
+      return acc;
+    }, {});
+  }
+
+  res.send({
+    status: true,
+    drives: (drives || []).map((drive) => ({
+      id: drive.id,
+      collegeId: drive.college_id,
+      companyName: drive.company_name,
+      jobTitle: drive.job_title,
+      driveDate: drive.drive_date,
+      driveMode: drive.drive_mode,
+      location: drive.location,
+      eligibleBranches: drive.eligible_branches || [],
+      eligibleCgpa: drive.eligible_cgpa,
+      description: drive.description,
+      packageMin: drive.package_min,
+      packageMax: drive.package_max,
+      status: drive.status,
+      applicationDeadline: drive.application_deadline,
+      college: drive.college ? {
+        id: drive.college.id,
+        name: drive.college.name || '',
+        city: drive.college.city || '',
+        state: drive.college.state || '',
+        logoUrl: drive.college.logo_url || '',
+        contactEmail: drive.college.contact_email || '',
+        placementOfficerName: drive.college.placement_officer_name || ''
+      } : null,
+      counts: driveCounts[drive.id] || { total: 0, shortlisted: 0, selected: 0, rejected: 0 }
+    }))
+  });
+}));
+
+// GET /hr/campus-drives/:driveId/applications — view applicants for a specific drive
+router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res) => {
+  const { driveId } = req.params;
+  if (!isValidUuid(driveId)) {
+    res.status(400).send({ status: false, message: 'Invalid drive id.' });
+    return;
+  }
+
+  const { data: hrProfile } = await supabase
+    .from('hr_profiles')
+    .select('company_name')
+    .eq('user_id', req.user.id)
+    .maybeSingle();
+
+  const companyName = (hrProfile?.company_name || '').trim();
+
+  // Fetch the drive and verify it belongs to a connected college and matches company
+  const { data: drive, error: driveErr } = await supabase
+    .from('campus_drives')
+    .select('*, college:colleges!campus_drives_college_id_fkey(id, name, user_id)')
+    .eq('id', driveId)
+    .maybeSingle();
+
+  if (driveErr) {
+    if (isMissingCampusTable(driveErr)) {
+      res.send({ status: true, drive: null, applications: [], summary: { total: 0 } });
+      return;
+    }
+    sendSupabaseError(res, driveErr);
+    return;
+  }
+  if (!drive) { res.status(404).send({ status: false, message: 'Campus drive not found.' }); return; }
+
+  // Verify company name match
+  if (companyName.toLowerCase() !== (drive.company_name || '').toLowerCase()) {
+    res.status(403).send({ status: false, message: 'This drive does not belong to your company.' });
+    return;
+  }
+
+  // Verify accepted connection
+  const { data: conn } = await supabase
+    .from('campus_connections')
+    .select('id')
+    .eq('company_user_id', req.user.id)
+    .eq('college_id', drive.college_id)
+    .eq('status', 'accepted')
+    .maybeSingle();
+
+  if (!conn) {
+    res.status(403).send({ status: false, message: 'You do not have an accepted connection with this college.' });
+    return;
+  }
+
+  // Fetch applications
+  const { data: applications, error: appErr } = await supabase
+    .from('campus_drive_applications')
+    .select('*')
+    .eq('drive_id', driveId)
+    .eq('college_id', drive.college_id)
+    .order('applied_at', { ascending: false });
+
+  if (appErr) {
+    if (isMissingCampusTable(appErr)) {
+      res.send({ status: true, drive, applications: [], summary: { total: 0 } });
+      return;
+    }
+    sendSupabaseError(res, appErr);
+    return;
+  }
+
+  const appRows = applications || [];
+
+  // Hydrate student info
+  const campusStudentIds = [...new Set(appRows.map((a) => a.campus_student_id).filter(Boolean))];
+  const userIds = [...new Set(appRows.map((a) => a.student_user_id).filter(Boolean))];
+
+  const [studentsResp, usersResp] = await Promise.all([
+    campusStudentIds.length > 0
+      ? supabase.from('campus_students').select('id, name, email, phone, degree, branch, graduation_year, cgpa, is_placed').in('id', campusStudentIds)
+      : Promise.resolve({ data: [] }),
+    userIds.length > 0
+      ? supabase.from('users').select('id, name, email, mobile').in('id', userIds)
+      : Promise.resolve({ data: [] })
+  ]);
+
+  const studentsById = Object.fromEntries((studentsResp.data || []).map((s) => [s.id, s]));
+  const usersById = Object.fromEntries((usersResp.data || []).map((u) => [u.id, u]));
+
+  const summary = {
+    total: appRows.length,
+    applied: appRows.filter((a) => a.status === 'applied').length,
+    shortlisted: appRows.filter((a) => a.status === 'shortlisted').length,
+    selected: appRows.filter((a) => a.status === 'selected').length,
+    rejected: appRows.filter((a) => a.status === 'rejected').length,
+    withdrawn: appRows.filter((a) => a.status === 'withdrawn').length
+  };
+
+  res.send({
+    status: true,
+    drive: {
+      id: drive.id,
+      companyName: drive.company_name,
+      jobTitle: drive.job_title,
+      driveDate: drive.drive_date,
+      status: drive.status,
+      collegeName: drive.college?.name || ''
+    },
+    applications: appRows.map((app) => {
+      const cs = app.campus_student_id ? studentsById[app.campus_student_id] : null;
+      const su = app.student_user_id ? usersById[app.student_user_id] : null;
+      return {
+        id: app.id,
+        driveId: app.drive_id,
+        status: app.status || 'applied',
+        currentRound: app.current_round || '',
+        eliminatedInRound: app.eliminated_in_round || '',
+        notes: app.notes || '',
+        appliedAt: app.applied_at || app.created_at || null,
+        reviewedAt: app.reviewed_at || null,
+        decisionAt: app.decision_at || null,
+        resumeUrl: app.resume_url || '',
+        candidate: {
+          name: cs?.name || su?.name || app.applicant_email || 'Applicant',
+          email: app.applicant_email || cs?.email || su?.email || '',
+          phone: cs?.phone || su?.mobile || '',
+          degree: cs?.degree || '',
+          branch: cs?.branch || '',
+          graduationYear: cs?.graduation_year || null,
+          cgpa: cs?.cgpa ?? null,
+          isPlaced: Boolean(cs?.is_placed)
+        }
+      };
+    }),
+    summary
+  });
+}));
+
+// PATCH /hr/campus-drives/:driveId/applications/:applicationId — company updates a student result
+router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler(async (req, res) => {
+  const { driveId, applicationId } = req.params;
+  if (!isValidUuid(driveId) || !isValidUuid(applicationId)) {
+    res.status(400).send({ status: false, message: 'Invalid drive or application id.' });
+    return;
+  }
+
+  const { data: hrProfile } = await supabase
+    .from('hr_profiles')
+    .select('company_name')
+    .eq('user_id', req.user.id)
+    .maybeSingle();
+
+  const companyName = (hrProfile?.company_name || '').trim();
+
+  // Fetch drive + verify ownership
+  const { data: drive, error: driveErr } = await supabase
+    .from('campus_drives')
+    .select('*, college:colleges!campus_drives_college_id_fkey(id, name, user_id)')
+    .eq('id', driveId)
+    .maybeSingle();
+
+  if (driveErr) { sendSupabaseError(res, driveErr); return; }
+  if (!drive) { res.status(404).send({ status: false, message: 'Campus drive not found.' }); return; }
+
+  if (companyName.toLowerCase() !== (drive.company_name || '').toLowerCase()) {
+    res.status(403).send({ status: false, message: 'This drive does not belong to your company.' });
+    return;
+  }
+
+  // Verify accepted connection
+  const { data: conn } = await supabase
+    .from('campus_connections')
+    .select('id')
+    .eq('company_user_id', req.user.id)
+    .eq('college_id', drive.college_id)
+    .eq('status', 'accepted')
+    .maybeSingle();
+
+  if (!conn) {
+    res.status(403).send({ status: false, message: 'You do not have an accepted connection with this college.' });
+    return;
+  }
+
+  // Fetch application
+  const { data: existing, error: appErr } = await supabase
+    .from('campus_drive_applications')
+    .select('*')
+    .eq('id', applicationId)
+    .eq('drive_id', driveId)
+    .eq('college_id', drive.college_id)
+    .maybeSingle();
+
+  if (appErr) { sendSupabaseError(res, appErr); return; }
+  if (!existing) { res.status(404).send({ status: false, message: 'Application not found.' }); return; }
+
+  const nextStatus = req.body?.status ? String(req.body.status).trim().toLowerCase() : existing.status;
+  if (!CAMPUS_APPLICATION_STATUSES.has(nextStatus)) {
+    res.status(400).send({ status: false, message: 'Invalid status. Use: applied, shortlisted, selected, rejected, withdrawn.' });
+    return;
+  }
+
+  const nextRound = String(req.body?.currentRound || existing.current_round || '').trim();
+  const nextNotes = req.body?.notes !== undefined ? String(req.body.notes || '').trim() : existing.notes;
+  const now = new Date().toISOString();
+
+  const updatePayload = {
+    status: nextStatus,
+    current_round: nextRound || null,
+    eliminated_in_round: nextStatus === 'rejected'
+      ? (String(req.body?.eliminatedInRound || '').trim() || nextRound || existing.eliminated_in_round || null)
+      : (req.body?.eliminatedInRound !== undefined ? String(req.body.eliminatedInRound || '').trim() || null : existing.eliminated_in_round),
+    notes: nextNotes || null,
+    reviewed_at: now,
+    reviewed_by_user_id: req.user.id,
+    decision_at: ['selected', 'rejected', 'withdrawn'].includes(nextStatus) ? now : existing.decision_at
+  };
+
+  const { data: updated, error: updateErr } = await supabase
+    .from('campus_drive_applications')
+    .update(updatePayload)
+    .eq('id', applicationId)
+    .eq('drive_id', driveId)
+    .eq('college_id', drive.college_id)
+    .select('*')
+    .single();
+
+  if (updateErr) { sendSupabaseError(res, updateErr); return; }
+
+  const summaryResponse = await supabase
+    .from('campus_drive_applications')
+    .select('status')
+    .eq('drive_id', driveId)
+    .eq('college_id', drive.college_id);
+
+  const summary = {
+    total: 0,
+    applied: 0,
+    shortlisted: 0,
+    selected: 0,
+    rejected: 0,
+    withdrawn: 0
+  };
+  (summaryResponse.data || []).forEach((item) => {
+    summary.total += 1;
+    if (summary[item.status] !== undefined) summary[item.status] += 1;
+  });
+
+  // Auto-mark placed if selected
+  if (nextStatus === 'selected' && updated.campus_student_id) {
+    await supabase
+      .from('campus_students')
+      .update({
+        is_placed: true,
+        placed_company: drive.company_name,
+        placed_role: drive.job_title,
+        placed_salary: drive.package_max || drive.package_min || null
+      })
+      .eq('id', updated.campus_student_id);
+  }
+
+  // Notify the student
+  const statusNotification = buildHrCampusStatusNotification({ drive, nextStatus, currentRound: nextRound });
+  if (updated.student_user_id) {
+    await createNotification({
+      userId: updated.student_user_id,
+      type: 'campus_drive_status',
+      title: statusNotification.title,
+      message: statusNotification.message,
+      link: '/portal/student/campus-connect',
+      meta: { driveId, applicationId: updated.id, status: nextStatus }
+    });
+
+    await notifyUser({
+      userId: updated.student_user_id,
+      channels: ['email'],
+      notification: {
+        type: 'campus_drive_status',
+        title: statusNotification.title,
+        message: statusNotification.message,
+        link: '/portal/student/campus-connect',
+        meta: { driveId, applicationId: updated.id, status: nextStatus }
+      },
+      emailPayload: {
+        subject: statusNotification.title,
+        text: [
+          statusNotification.message,
+          nextNotes ? `Notes: ${nextNotes}` : '',
+          '',
+          'View status: https://hhh-jobs.com/portal/student/campus-connect'
+        ].filter(Boolean).join('\n'),
+        html: `
+          <p>${statusNotification.message}</p>
+          ${nextNotes ? `<p><strong>Notes:</strong> ${nextNotes}</p>` : ''}
+          <p><a href="https://hhh-jobs.com/portal/student/campus-connect">View status</a></p>
+        `.trim()
+      }
+    });
+  }
+
+  // Notify the CRD (college admin) about company's result update
+  const collegeOwnerId = drive.college?.user_id;
+  if (collegeOwnerId) {
+    const candidateName = updated.applicant_email || 'A student';
+    await createNotification({
+      userId: collegeOwnerId,
+      type: 'campus_drive_company_update',
+      title: `${companyName} updated result: ${nextStatus}`,
+      message: `${companyName} marked ${candidateName} as "${nextStatus}" for ${drive.job_title}${nextRound ? ` (${nextRound})` : ''}.`,
+      link: '/portal/campus-connect/drives',
+      meta: { driveId, applicationId: updated.id, status: nextStatus, updatedBy: req.user.id }
+    });
+
+    await notifyUser({
+      userId: collegeOwnerId,
+      channels: ['email'],
+      notification: {
+        type: 'campus_drive_company_update',
+        title: `${companyName} updated result: ${nextStatus}`,
+        message: `${companyName} marked ${candidateName} as "${nextStatus}" for ${drive.job_title}${nextRound ? ` (${nextRound})` : ''}.`,
+        link: '/portal/campus-connect/drives',
+        meta: { driveId, applicationId: updated.id, status: nextStatus, updatedBy: req.user.id }
+      },
+      emailPayload: {
+        subject: `Campus-drive result updated: ${drive.job_title}`,
+        text: [
+          `${companyName} marked ${candidateName} as ${nextStatus} for ${drive.job_title}${nextRound ? ` (${nextRound})` : ''}.`,
+          `Applicants: ${summary.total} | Shortlisted: ${summary.shortlisted} | Selected: ${summary.selected} | Rejected: ${summary.rejected}`,
+          '',
+          'Open the campus dashboard: https://hhh-jobs.com/portal/campus-connect/drives'
+        ].join('\n'),
+        html: `
+          <p><strong>${companyName}</strong> marked <strong>${candidateName}</strong> as <strong>${nextStatus}</strong> for <strong>${drive.job_title}</strong>${nextRound ? ` (${nextRound})` : ''}.</p>
+          <p>Applicants: <strong>${summary.total}</strong> | Shortlisted: <strong>${summary.shortlisted}</strong> | Selected: <strong>${summary.selected}</strong> | Rejected: <strong>${summary.rejected}</strong></p>
+          <p><a href="https://hhh-jobs.com/portal/campus-connect/drives">Open the campus dashboard</a></p>
+        `.trim()
+      }
+    });
+  }
+
+  res.send({ status: true, application: updated });
 }));
 
 module.exports = router;

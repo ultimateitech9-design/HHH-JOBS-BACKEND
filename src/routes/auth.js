@@ -24,6 +24,8 @@ const {
   getRoleRedirectPath
 } = require('../services/accountRoles');
 const { backfillCampusDriveNotificationsForStudent } = require('../services/campusDrives');
+const { enqueueWelcomeEmail } = require('../services/sideEffectQueue');
+const { upsertCommercialLeadForUser } = require('../services/commercial');
 const {
   isEmployeeProfileRole,
   getProfileRoleKey,
@@ -53,6 +55,7 @@ const runAsyncSideEffect = (label, task) => {
 const EMAIL_DELIVERY_WAIT_MS = Number(process.env.OTP_DELIVERY_WAIT_MS) > 0
   ? Number(process.env.OTP_DELIVERY_WAIT_MS)
   : (config.nodeEnv === 'production' ? 12000 : 2500);
+const DEFAULT_LOGIN_URL = `${String(config.oauthClientUrl || config.corsOrigins?.[0] || 'https://hhh-jobs.com').replace(/\/+$/, '')}/login`;
 
 const createAuthToken = (user) => jwt.sign(
   {
@@ -198,6 +201,31 @@ const deliverEmailWithSoftTimeout = async ({ label, task }) => {
     pending: true,
     reason: 'email_delivery_pending'
   };
+};
+const queueWelcomeEmailForUser = (user = {}) => {
+  if (!user?.email) return;
+
+  runAsyncSideEffect('welcome-email', async () => {
+    await enqueueWelcomeEmail({
+      to: user.email,
+      name: user.name,
+      role: user.role,
+      loginUrl: DEFAULT_LOGIN_URL
+    });
+  });
+};
+const queueCommercialLeadSyncForUser = (user = {}) => {
+  if (![ROLES.HR, ROLES.CAMPUS_CONNECT].includes(String(user?.role || '').trim().toLowerCase())) return;
+
+  runAsyncSideEffect('commercial-lead-sync', async () => {
+    await upsertCommercialLeadForUser({
+      userId: user.id,
+      role: user.role,
+      name: user.name,
+      email: user.email,
+      mobile: user.mobile
+    });
+  });
 };
 
 const normalizeRoleValue = (role) => String(role || '').trim().toLowerCase();
@@ -1381,6 +1409,8 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
       details: { email, source: 'signup_pending' },
       ipAddress: getClientIp(req)
     });
+    queueWelcomeEmailForUser(userRow);
+    queueCommercialLeadSyncForUser(userRow);
 
     const token = createAuthToken(userRow);
     const publicUser = isStudentPortalRole(userRow.role) && pendingSignup?.reqBody?.dateOfBirth
@@ -1469,6 +1499,8 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
     details: { email },
     ipAddress: getClientIp(req)
   });
+  queueWelcomeEmailForUser(user);
+  queueCommercialLeadSyncForUser(user);
 
   const token = createAuthToken(user);
   let publicUser = user;

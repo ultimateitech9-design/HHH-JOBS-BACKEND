@@ -63,7 +63,24 @@ const notifyUser = async ({
 
   if (channels.includes(CHANNELS.EMAIL) && prefs.email && emailPayload) {
     try {
-      results.email = await sendEmailWithFallback(emailPayload);
+      let finalEmailPayload = { ...emailPayload };
+      if (!finalEmailPayload.to && userId) {
+        const { data: userRow } = await supabase
+          .from('users')
+          .select('email')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (userRow?.email) {
+          finalEmailPayload.to = userRow.email;
+        }
+      }
+
+      if (finalEmailPayload.to) {
+        results.email = await sendEmailWithFallback(finalEmailPayload);
+      } else {
+        results.email = { skipped: true, reason: 'missing_recipient' };
+      }
     } catch (error) {
       results.email = { error: error.message };
     }
@@ -102,7 +119,6 @@ const notifyJobMatch = async ({ userId, job, matchPercent, explanation, jobUrl }
     },
     pushPayload: { title, body: message, url: `/portal/student/jobs/${job.id}`, tag: 'job_match' },
     emailPayload: {
-      to: null,
       subject: `HHH Jobs: ${title}`,
       html: `<p>${message}</p><p><a href="https://hhh-jobs.com/portal/student/jobs/${job.id}">View & Apply</a></p>`
     },

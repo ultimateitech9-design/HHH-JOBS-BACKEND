@@ -4,6 +4,7 @@ const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
+const { syncCommercialLeadsFromUsers } = require('../services/commercial');
 const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
@@ -220,16 +221,33 @@ router.get('/team', asyncHandler(async (req, res) => {
 // Products (Job Posting Plans)
 // =============================================
 router.get('/products', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('job_posting_plans')
-    .select('id, slug, name, description, price, currency, is_active, sort_order')
-    .eq('is_active', true)
-    .order('sort_order');
+  const [{ data, error }, { data: rolePlans, error: rolePlansError }] = await Promise.all([
+    supabase
+      .from('job_posting_plans')
+      .select('id, slug, name, description, price, currency, is_active, sort_order')
+      .eq('is_active', true)
+      .order('sort_order'),
+    supabase
+      .from('role_plans')
+      .select('id, slug, name, description, price, currency, is_active, sort_order, audience_role')
+      .eq('is_active', true)
+      .order('sort_order')
+  ]);
 
   if (error) { sendSupabaseError(res, error); return; }
+  if (rolePlansError) { sendSupabaseError(res, rolePlansError); return; }
 
-  const products = data || [];
-  const planSlugs = products.map((product) => product.slug).filter(Boolean);
+  const jobProducts = data || [];
+  const commercialProducts = rolePlans || [];
+  const products = [
+    ...jobProducts,
+    ...commercialProducts.map((product) => ({
+      ...product,
+      category: `Role Plan (${String(product.audience_role || '').replace('_', ' ')})`
+    }))
+  ];
+  const planSlugs = jobProducts.map((product) => product.slug).filter(Boolean);
+  const rolePlanSlugs = commercialProducts.map((product) => product.slug).filter(Boolean);
 
   let purchaseSummaryBySlug = {};
   if (planSlugs.length > 0) {
@@ -252,13 +270,34 @@ router.get('/products', asyncHandler(async (req, res) => {
     }, {});
   }
 
+  let rolePurchaseSummaryBySlug = {};
+  if (rolePlanSlugs.length > 0) {
+    const { data: purchasesData, error: purchasesError } = await supabase
+      .from('role_plan_purchases')
+      .select('role_plan_slug, quantity, total_amount, status')
+      .in('role_plan_slug', rolePlanSlugs);
+
+    if (purchasesError) { sendSupabaseError(res, purchasesError); return; }
+
+    rolePurchaseSummaryBySlug = (purchasesData || []).reduce((acc, purchase) => {
+      const slug = purchase.role_plan_slug;
+      const current = acc[slug] || { units_sold: 0, revenue: 0 };
+      current.units_sold += Number(purchase.quantity || 0);
+      if (!['failed', 'cancelled'].includes(String(purchase.status || '').toLowerCase())) {
+        current.revenue += Number(purchase.total_amount || 0);
+      }
+      acc[slug] = current;
+      return acc;
+    }, {});
+  }
+
   res.send({
     status: true,
     products: products.map((product) => ({
       ...product,
-      category: 'Job Posting Plan',
-      units_sold: purchaseSummaryBySlug[product.slug]?.units_sold || 0,
-      revenue: purchaseSummaryBySlug[product.slug]?.revenue || 0
+      category: product.category || 'Job Posting Plan',
+      units_sold: purchaseSummaryBySlug[product.slug]?.units_sold || rolePurchaseSummaryBySlug[product.slug]?.units_sold || 0,
+      revenue: purchaseSummaryBySlug[product.slug]?.revenue || rolePurchaseSummaryBySlug[product.slug]?.revenue || 0
     }))
   });
 }));
@@ -350,6 +389,8 @@ router.patch('/orders/:id/status', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/leads', asyncHandler(async (req, res) => {
   const status = String(req.query.status || '').toLowerCase();
+  const targetRole = String(req.query.targetRole || req.query.target_role || '').toLowerCase();
+  const onboardingStatus = String(req.query.onboardingStatus || req.query.onboarding_status || '').toLowerCase();
   const search = String(req.query.search || '').trim();
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
@@ -357,14 +398,16 @@ router.get('/leads', asyncHandler(async (req, res) => {
 
   let query = supabase
     .from('sales_leads')
-    .select('id, company_name, contact_name, contact_email, status, source, assigned_name, value, created_at', { count: 'exact' })
+    .select('id, company_name, contact_name, contact_email, contact_phone, status, source, assigned_name, value, created_at, target_role, onboarding_status, next_followup_at, last_followup_at, plan_interest_slug, coupon_code', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
 
   if (['new', 'contacted', 'qualified', 'proposal', 'converted', 'lost'].includes(status)) query = query.eq('status', status);
+  if ([ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT].includes(targetRole)) query = query.eq('target_role', targetRole);
+  if (['prospect', 'negotiation', 'active', 'onboarding', 'churn_risk', 'closed'].includes(onboardingStatus)) query = query.eq('onboarding_status', onboardingStatus);
   if (search) {
     const safeSearch = search.replace(/[,().]/g, '');
-    query = query.or(`company_name.ilike.%${safeSearch}%,contact_name.ilike.%${safeSearch}%`);
+    query = query.or(`company_name.ilike.%${safeSearch}%,contact_name.ilike.%${safeSearch}%,contact_email.ilike.%${safeSearch}%`);
   }
 
   const { data, error, count } = await query;
@@ -413,13 +456,31 @@ router.post('/leads', asyncHandler(async (req, res) => {
 }));
 
 router.patch('/leads/:id', asyncHandler(async (req, res) => {
-  const { status, notes, value, assigned_to, assigned_name } = req.body || {};
+  const {
+    status,
+    notes,
+    value,
+    assigned_to,
+    assigned_name,
+    onboarding_status,
+    next_followup_at,
+    last_followup_at,
+    followup_notes,
+    plan_interest_slug,
+    coupon_code
+  } = req.body || {};
   const updates = { updated_at: new Date().toISOString() };
   if (status) updates.status = status;
   if (notes !== undefined) updates.notes = notes;
   if (value !== undefined) updates.value = Number(value);
   if (assigned_to) updates.assigned_to = assigned_to;
   if (assigned_name) updates.assigned_name = assigned_name;
+  if (onboarding_status !== undefined) updates.onboarding_status = onboarding_status;
+  if (next_followup_at !== undefined) updates.next_followup_at = next_followup_at || null;
+  if (last_followup_at !== undefined) updates.last_followup_at = last_followup_at || null;
+  if (followup_notes !== undefined) updates.followup_notes = followup_notes;
+  if (plan_interest_slug !== undefined) updates.plan_interest_slug = plan_interest_slug || null;
+  if (coupon_code !== undefined) updates.coupon_code = coupon_code ? String(coupon_code).trim().toUpperCase() : null;
 
   const { data, error } = await supabase
     .from('sales_leads')
@@ -434,6 +495,25 @@ router.patch('/leads/:id', asyncHandler(async (req, res) => {
   res.send({ status: true, lead: data });
 }));
 
+router.post('/leads/sync-commercial', asyncHandler(async (req, res) => {
+  if (![ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user?.role)) {
+    res.status(403).send({ status: false, message: 'Only admin can sync commercial leads' });
+    return;
+  }
+
+  try {
+    const synced = await syncCommercialLeadsFromUsers({
+      roles: Array.isArray(req.body?.roles) && req.body.roles.length > 0
+        ? req.body.roles
+        : [ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT]
+    });
+
+    res.send({ status: true, syncedCount: synced.length, leads: synced });
+  } catch (error) {
+    sendSupabaseError(res, error);
+  }
+}));
+
 // =============================================
 // Customers
 // =============================================
@@ -445,7 +525,7 @@ router.get('/customers', asyncHandler(async (req, res) => {
 
   let query = supabase
     .from('sales_customers')
-    .select('id, company_name, contact_name, email, phone, plan, status, total_spent, created_at', { count: 'exact' })
+    .select('id, company_name, contact_name, email, phone, plan, status, total_spent, created_at, audience_role, sales_owner_id, subscription_id', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -479,7 +559,7 @@ router.get('/customers/:id', asyncHandler(async (req, res) => {
 router.get('/coupons', asyncHandler(async (req, res) => {
   const { data, error } = await supabase
     .from('sales_coupons')
-    .select('id, code, discount_type, discount_value, max_uses, used_count, valid_until, is_active, created_at')
+    .select('id, code, discount_type, discount_value, max_uses, used_count, valid_from, valid_until, is_active, created_at, audience_roles, plan_slugs, min_amount, max_discount_amount, assigned_to_sales_id, created_by')
     .order('created_at', { ascending: false });
 
   if (error) { sendSupabaseError(res, error); return; }
@@ -488,7 +568,24 @@ router.get('/coupons', asyncHandler(async (req, res) => {
 }));
 
 router.post('/coupons', asyncHandler(async (req, res) => {
-  const { code, discount_type, discount_value, max_uses, valid_from, valid_until } = req.body || {};
+  if (![ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user?.role)) {
+    res.status(403).send({ status: false, message: 'Only admin can create coupons' });
+    return;
+  }
+
+  const {
+    code,
+    discount_type,
+    discount_value,
+    max_uses,
+    valid_from,
+    valid_until,
+    audience_roles,
+    plan_slugs,
+    min_amount,
+    max_discount_amount,
+    assigned_to_sales_id
+  } = req.body || {};
   if (!code || !discount_value) return res.status(400).send({ status: false, message: 'code and discount_value are required' });
 
   const { data, error } = await supabase
@@ -500,7 +597,13 @@ router.post('/coupons', asyncHandler(async (req, res) => {
       max_uses: max_uses ? Number(max_uses) : null,
       valid_from: valid_from || null,
       valid_until: valid_until || null,
-      is_active: true
+      is_active: true,
+      created_by: req.user?.id || null,
+      assigned_to_sales_id: assigned_to_sales_id || null,
+      audience_roles: Array.isArray(audience_roles) ? audience_roles : [],
+      plan_slugs: Array.isArray(plan_slugs) ? plan_slugs.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean) : [],
+      min_amount: min_amount ? Number(min_amount) : 0,
+      max_discount_amount: max_discount_amount ? Number(max_discount_amount) : null
     })
     .select('*')
     .single();
@@ -508,6 +611,37 @@ router.post('/coupons', asyncHandler(async (req, res) => {
   if (error) { sendSupabaseError(res, error, error.code === '23505' ? 400 : 500); return; }
 
   res.status(201).send({ status: true, coupon: data });
+}));
+
+router.patch('/coupons/:id', asyncHandler(async (req, res) => {
+  if (![ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user?.role)) {
+    res.status(403).send({ status: false, message: 'Only admin can update coupons' });
+    return;
+  }
+
+  const updates = {};
+  const allowedKeys = ['discount_type', 'discount_value', 'max_uses', 'valid_from', 'valid_until', 'is_active', 'min_amount', 'max_discount_amount', 'assigned_to_sales_id'];
+  allowedKeys.forEach((key) => {
+    if (req.body?.[key] !== undefined) updates[key] = req.body[key];
+  });
+  if (req.body?.audience_roles !== undefined) updates.audience_roles = Array.isArray(req.body.audience_roles) ? req.body.audience_roles : [];
+  if (req.body?.plan_slugs !== undefined) {
+    updates.plan_slugs = Array.isArray(req.body.plan_slugs)
+      ? req.body.plan_slugs.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+      : [];
+  }
+
+  const { data, error } = await supabase
+    .from('sales_coupons')
+    .update(updates)
+    .eq('id', req.params.id)
+    .select('*')
+    .maybeSingle();
+
+  if (error) { sendSupabaseError(res, error); return; }
+  if (!data) return res.status(404).send({ status: false, message: 'Coupon not found' });
+
+  res.send({ status: true, coupon: data });
 }));
 
 // =============================================

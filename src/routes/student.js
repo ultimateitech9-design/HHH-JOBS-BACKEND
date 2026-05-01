@@ -10,6 +10,7 @@ const { extractResumeText } = require('../utils/resumeExtraction');
 const { extractStudentProfileFromResume } = require('../utils/studentResumeProfileImport');
 const { syncHhhCandidateToEimager } = require('../services/eimagerSync');
 const { createNotification } = require('../services/notifications');
+const { notifyUser } = require('../services/notificationOrchestrator');
 const { resolveResumeForApplication } = require('../services/applications');
 const {
   getPersonalizedRecommendations,
@@ -1029,6 +1030,14 @@ router.post('/campus-connect/drives/:driveId/apply', asyncHandler(async (req, re
     appliedAt: insertResponse.data.applied_at || insertResponse.data.created_at || null,
     currentRound: null
   };
+  const applicationCountResponse = await supabase
+    .from('campus_drive_applications')
+    .select('id', { count: 'exact', head: true })
+    .eq('drive_id', drive.id)
+    .eq('college_id', drive.college_id);
+  const totalApplicants = Number.isFinite(applicationCountResponse.count)
+    ? Number(applicationCountResponse.count)
+    : null;
 
   const notificationTasks = [
     createNotification({
@@ -1056,13 +1065,83 @@ router.post('/campus-connect/drives/:driveId/apply', asyncHandler(async (req, re
         meta: {
           driveId: drive.id,
           applicationId: applicationPayload.id,
-          campusStudentId: campusStudent.id
+          campusStudentId: campusStudent?.id || null
         }
       })
     );
   }
 
-  await Promise.allSettled(notificationTasks);
+  const emailTasks = [
+    notifyUser({
+      userId: targetUserId,
+      channels: ['email'],
+      notification: {
+        type: 'campus_drive_application',
+        title: 'Campus drive application submitted',
+        message: `Your application for ${drive.job_title} at ${drive.company_name} has been submitted.`,
+        link: CAMPUS_DRIVE_NOTIFICATION_LINK,
+        meta: {
+          driveId: drive.id,
+          applicationId: applicationPayload.id,
+          collegeId: drive.college_id
+        }
+      },
+      emailPayload: {
+        subject: `Application received: ${drive.job_title} at ${drive.company_name}`,
+        text: [
+          `Your application for ${drive.job_title} at ${drive.company_name} has been submitted.`,
+          collegeResponse.data?.name ? `Campus: ${collegeResponse.data.name}` : '',
+          drive.drive_date ? `Drive date: ${drive.drive_date}` : '',
+          '',
+          `Track your drive updates: https://hhh-jobs.com${CAMPUS_DRIVE_NOTIFICATION_LINK}`
+        ].filter(Boolean).join('\n'),
+        html: `
+          <p>Your application for <strong>${drive.job_title}</strong> at <strong>${drive.company_name}</strong> has been submitted.</p>
+          ${collegeResponse.data?.name ? `<p>Campus: <strong>${collegeResponse.data.name}</strong></p>` : ''}
+          ${drive.drive_date ? `<p>Drive date: <strong>${drive.drive_date}</strong></p>` : ''}
+          <p><a href="https://hhh-jobs.com${CAMPUS_DRIVE_NOTIFICATION_LINK}">Track your drive updates</a></p>
+        `.trim()
+      }
+    })
+  ];
+
+  if (collegeOwnerId) {
+    emailTasks.push(
+      notifyUser({
+        userId: collegeOwnerId,
+        channels: ['email'],
+        notification: {
+          type: 'campus_drive_application',
+          title: `New application for ${drive.company_name}`,
+          message: `${user.name || user.email} applied for ${drive.job_title}.`,
+          link: '/portal/campus-connect/drives',
+          meta: {
+            driveId: drive.id,
+            applicationId: applicationPayload.id,
+            campusStudentId: campusStudent?.id || null
+          }
+        },
+        emailPayload: {
+          subject: `New campus-drive applicant: ${drive.job_title}`,
+          text: [
+            `${user.name || user.email} applied for ${drive.job_title} at ${drive.company_name}.`,
+            user.email ? `Applicant email: ${user.email}` : '',
+            totalApplicants != null ? `Total applicants so far: ${totalApplicants}` : '',
+            '',
+            'Open the campus dashboard: https://hhh-jobs.com/portal/campus-connect/drives'
+          ].filter(Boolean).join('\n'),
+          html: `
+            <p><strong>${user.name || user.email}</strong> applied for <strong>${drive.job_title}</strong> at <strong>${drive.company_name}</strong>.</p>
+            ${user.email ? `<p>Applicant email: <strong>${user.email}</strong></p>` : ''}
+            ${totalApplicants != null ? `<p>Total applicants so far: <strong>${totalApplicants}</strong></p>` : ''}
+            <p><a href="https://hhh-jobs.com/portal/campus-connect/drives">Open the campus dashboard</a></p>
+          `.trim()
+        }
+      })
+    );
+  }
+
+  await Promise.allSettled([...notificationTasks, ...emailTasks]);
 
   res.status(201).send({
     status: true,

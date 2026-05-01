@@ -9,6 +9,7 @@ const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { supabase, ensureServerConfig, sendSupabaseError } = require('../supabase');
 const { isValidUuid, asyncHandler, normalizeEmail, stripUndefined } = require('../utils/helpers');
 const { createNotification } = require('../services/notifications');
+const { notifyUser } = require('../services/notificationOrchestrator');
 const { ensureRoleProfile } = require('../services/profileTables');
 const {
   countEligibleCampusStudentsForDrive,
@@ -1239,6 +1240,37 @@ router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async 
       applicationId: updatedApplication.id,
       status: nextStatus,
       currentRound: nextRound || null
+    }
+  });
+
+  await notifyUser({
+    userId: updatedApplication.student_user_id,
+    channels: ['email'],
+    notification: {
+      type: 'campus_drive_status',
+      title: notificationMeta.title,
+      message: notificationMeta.message,
+      link: '/portal/student/campus-connect',
+      meta: {
+        driveId,
+        applicationId: updatedApplication.id,
+        status: nextStatus,
+        currentRound: nextRound || null
+      }
+    },
+    emailPayload: {
+      subject: notificationMeta.title,
+      text: [
+        notificationMeta.message,
+        nextNotes ? `Notes: ${nextNotes}` : '',
+        '',
+        'Open Campus Connect: https://hhh-jobs.com/portal/student/campus-connect'
+      ].filter(Boolean).join('\n'),
+      html: `
+        <p>${notificationMeta.message}</p>
+        ${nextNotes ? `<p><strong>Notes:</strong> ${nextNotes}</p>` : ''}
+        <p><a href="https://hhh-jobs.com/portal/student/campus-connect">Open Campus Connect</a></p>
+      `.trim()
     }
   });
 

@@ -3,6 +3,7 @@ const { JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
 const { normalizeEmail } = require('../utils/helpers');
 const { mapApplicationFromRow } = require('../utils/mappers');
 const { createNotification } = require('./notifications');
+const { notifyUser } = require('./notificationOrchestrator');
 const { autoCloseExpiredJob } = require('./jobs');
 const { isJobExpiredByApplications } = require('../modules/pricing/engine');
 
@@ -142,6 +143,43 @@ const submitApplicationForUser = async ({
     message: `${user.name || user.email} has applied to your job.`,
     link: '/hr',
     meta: { jobId: job.id, applicationId: data.id }
+  });
+
+  const applicationCountResponse = await supabase
+    .from('applications')
+    .select('id', { count: 'exact', head: true })
+    .eq('job_id', job.id);
+
+  const totalApplications = Number.isFinite(applicationCountResponse.count)
+    ? Number(applicationCountResponse.count)
+    : null;
+
+  await notifyUser({
+    userId: job.created_by,
+    channels: ['email'],
+    notification: {
+      type: 'new_application',
+      title: `New application for ${job.job_title}`,
+      message: `${user.name || user.email} has applied to your job.`,
+      link: '/portal/hr/jobs',
+      meta: { jobId: job.id, applicationId: data.id }
+    },
+    emailPayload: {
+      subject: `New applicant for ${job.job_title}`,
+      text: [
+        `${user.name || user.email} applied for ${job.job_title}.`,
+        user.email ? `Candidate email: ${user.email}` : '',
+        totalApplications != null ? `Total applications so far: ${totalApplications}` : '',
+        '',
+        'Review applicants: https://hhh-jobs.com/portal/hr/jobs'
+      ].filter(Boolean).join('\n'),
+      html: `
+        <p><strong>${user.name || user.email}</strong> applied for <strong>${job.job_title}</strong>.</p>
+        ${user.email ? `<p>Candidate email: <strong>${user.email}</strong></p>` : ''}
+        ${totalApplications != null ? `<p>Total applications so far: <strong>${totalApplications}</strong></p>` : ''}
+        <p><a href="https://hhh-jobs.com/portal/hr/jobs">Review applicants</a></p>
+      `.trim()
+    }
   });
 
   await createNotification({
