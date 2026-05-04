@@ -21,13 +21,15 @@ const { startSideEffectWorkers, stopSideEffectWorkers } = require('./src/service
 
 const app = express();
 app.set('trust proxy', 1);
+const isPasswordLoginRoute = (req) => req.method === 'POST' && req.path === '/login';
 const authRateLimiter = config.nodeEnv === 'development'
   ? (_req, _res, next) => next()
   : createRateLimitMiddleware({
       namespace: 'auth',
       windowMs: 15 * 60 * 1000,
       max: 20,
-      message: 'Too many authentication requests. Please try again later.'
+      message: 'Too many authentication requests. Please try again later.',
+      skip: isPasswordLoginRoute
     });
 const publicCatalogRateLimiter = config.nodeEnv === 'development'
   ? (_req, _res, next) => next()
