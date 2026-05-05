@@ -95,6 +95,10 @@ const config = {
   linkedinRedirectUri: process.env.LINKEDIN_REDIRECT_URI || '',
   linkedinLocalRedirectUri: process.env.LINKEDIN_REDIRECT_URI_LOCAL || '',
 
+  // ── GetStream (chat / video) ───────────────────────────────────────────────
+  getstreamApiKey: process.env.GETSTREAM_API_KEY || '',
+  getstreamApiSecret: process.env.GETSTREAM_API_SECRET || '',
+
   // ── AI (xAI / Grok) ──────────────────────────────────────────────────────────
   aiProvider: normalizeText(process.env.AI_PROVIDER || 'auto').toLowerCase(),
   openaiApiKey:

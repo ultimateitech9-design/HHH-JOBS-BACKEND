@@ -228,6 +228,59 @@ const queueCommercialLeadSyncForUser = (user = {}) => {
   });
 };
 
+const loadEimagerSyncProfile = async ({ user = {}, fallbackProfile = null, reqBody = null }) => {
+  const seededProfile = fallbackProfile && typeof fallbackProfile === 'object'
+    ? { ...fallbackProfile }
+    : {};
+
+  if (!seededProfile.date_of_birth && reqBody?.dateOfBirth) {
+    seededProfile.date_of_birth = reqBody.dateOfBirth;
+  }
+
+  const profileTable = getProfileTableForRole(user?.role);
+  if (supabase && user?.id && profileTable) {
+    const { data, error } = await supabase
+      .from(profileTable)
+      .select('*')
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (data) {
+      return {
+        ...seededProfile,
+        ...data
+      };
+    }
+  }
+
+  if (user?.id) {
+    const localProfile = authStore.getProfileByRole(user.role, user.id);
+    if (localProfile) {
+      return {
+        ...seededProfile,
+        ...localProfile
+      };
+    }
+  }
+
+  return Object.keys(seededProfile).length > 0 ? seededProfile : user;
+};
+
+const queueEimagerSyncForUser = ({ user = {}, fallbackProfile = null, reqBody = null, source = 'signup' }) => {
+  if (!user?.email) return;
+
+  runAsyncSideEffect(`eimager-sync-${source}`, async () => {
+    try {
+      const profile = await loadEimagerSyncProfile({ user, fallbackProfile, reqBody });
+      await syncHhhCandidateToEimager({ user, profile });
+    } catch (syncError) {
+      console.warn(`[eimager-sync] ${source} candidate sync failed for ${user.email}: ${syncError.message}`);
+    }
+  });
+};
+
 const normalizeRoleValue = (role) => String(role || '').trim().toLowerCase();
 const buildCampusCollegePayload = ({ userId, reqBody = {}, fallbackName = '', fallbackEmail = '', fallbackMobile = '' }) => {
   const basePayload = {
@@ -858,11 +911,7 @@ const completeOAuthFlow = async ({
   }
 
   if (created) {
-    try {
-      await syncHhhCandidateToEimager({ user: authUser, profile: authUser });
-    } catch (error) {
-      console.warn(`[eimager-sync] OAuth candidate sync failed for ${authUser.email}: ${error.message}`);
-    }
+    queueEimagerSyncForUser({ user: authUser, fallbackProfile: authUser, source: 'oauth-signup' });
   }
 
   if (created) {
@@ -1393,12 +1442,11 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
 
     clearPendingSignup(email);
 
-    runAsyncSideEffect('signup-eimager-sync', async () => {
-      try {
-        await syncHhhCandidateToEimager({ user: userRow, profile: userRow });
-      } catch (syncError) {
-        console.warn(`[eimager-sync] Signup candidate sync failed for ${email}: ${syncError.message}`);
-      }
+    queueEimagerSyncForUser({
+      user: userRow,
+      fallbackProfile: userRow,
+      reqBody: pendingSignup?.reqBody || null,
+      source: 'signup-pending'
     });
 
     await logAudit({
@@ -1499,6 +1547,7 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
     details: { email },
     ipAddress: getClientIp(req)
   });
+  queueEimagerSyncForUser({ user, source: 'signup-verified' });
   queueWelcomeEmailForUser(user);
   queueCommercialLeadSyncForUser(user);
 

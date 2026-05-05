@@ -4,6 +4,12 @@ const { ROLES, APPLICATION_STATUSES } = require('../constants');
 
 const INTERVIEW_RECORDINGS_BUCKET = 'interview-recordings';
 const INTERVIEW_SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate', 'presence', 'reconnect', 'workspace-sync']);
+const DEFAULT_RTC_CONFIG = Object.freeze({
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
+});
 
 const toSlug = (value = '') =>
   String(value || '')
@@ -33,6 +39,44 @@ const normalizeRoomStatus = (status = 'scheduled') => {
 const normalizeSignalType = (signalType = '') => {
   const normalized = String(signalType || '').trim().toLowerCase();
   return INTERVIEW_SIGNAL_TYPES.has(normalized) ? normalized : null;
+};
+
+const getInterviewRtcConfig = () => {
+  const rawValue = String(process.env.INTERVIEW_ICE_SERVERS || process.env.RTC_ICE_SERVERS || '').trim();
+  if (!rawValue) return DEFAULT_RTC_CONFIG;
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    const iceServers = Array.isArray(parsed)
+      ? parsed
+      : (Array.isArray(parsed?.iceServers) ? parsed.iceServers : []);
+
+    const sanitizedIceServers = iceServers
+      .map((server) => {
+        if (!server || typeof server !== 'object') return null;
+
+        const urls = Array.isArray(server.urls)
+          ? server.urls.map((value) => String(value || '').trim()).filter(Boolean)
+          : String(server.urls || '').trim();
+
+        if ((Array.isArray(urls) && urls.length === 0) || (!Array.isArray(urls) && !urls)) {
+          return null;
+        }
+
+        return {
+          urls,
+          username: server.username ? String(server.username) : undefined,
+          credential: server.credential ? String(server.credential) : undefined
+        };
+      })
+      .filter(Boolean);
+
+    return sanitizedIceServers.length > 0
+      ? { iceServers: sanitizedIceServers }
+      : DEFAULT_RTC_CONFIG;
+  } catch (error) {
+    return DEFAULT_RTC_CONFIG;
+  }
 };
 
 const sanitizePanelMembers = (input) => {
@@ -214,7 +258,8 @@ const mapInterviewAudiencePayload = ({ interview, job, application, candidateUse
       canJoin: canJoinInterview({ interview, user: viewer }),
       canConsent: isCandidateViewer,
       isCandidateViewer
-    }
+    },
+    rtcConfig: getInterviewRtcConfig()
   };
 };
 
