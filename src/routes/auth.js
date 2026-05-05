@@ -274,7 +274,17 @@ const queueEimagerSyncForUser = ({ user = {}, fallbackProfile = null, reqBody = 
   runAsyncSideEffect(`eimager-sync-${source}`, async () => {
     try {
       const profile = await loadEimagerSyncProfile({ user, fallbackProfile, reqBody });
-      await syncHhhCandidateToEimager({ user, profile });
+      const result = await syncHhhCandidateToEimager({ user, profile });
+
+      if (result?.skipped) {
+        console.warn(`[eimager-sync] ${source} skipped for ${user.email}: ${result.reason}`);
+        return;
+      }
+
+      console.info(
+        `[eimager-sync] ${source} success for ${user.email}`
+        + `${result?.data?.eimager_id ? ` -> ${result.data.eimager_id}` : ''}`
+      );
     } catch (syncError) {
       console.warn(`[eimager-sync] ${source} candidate sync failed for ${user.email}: ${syncError.message}`);
     }

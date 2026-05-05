@@ -9,7 +9,8 @@
     "test": "node --test",
     "dev": "node scripts/dev.js",
     "worker": "node scripts/worker.js",
-    "create:super-admin": "node scripts/create-super-admin.js"
+    "create:super-admin": "node scripts/create-super-admin.js",
+    "sync:eimager-user": "node scripts/replay-eimager-sync.js"
   },
   "keywords": [],
   "author": "",
