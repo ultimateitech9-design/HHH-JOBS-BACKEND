@@ -55,3 +55,28 @@ test('runAtsAnalysis rewards role-aligned resumes and surfaces actionable improv
   assert.ok(weak.missingKeywords.includes('react'));
   assert.ok(weak.suggestions.length > 0);
 });
+
+test('runAtsAnalysis handles empty and thin edge cases without crashing', () => {
+  const empty = runAtsAnalysis({ jobRow: frontendJob, resumeText: '' });
+  const thinTarget = runAtsAnalysis({ jobRow: {}, resumeText: weakResume });
+
+  assert.equal(typeof empty.score, 'number');
+  assert.ok(empty.score >= 0 && empty.score <= 100);
+  assert.ok(empty.riskFlags.some((item) => /No readable resume text/i.test(item)));
+  assert.ok(empty.confidenceScore < 70);
+  assert.ok(Array.isArray(empty.sectionCoverage));
+  assert.ok(empty.sectionCoverage.some((item) => item.key === 'skills'));
+
+  assert.equal(typeof thinTarget.score, 'number');
+  assert.ok(thinTarget.warnings.some((item) => /confidence/i.test(item)));
+});
+
+test('runAtsAnalysis surfaces normal case metadata for UI display', () => {
+  const result = runAtsAnalysis({ jobRow: frontendJob, resumeText: strongResume });
+
+  assert.ok(result.fitLevel);
+  assert.ok(result.confidenceScore > 60);
+  assert.ok(result.resumeWordCount > 0);
+  assert.ok(result.sectionCoverage.some((item) => item.key === 'skills' && item.present));
+  assert.ok(Array.isArray(result.priorityActions));
+});

@@ -128,6 +128,8 @@ const enhanceAtsAnalysisWithAi = async ({ jobRow, resumeText = '', baseAnalysis 
       missingKeywords: uniqueStrings([...(baseAnalysis.missingKeywords || []), ...aiPayload.missingKeywords], 18),
       warnings: uniqueStrings([...(baseAnalysis.warnings || []), ...aiPayload.topRisks], 10),
       suggestions: uniqueStrings([...(baseAnalysis.suggestions || []), ...aiPayload.priorityEdits], 14),
+      riskFlags: uniqueStrings([...(baseAnalysis.riskFlags || []), ...aiPayload.topRisks], 8),
+      priorityActions: uniqueStrings([...aiPayload.priorityEdits, ...(baseAnalysis.priorityActions || [])], 8),
       aiPowered: true,
       aiSummary: aiPayload.summary,
       aiStrengths: aiPayload.topStrengths,
