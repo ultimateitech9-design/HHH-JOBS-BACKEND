@@ -9,6 +9,7 @@ const { mapPublicUser } = require('../utils/mappers');
 const { normalizeEmail, asyncHandler } = require('../utils/helpers');
 const { getPasswordPolicyError } = require('../utils/passwordPolicy');
 const { requireAuth } = require('../middleware/auth');
+const { createRateLimitMiddleware } = require('../middleware/rateLimit');
 const { logAudit, getClientIp } = require('../services/audit');
 const { sendOtpEmail, sendPasswordResetEmail, isEmailConfigured } = require('../services/email');
 const {
@@ -56,6 +57,15 @@ const EMAIL_DELIVERY_WAIT_MS = Number(process.env.OTP_DELIVERY_WAIT_MS) > 0
   ? Number(process.env.OTP_DELIVERY_WAIT_MS)
   : (config.nodeEnv === 'production' ? 12000 : 2500);
 const DEFAULT_LOGIN_URL = `${String(config.oauthClientUrl || config.corsOrigins?.[0] || 'https://hhh-jobs.com').replace(/\/+$/, '')}/login`;
+const authSessionReadLimiter = config.nodeEnv === 'development'
+  ? (_req, _res, next) => next()
+  : createRateLimitMiddleware({
+      namespace: 'auth_me',
+      windowMs: 60 * 1000,
+      max: 120,
+      message: 'Too many session refresh requests. Please wait a moment and try again.',
+      keyGenerator: (req) => req.user?.id || normalizeEmail(req.user?.email) || req.ip || req.socket?.remoteAddress || 'unknown'
+    });
 
 const createAuthToken = (user) => jwt.sign(
   {
@@ -1885,7 +1895,7 @@ router.post('/login', asyncHandler(async (req, res) => {
   });
 }));
 
-router.get('/me', requireAuth, asyncHandler(async (req, res) => {
+router.get('/me', requireAuth, authSessionReadLimiter, asyncHandler(async (req, res) => {
   let profile = null;
   const profileRoleKey = getProfileRoleKey(req.user.role);
   const profileTable = getProfileTableForRole(req.user.role);

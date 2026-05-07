@@ -10,8 +10,8 @@ const { pushNotificationEvent, registerNotificationClient, serializeSseEvent } =
 const router = express.Router();
 const notificationStreamLimiter = createRateLimitMiddleware({
   namespace: 'notification_stream',
-  windowMs: 60 * 1000,
-  max: 12,
+  windowMs: 5 * 60 * 1000,
+  max: 60,
   message: 'Too many notification stream reconnects. Please wait a moment and try again.',
   keyGenerator: (req) => req.user?.id || req.ip || req.socket?.remoteAddress || 'unknown'
 });
