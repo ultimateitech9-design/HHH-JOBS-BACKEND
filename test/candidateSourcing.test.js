@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   buildCandidatePresentation,
   buildSystemTemplateMessage,
+  getCandidateVerification,
   matchesCandidateFilters,
   parseMissingStudentProfileColumn,
   toEducationInsight
@@ -100,7 +101,13 @@ test('buildCandidatePresentation blurs profiles on free access and unlocks conta
       location: 'Mumbai',
       available_to_hire: true,
       resume_url: 'https://example.com/resume.pdf',
-      skills: ['React', 'JavaScript']
+      skills: ['React', 'JavaScript'],
+      verification_status: 'verified',
+      verification_badge: 'KYC_VERIFIED',
+      identity_verified: true,
+      address_verified: true,
+      experience_verified: true,
+      verified_experience_count: 2
     },
     education: {
       college: 'SIES College',
@@ -139,6 +146,49 @@ test('buildCandidatePresentation blurs profiles on free access and unlocks conta
   assert.equal(unlocked.access.canViewResume, true);
   assert.equal(unlocked.user.email, 'aisha@example.com');
   assert.equal(unlocked.profile.resumeUrl, 'https://example.com/resume.pdf');
+  assert.equal(unlocked.verification.isVerified, true);
+  assert.equal(unlocked.verification.addressVerified, true);
+  assert.equal(unlocked.verification.verifiedExperienceCount, 2);
+});
+
+test('candidate verification summary supports verified-only filtering', () => {
+  const verifiedProfile = {
+    verification_status: 'verified',
+    identity_verified: true,
+    address_verified: true,
+    verified_experience_count: 1
+  };
+
+  assert.deepEqual(getCandidateVerification(verifiedProfile), {
+    status: 'verified',
+    isVerified: true,
+    identityVerified: true,
+    addressVerified: true,
+    experienceVerified: true,
+    verifiedExperienceCount: 1,
+    badge: 'KYC_VERIFIED',
+    source: '',
+    verifiedAt: null,
+    syncedAt: null
+  });
+
+  assert.equal(matchesCandidateFilters({
+    candidate: {
+      user: { name: 'Aisha Khan' },
+      profile: verifiedProfile,
+      education: {}
+    },
+    filters: { verifiedOnly: true }
+  }), true);
+
+  assert.equal(matchesCandidateFilters({
+    candidate: {
+      user: { name: 'Unverified Candidate' },
+      profile: {},
+      education: {}
+    },
+    filters: { verifiedOnly: true }
+  }), false);
 });
 
 test('buildSystemTemplateMessage personalizes placeholders for sourcing outreach', () => {

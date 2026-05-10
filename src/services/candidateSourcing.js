@@ -233,6 +233,27 @@ const collectSkills = (profile = {}) => {
   return [...new Set(combined)];
 };
 
+const getCandidateVerification = (profile = {}) => {
+  const status = normalizeLowerText(profile.verification_status || 'unverified') || 'unverified';
+  const identityVerified = Boolean(profile.identity_verified || status === 'verified');
+  const addressVerified = Boolean(profile.address_verified);
+  const verifiedExperienceCount = Number(profile.verified_experience_count || 0) || 0;
+  const experienceVerified = Boolean(profile.experience_verified || verifiedExperienceCount > 0);
+
+  return {
+    status,
+    isVerified: identityVerified || status === 'verified',
+    identityVerified,
+    addressVerified,
+    experienceVerified,
+    verifiedExperienceCount,
+    badge: profile.verification_badge || (identityVerified ? 'KYC_VERIFIED' : ''),
+    source: profile.verification_source || '',
+    verifiedAt: profile.verification_verified_at || null,
+    syncedAt: profile.verification_synced_at || null
+  };
+};
+
 const buildCandidateSearchText = ({ user = {}, profile = {}, education = {} }) => {
   const pieces = [
     user.name,
@@ -268,12 +289,15 @@ const matchesCandidateFilters = ({ candidate, filters = {} }) => {
   const batchYear = normalizeText(filters.batchYear || filters.batch_year);
   const minCgpa = parseNumber(filters.minCgpa || filters.min_cgpa);
   const availableOnly = Boolean(filters.availableOnly || filters.available);
+  const verifiedOnly = Boolean(filters.verifiedOnly || filters.verified);
 
   const searchableText = buildCandidateSearchText(candidate);
   const candidateSkills = collectSkills(candidate.profile).map((item) => item.toLowerCase());
   const education = candidate.education || toEducationInsight(candidate.profile);
+  const verification = getCandidateVerification(candidate.profile);
 
   if (availableOnly && !candidate.profile?.available_to_hire) return false;
+  if (verifiedOnly && !verification.isVerified) return false;
   if (skills.length > 0 && !skills.some((skill) => candidateSkills.some((item) => item.includes(skill)))) return false;
   if (keyword && !searchableText.includes(keyword)) return false;
   if (location && !normalizeLowerText(candidate.profile?.location).includes(location)) return false;
@@ -296,6 +320,10 @@ const scoreCandidate = ({ candidate, filters = {} }) => {
   score += Math.min(24, desiredSkills.filter((skill) => candidateSkills.some((item) => item.includes(skill))).length * 6);
   if (candidate.crm?.interestStatus === 'accepted') score += 20;
   if (candidate.crm?.isShortlisted) score += 10;
+  const verification = getCandidateVerification(candidate.profile);
+  if (verification.isVerified) score += 14;
+  if (verification.addressVerified) score += 4;
+  if (verification.experienceVerified) score += Math.min(8, 2 + verification.verifiedExperienceCount * 2);
   if (candidate.education?.cgpa != null) score += Math.min(10, Number(candidate.education.cgpa));
   if (normalizeLowerText(filters.location) && normalizeLowerText(candidate.profile?.location).includes(normalizeLowerText(filters.location))) {
     score += 6;
@@ -323,6 +351,7 @@ const buildCandidatePresentation = ({
   const canBrowseFullProfile = Boolean(access.hasPaidAccess);
   const canUnlockContact = Boolean(access.hasPaidAccess && hasAcceptedInterest);
   const visibleSkills = canBrowseFullProfile ? collectSkills(profile) : collectSkills(profile).slice(0, 4);
+  const verification = getCandidateVerification(profile);
   const visibleLinks = canBrowseFullProfile
     ? {
         linkedinUrl: profile.linkedin_url || null,
@@ -365,6 +394,7 @@ const buildCandidatePresentation = ({
       batchYear: education.batchYear || '',
       cgpa: canBrowseFullProfile ? education.cgpa : null
     },
+    verification,
     crm: {
       interestStatus: crm.interestStatus || null,
       isShortlisted: Boolean(crm.isShortlisted),
@@ -535,7 +565,10 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
       'experience', 'location', 'resume_url', 'resume_text', 'about', 'profile_summary',
       'is_discoverable', 'available_to_hire', 'expected_salary', 'preferred_salary_max',
       'availability_to_join', 'education', 'graduation_details', 'education_score',
-      'linkedin_url', 'github_url', 'portfolio_url'
+      'linkedin_url', 'github_url', 'portfolio_url', 'eimager_id', 'verification_status',
+      'verification_source', 'verification_badge', 'identity_verified', 'address_verified',
+      'experience_verified', 'verified_experience_count', 'verification_verified_at',
+      'verification_synced_at'
     ],
     limit: 5000
   });
@@ -609,7 +642,8 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
       total,
       blurred: access.hasPaidAccess ? 0 : total,
       connected: filtered.filter((item) => item.crm.interestStatus === 'accepted').length,
-      availableNow: filtered.filter((item) => item.profile.availableToHire).length
+      availableNow: filtered.filter((item) => item.profile.availableToHire).length,
+      verified: filtered.filter((item) => item.verification?.isVerified).length
     },
     pagination: {
       page: safePage,
@@ -645,7 +679,14 @@ const listHrCandidateInterests = async ({ hrUser }) => {
         ids: studentIds
       }),
       selectStudentProfilesSafe({
-        fields: ['user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies', 'location', 'available_to_hire', 'resume_url', 'resume_text', 'education'],
+        fields: [
+          'user_id', 'headline', 'target_role', 'skills', 'technical_skills',
+          'tools_technologies', 'location', 'available_to_hire', 'resume_url',
+          'resume_text', 'education', 'verification_status', 'verification_source',
+          'verification_badge', 'identity_verified', 'address_verified',
+          'experience_verified', 'verified_experience_count', 'verification_verified_at',
+          'verification_synced_at'
+        ],
         userIds: studentIds
       })
     ]);
@@ -708,7 +749,14 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
         ids: studentIds
       }),
       selectStudentProfilesSafe({
-        fields: ['user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies', 'location', 'available_to_hire', 'resume_url', 'resume_text', 'education'],
+        fields: [
+          'user_id', 'headline', 'target_role', 'skills', 'technical_skills',
+          'tools_technologies', 'location', 'available_to_hire', 'resume_url',
+          'resume_text', 'education', 'verification_status', 'verification_source',
+          'verification_badge', 'identity_verified', 'address_verified',
+          'experience_verified', 'verified_experience_count', 'verification_verified_at',
+          'verification_synced_at'
+        ],
         userIds: studentIds
       }),
       fetchRowsByIdsInChunks({
@@ -758,6 +806,7 @@ module.exports = {
   normalizeList,
   parseMissingStudentProfileColumn,
   toEducationInsight,
+  getCandidateVerification,
   matchesCandidateFilters,
   buildSystemTemplateMessage,
   buildCandidatePresentation,

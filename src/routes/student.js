@@ -9,6 +9,7 @@ const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
 const { extractResumeText } = require('../utils/resumeExtraction');
 const { extractStudentProfileFromResume } = require('../utils/studentResumeProfileImport');
 const { syncHhhCandidateToEimager } = require('../services/eimagerSync');
+const { buildEimagerHandoffUrl } = require('../services/eimagerHandoff');
 const { createNotification } = require('../services/notifications');
 const { notifyUser } = require('../services/notificationOrchestrator');
 const { resolveResumeForApplication } = require('../services/applications');
@@ -571,7 +572,7 @@ const ensureStudentProfile = async (targetUserId, res) => {
 const getStudentUserRow = async (targetUserId, res) => {
   const { data, error } = await supabase
     .from('users')
-    .select('id, name, email, mobile, avatar_url, gender, caste, religion, role, status, is_hr_approved, is_email_verified, created_at, updated_at, last_login_at')
+    .select('id, name, email, mobile, password_hash, avatar_url, gender, caste, religion, role, status, is_hr_approved, is_email_verified, created_at, updated_at, last_login_at')
     .eq('id', targetUserId)
     .maybeSingle();
 
@@ -598,6 +599,32 @@ const mergeProfileWithUser = (profile = {}, user = {}) => ({
   caste: user.caste || '',
   religion: user.religion || ''
 });
+
+const getEimagerIdFromSyncResult = (syncResult = {}) =>
+  syncResult?.data?.eimager_id
+  || syncResult?.data?.eimagerId
+  || syncResult?.eimager_id
+  || syncResult?.eimagerId
+  || '';
+
+const syncStudentProfileToEimager = async ({ targetUserId, user, profile }) => {
+  const syncResult = await syncHhhCandidateToEimager({ user, profile });
+  const eimagerId = String(getEimagerIdFromSyncResult(syncResult) || '').trim();
+
+  if (eimagerId && eimagerId !== profile.eimager_id) {
+    const { error } = await upsertStudentProfileSafe({
+      user_id: targetUserId,
+      eimager_id: eimagerId
+    });
+
+    if (!error) {
+      profile.eimager_id = eimagerId;
+      profile.eimagerId = eimagerId;
+    }
+  }
+
+  return syncResult;
+};
 
 const scoreRecommendedJob = ({ job, skillsSet, profileLocation }) => {
   let score = 0;
@@ -1254,6 +1281,48 @@ router.get('/profile', asyncHandler(async (req, res) => {
   res.send({ status: true, profile: mergeProfileWithUser(profile, user) });
 }));
 
+router.get('/eimager/handoff', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'query');
+
+  const user = await getStudentUserRow(targetUserId, res);
+  if (!user) return;
+
+  const profile = await ensureStudentProfile(targetUserId, res);
+  if (!profile) return;
+
+  const mergedProfile = mergeProfileWithUser(profile, user);
+  let syncResult = null;
+
+  try {
+    syncResult = await syncStudentProfileToEimager({
+      targetUserId,
+      user,
+      profile: mergedProfile
+    });
+  } catch (error) {
+    console.warn(`[eimager-sync] Student profile sync failed before handoff for ${targetUserId}: ${error.message}`);
+  }
+
+  try {
+    const url = buildEimagerHandoffUrl({
+      user,
+      profile: mergedProfile,
+      target: req.query?.target
+    });
+
+    res.send({
+      status: true,
+      url,
+      sync: syncResult || { skipped: true, reason: 'sync-failed-or-unavailable' }
+    });
+  } catch (error) {
+    res.status(503).send({
+      status: false,
+      message: error.message || 'Eimager handoff is not available right now.'
+    });
+  }
+}));
+
 router.put('/profile', asyncHandler(async (req, res) => {
   const targetUserId = getTargetStudentId(req, 'body');
 
@@ -1355,7 +1424,7 @@ router.put('/profile', asyncHandler(async (req, res) => {
   const mergedProfile = mergeProfileWithUser(data, user);
 
   try {
-    await syncHhhCandidateToEimager({ user, profile: mergedProfile });
+    await syncStudentProfileToEimager({ targetUserId, user, profile: mergedProfile });
   } catch (error) {
     console.warn(`[eimager-sync] Student profile sync failed for ${targetUserId}: ${error.message}`);
   }

@@ -83,13 +83,23 @@ const normalizeExperienceEntry = (item) => {
 
   if (!item || typeof item !== 'object') return null;
 
+  const techStack = Array.isArray(item.techStack ?? item.tech_stack)
+    ? (item.techStack ?? item.tech_stack).map(normalizeText).filter(Boolean)
+    : [];
+  const detailSummary = [
+    normalizeText(item.responsibilities),
+    normalizeText(item.keyAchievement ?? item.key_achievement),
+    techStack.length ? `Tech stack: ${techStack.join(', ')}` : null
+  ].filter(Boolean).join(' | ');
   const summary = normalizeText(
     item.summary
     ?? item.description
+    ?? item.responsibilities
     ?? item.rolesResponsibility
     ?? item.roles_responsibility
     ?? item.projects
     ?? item.project
+    ?? detailSummary
     ?? item.value
     ?? item.text
   );
@@ -104,13 +114,19 @@ const normalizeExperienceEntry = (item) => {
     summary,
     companyName,
     designation,
-    projects: normalizeText(item.projects ?? item.project),
+    projects: normalizeText(item.projects ?? item.project ?? item.keyAchievement ?? item.key_achievement),
     startDate: normalizeText(item.startDate ?? item.start_date ?? item.startYear ?? item.start_year),
     endDate: normalizeText(item.endDate ?? item.end_date ?? item.endYear ?? item.end_year),
     isStillWorking: toBoolean(item.isStillWorking ?? item.is_still_working ?? item.currentlyWorking ?? item.current),
     ctc: normalizeNumber(item.ctc),
     inHand: normalizeNumber(item.inHand ?? item.in_hand),
-    rolesResponsibility: normalizeText(item.rolesResponsibility ?? item.roles_responsibility ?? item.description)
+    rolesResponsibility: normalizeText(
+      item.rolesResponsibility
+      ?? item.roles_responsibility
+      ?? item.responsibilities
+      ?? item.description
+      ?? summary
+    )
   };
 };
 

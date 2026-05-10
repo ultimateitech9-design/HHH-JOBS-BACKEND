@@ -218,6 +218,7 @@ mountRoute('/accounts', safeRequireRoute('./src/routes/accounts', 'accounts'));
 mountRoute('/dataentry', safeRequireRoute('./src/routes/dataentry', 'dataentry'));
 mountRoute('/campus-connect', safeRequireRoute('./src/routes/campusConnect', 'campusConnect'));
 mountRoute('/external-jobs', safeRequireRoute('./src/routes/externalJobs', 'externalJobs'));
+mountRoute('/integrations', safeRequireRoute('./src/routes/integrations', 'integrations'));
 mountRoute('/features', safeRequireRoute('./src/routes/features', 'features'));
 mountRoute('/payments', safeRequireRoute('./src/routes/payments', 'payments'));
 

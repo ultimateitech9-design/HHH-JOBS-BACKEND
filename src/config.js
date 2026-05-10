@@ -127,6 +127,15 @@ const config = {
   // ── Emaiger sync ─────────────────────────────────────────────────────────────
   eimagerSyncUrl: normalizeUrl(process.env.EIMAGER_SYNC_URL),
   eimagerSyncSecret: process.env.EIMAGER_SYNC_SECRET || '',
+  eimagerHandoffUrl: normalizeUrl(process.env.EIMAGER_HANDOFF_URL),
+  eimagerHandoffSecret:
+    process.env.EIMAGER_HANDOFF_SECRET
+    || process.env.EIMAGER_SYNC_SECRET
+    || '',
+  eimagerVerificationSyncSecret:
+    process.env.EIMAGER_VERIFICATION_SYNC_SECRET
+    || process.env.EIMAGER_SYNC_SECRET
+    || '',
   eimagerSyncTimeoutMs: Number(process.env.EIMAGER_SYNC_TIMEOUT_MS) > 0
     ? Number(process.env.EIMAGER_SYNC_TIMEOUT_MS)
     : 10000,

@@ -371,7 +371,8 @@ router.get('/candidates/search', requireApprovedHr, asyncHandler(async (req, res
         branch: req.query.branch || '',
         college: req.query.college || '',
         batchYear: req.query.batchYear || req.query.batch_year || '',
-        available: req.query.available === 'true'
+        available: req.query.available === 'true',
+        verified: req.query.verified === 'true' || req.query.verifiedOnly === 'true'
       }
     });
 

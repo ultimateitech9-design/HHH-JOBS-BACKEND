@@ -1727,6 +1727,18 @@ router.post('/reset-password', asyncHandler(async (req, res) => {
     ipAddress: getClientIp(req)
   });
 
+  const syncedUser = supabase
+    ? (await supabase.from('users').select('*').eq('id', user.id).maybeSingle()).data
+    : authStore.findUserByEmail(email);
+
+  if (syncedUser) {
+    queueEimagerSyncForUser({
+      user: syncedUser,
+      fallbackProfile: syncedUser,
+      source: 'password-reset'
+    });
+  }
+
   res.send({ status: true, message: 'Password reset successfully. Please login with your new password.' });
 }));
 
