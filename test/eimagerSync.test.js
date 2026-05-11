@@ -70,6 +70,7 @@ test('buildEimagerSyncPayload normalizes mixed HHH education and experience data
           keyAchievement: 'Reduced manual reporting time',
           startDate: '2024-01-01',
           endDate: '2024-06-01',
+          isCurrentlyWorking: true,
           ctc: '25000'
         },
         'Freelance web projects for local clients'
@@ -86,6 +87,7 @@ test('buildEimagerSyncPayload normalizes mixed HHH education and experience data
   assert.equal(payload.education[1].courseName, '12th - CBSE');
   assert.equal(payload.experience.length, 2);
   assert.equal(payload.experience[0].companyName, 'Tech Corp');
+  assert.equal(payload.experience[0].isStillWorking, true);
   assert.equal(payload.experience[0].rolesResponsibility, 'Built dashboards for HR reporting');
   assert.equal(payload.experience[0].projects, 'Reduced manual reporting time');
   assert.equal(payload.experience[1].summary, 'Freelance web projects for local clients');

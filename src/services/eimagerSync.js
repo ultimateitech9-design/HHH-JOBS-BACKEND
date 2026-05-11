@@ -117,7 +117,14 @@ const normalizeExperienceEntry = (item) => {
     projects: normalizeText(item.projects ?? item.project ?? item.keyAchievement ?? item.key_achievement),
     startDate: normalizeText(item.startDate ?? item.start_date ?? item.startYear ?? item.start_year),
     endDate: normalizeText(item.endDate ?? item.end_date ?? item.endYear ?? item.end_year),
-    isStillWorking: toBoolean(item.isStillWorking ?? item.is_still_working ?? item.currentlyWorking ?? item.current),
+    isStillWorking: toBoolean(
+      item.isStillWorking
+      ?? item.is_still_working
+      ?? item.isCurrentlyWorking
+      ?? item.is_currently_working
+      ?? item.currentlyWorking
+      ?? item.current
+    ),
     ctc: normalizeNumber(item.ctc),
     inHand: normalizeNumber(item.inHand ?? item.in_hand),
     rolesResponsibility: normalizeText(
