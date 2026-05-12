@@ -51,10 +51,10 @@ test('runAtsAnalysis rewards role-aligned resumes and surfaces actionable improv
   assert.ok(strong.keywordScore > weak.keywordScore);
   assert.ok(strong.mustHaveScore > weak.mustHaveScore);
   assert.ok(strong.similarityScore > weak.similarityScore);
-  assert.ok(strong.matchedKeywords.includes('react'));
-  assert.ok(strong.matchedKeywords.includes('typescript'));
-  assert.ok(strong.mustHaveKeywords.includes('react'));
-  assert.ok(weak.missingKeywords.includes('react'));
+  assert.ok(strong.matchedKeywords.includes('React.js'));
+  assert.ok(strong.matchedKeywords.includes('TypeScript'));
+  assert.ok(strong.mustHaveKeywords.includes('React.js'));
+  assert.ok(weak.missingKeywords.includes('React.js'));
   assert.ok(weak.suggestions.length > 0);
 });
 

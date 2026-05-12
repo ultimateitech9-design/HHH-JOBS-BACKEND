@@ -26,8 +26,42 @@ const GENERIC_JOB_TOKENS = new Set([
   'role',
   'position',
   'candidate',
-  'looking'
+  'looking',
+  'required',
+  'requirement',
+  'requiring',
+  'strong',
+  'skilled',
+  'experienced',
+  'expertise',
+  'concept',
+  'concepts',
+  'build',
+  'maintain',
+  'working',
+  'collaboration',
+  'fulltime',
+  'yearly',
+  'monthly'
 ]);
+
+const PHRASE_NORMALIZERS = [
+  { pattern: /\bsoftware engineer\b/gi, replacement: ' softwareengineer ' },
+  { pattern: /\bsoftware developer\b/gi, replacement: ' softwaredeveloper ' },
+  { pattern: /\bfull[\s-]*stack engineer\b/gi, replacement: ' fullstackengineer ' },
+  { pattern: /\bfull[\s-]*stack developer\b/gi, replacement: ' fullstackdeveloper ' },
+  { pattern: /\bfront[\s-]*end engineer\b/gi, replacement: ' frontendengineer ' },
+  { pattern: /\bfront[\s-]*end developer\b/gi, replacement: ' frontenddeveloper ' },
+  { pattern: /\bback[\s-]*end engineer\b/gi, replacement: ' backendengineer ' },
+  { pattern: /\bback[\s-]*end developer\b/gi, replacement: ' backenddeveloper ' },
+  { pattern: /\bspring[\s-]*boot\b/gi, replacement: ' springboot ' },
+  { pattern: /\brest(?:ful)?[\s-]*api(?:s)?\b/gi, replacement: ' restapi ' },
+  { pattern: /\bproblem[\s-]*solving\b/gi, replacement: ' problemsolving ' },
+  { pattern: /\bobject[\s-]*oriented(?:\s+programming)?\b/gi, replacement: ' oop ' },
+  { pattern: /\boops?\b/gi, replacement: ' oop ' },
+  { pattern: /\bdata[\s-]*structures?\b/gi, replacement: ' datastructures ' },
+  { pattern: /\bci\/cd\b/gi, replacement: ' cicd ' }
+];
 
 const TOKEN_ALIASES = new Map([
   ['reactjs', 'react'],
@@ -39,9 +73,18 @@ const TOKEN_ALIASES = new Map([
   ['next.js', 'next'],
   ['vuejs', 'vue'],
   ['vue.js', 'vue'],
-  ['springboot', 'spring'],
-  ['spring-boot', 'spring'],
-  ['restful', 'rest'],
+  ['softwareengineer', 'softwareengineer'],
+  ['softwaredeveloper', 'softwareengineer'],
+  ['fullstackengineer', 'fullstackengineer'],
+  ['fullstackdeveloper', 'fullstackengineer'],
+  ['frontendengineer', 'frontendengineer'],
+  ['frontenddeveloper', 'frontendengineer'],
+  ['backendengineer', 'backendengineer'],
+  ['backenddeveloper', 'backendengineer'],
+  ['springboot', 'springboot'],
+  ['spring-boot', 'springboot'],
+  ['restful', 'restapi'],
+  ['restapi', 'restapi'],
   ['apis', 'api'],
   ['micro-services', 'microservices'],
   ['front-end', 'frontend'],
@@ -49,6 +92,7 @@ const TOKEN_ALIASES = new Map([
   ['back-end', 'backend'],
   ['full-stack', 'fullstack'],
   ['full stack', 'fullstack'],
+  ['full-time', 'fulltime'],
   ['ux/ui', 'ux'],
   ['ui/ux', 'ui'],
   ['postgresql', 'postgres'],
@@ -57,8 +101,42 @@ const TOKEN_ALIASES = new Map([
   ['ts', 'typescript'],
   ['c#', 'csharp'],
   ['c++', 'cpp'],
-  ['ci/cd', 'ci'],
+  ['problemsolving', 'problemsolving'],
+  ['datastructures', 'datastructures'],
+  ['ci/cd', 'cicd'],
+  ['cicd', 'cicd'],
   ['power bi', 'powerbi']
+]);
+
+const DISPLAY_KEYWORD_LABELS = new Map([
+  ['api', 'API'],
+  ['sql', 'SQL'],
+  ['softwareengineer', 'Software Engineer'],
+  ['fullstackengineer', 'Full Stack Engineer'],
+  ['frontendengineer', 'Frontend Engineer'],
+  ['backendengineer', 'Backend Engineer'],
+  ['fullstack', 'Full stack'],
+  ['backend', 'Backend'],
+  ['frontend', 'Frontend'],
+  ['springboot', 'Spring Boot'],
+  ['restapi', 'REST API'],
+  ['problemsolving', 'Problem solving'],
+  ['oop', 'OOP / OOPS'],
+  ['datastructures', 'Data structures'],
+  ['node', 'Node.js'],
+  ['react', 'React.js'],
+  ['next', 'Next.js'],
+  ['postgres', 'PostgreSQL'],
+  ['typescript', 'TypeScript'],
+  ['javascript', 'JavaScript'],
+  ['cicd', 'CI/CD']
+]);
+
+const TITLE_FAMILY_EQUIVALENTS = new Map([
+  ['softwareengineer', ['softwareengineer', 'fullstackengineer', 'backendengineer', 'frontendengineer']],
+  ['fullstackengineer', ['fullstackengineer', 'softwareengineer', 'backendengineer', 'frontendengineer']],
+  ['backendengineer', ['backendengineer', 'softwareengineer', 'fullstackengineer']],
+  ['frontendengineer', ['frontendengineer', 'softwareengineer', 'fullstackengineer']]
 ]);
 
 const IMPACT_VERBS = new Set([
@@ -98,16 +176,20 @@ const EXPERIENCE_HINTS = [
 
 const ROLE_BENCHMARKS = [
   {
+    match: /\b(software engineer|software developer|application engineer)\b/,
+    keywords: ['softwareengineer', 'programming', 'problemsolving', 'oop', 'debugging', 'testing', 'api', 'database', 'scalable', 'datastructures']
+  },
+  {
     match: /\b(frontend|ui|web)\b/,
     keywords: ['react', 'javascript', 'typescript', 'html', 'css', 'responsive', 'accessibility', 'api', 'testing']
   },
   {
     match: /\b(backend|api|server)\b/,
-    keywords: ['node', 'api', 'sql', 'database', 'testing', 'performance', 'architecture', 'security']
+    keywords: ['node', 'restapi', 'sql', 'database', 'testing', 'performance', 'architecture', 'security']
   },
   {
     match: /\b(fullstack|full stack)\b/,
-    keywords: ['react', 'node', 'javascript', 'typescript', 'api', 'sql', 'database', 'testing']
+    keywords: ['react', 'node', 'javascript', 'typescript', 'restapi', 'sql', 'database', 'testing']
   },
   {
     match: /\b(data|analyst|analytics|business intelligence)\b/,
@@ -119,7 +201,7 @@ const ROLE_BENCHMARKS = [
   },
   {
     match: /\b(java)\b/,
-    keywords: ['java', 'spring', 'api', 'microservices', 'sql', 'testing']
+    keywords: ['java', 'springboot', 'restapi', 'microservices', 'sql', 'testing']
   },
   {
     match: /\b(python)\b/,
@@ -161,6 +243,14 @@ const SECTION_CHECKS = [
   { key: 'impact', label: 'Measurable impact', regex: /\b\d+(?:\.\d+)?%?\b|₹\s?\d+|\$\s?\d+|reduced|increased|improved|optimized|scaled/i }
 ];
 
+const normalizePhrases = (text = '') => {
+  let normalized = String(text || '');
+  PHRASE_NORMALIZERS.forEach(({ pattern, replacement }) => {
+    normalized = normalized.replace(pattern, replacement);
+  });
+  return normalized;
+};
+
 const normalizeToken = (token = '') => {
   const trimmed = String(token || '')
     .trim()
@@ -180,7 +270,7 @@ const normalizeToken = (token = '') => {
   return trimmed;
 };
 
-const tokenize = (text = '') => String(text)
+const tokenize = (text = '') => normalizePhrases(text)
   .toLowerCase()
   .replace(/[^a-z0-9+#.\-\s]/g, ' ')
   .split(/\s+/)
@@ -191,6 +281,25 @@ const tokenize = (text = '') => String(text)
     return token.length > 2;
   })
   .filter((token) => !STOP_WORDS.has(token));
+
+const formatKeywordLabel = (keyword = '') => {
+  const normalized = normalizeToken(keyword);
+  if (!normalized) return '';
+  if (DISPLAY_KEYWORD_LABELS.has(normalized)) return DISPLAY_KEYWORD_LABELS.get(normalized);
+  if (/^[a-z]+$/i.test(normalized)) {
+    return normalized
+      .split(/[_-]+/)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  }
+  return normalized;
+};
+
+const formatKeywordList = (items = [], limit = 24) => [...new Set(
+  (Array.isArray(items) ? items : [])
+    .map((item) => formatKeywordLabel(item))
+    .filter(Boolean)
+)].slice(0, limit);
 
 const getFrequencies = (tokens) => {
   const map = new Map();
@@ -329,6 +438,25 @@ const getTfIdfSimilarity = (aText = '', bText = '') => {
   return clamp((dot / (Math.sqrt(aNorm) * Math.sqrt(bNorm))) * 100, 0, 100);
 };
 
+const getRoleFamilyAlignmentScore = (titleTokens = [], resumeSet = new Set()) => {
+  if (!titleTokens.length) return 0;
+
+  let bestScore = 0;
+  titleTokens.forEach((token) => {
+    const equivalents = TITLE_FAMILY_EQUIVALENTS.get(token) || [];
+    if (!equivalents.length) return;
+    if (resumeSet.has(token)) {
+      bestScore = Math.max(bestScore, 100);
+      return;
+    }
+    if (equivalents.some((entry) => resumeSet.has(entry))) {
+      bestScore = Math.max(bestScore, 74);
+    }
+  });
+
+  return bestScore;
+};
+
 const getTitleAlignmentScore = (jobTitle = '', resumeText = '') => {
   const normalizedTitle = String(jobTitle || '').trim();
   if (!normalizedTitle) return 50;
@@ -339,8 +467,9 @@ const getTitleAlignmentScore = (jobTitle = '', resumeText = '') => {
   const resumeSet = new Set(tokenize(resumeText));
   const matchedCount = titleTokens.filter((token) => resumeSet.has(token)).length;
   const exactPhraseMatch = String(resumeText || '').toLowerCase().includes(normalizedTitle.toLowerCase());
+  const roleFamilyScore = getRoleFamilyAlignmentScore(titleTokens, resumeSet);
   const ratio = matchedCount / titleTokens.length;
-  return clamp((ratio * 75) + (exactPhraseMatch ? 25 : 0), 0, 100);
+  return clamp(Math.max(roleFamilyScore, (ratio * 75) + (exactPhraseMatch ? 25 : 0)), 0, 100);
 };
 
 const checkResumeFormat = (resumeText = '', targetTitle = '') => {
@@ -763,15 +892,18 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
     confidenceScore
   });
 
+  const topMustHaveGaps = formatKeywordList(mustHaveCoverage.missing, 4);
+  const topMergedGaps = formatKeywordList(mergedCoverage.missing, 4);
+
   const suggestions = [
     ...(titleAlignmentScore < 60 && targetTitle
       ? [`Align your headline and summary more clearly with "${targetTitle}".`]
       : []),
-    ...(mustHaveCoverage.missing.length > 0
-      ? [`Strengthen must-have role coverage, especially ${mustHaveCoverage.missing.slice(0, 4).join(', ')}.`]
+    ...(topMustHaveGaps.length > 0
+      ? [`Strengthen must-have role coverage, especially ${topMustHaveGaps.join(', ')}.`]
       : []),
-    ...(mergedCoverage.missing.length > 0
-      ? [`Add missing role keywords where genuinely relevant, especially ${mergedCoverage.missing.slice(0, 4).join(', ')}.`]
+    ...(topMergedGaps.length > 0
+      ? [`Add missing role keywords where genuinely relevant, especially ${topMergedGaps.join(', ')}.`]
       : []),
     ...formatResult.suggestions,
     ...impactResult.suggestions
@@ -798,9 +930,9 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
     confidenceScore: Number(confidenceScore.toFixed(2)),
     resumeWordCount: formatResult.wordCount,
     fitLevel: getFitLevel(normalizedFinalScore),
-    matchedKeywords: [...new Set([...mustHaveCoverage.matched, ...mergedCoverage.matched])].slice(0, 24),
-    missingKeywords: [...new Set([...mustHaveCoverage.missing, ...mergedCoverage.missing])].slice(0, 24),
-    mustHaveKeywords: [...new Set([...weightedKeywords.mustHave.keys()])].slice(0, 16),
+    matchedKeywords: formatKeywordList([...mustHaveCoverage.matched, ...mergedCoverage.matched], 24),
+    missingKeywords: formatKeywordList([...mustHaveCoverage.missing, ...mergedCoverage.missing], 24),
+    mustHaveKeywords: formatKeywordList([...weightedKeywords.mustHave.keys()], 16),
     sectionCoverage,
     riskFlags,
     businessLogicFlags,
@@ -808,7 +940,7 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
     warnings: [...new Set(warnings)].slice(0, 10),
     suggestions: [...new Set(suggestions)].filter(Boolean).slice(0, 14),
     targetRole: targetTitle,
-    benchmarkKeywords,
+    benchmarkKeywords: formatKeywordList(benchmarkKeywords, 16),
     seniorityInsights: seniority.message || '',
     resumeYearsExperience: seniority.resumeYears
   };

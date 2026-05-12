@@ -55,7 +55,7 @@ test('public ATS preview works without auth and extracts plain-text data URLs', 
     assert.equal(response.status, 200);
     assert.equal(body.status, true);
     assert.ok(Number(body.result?.score || 0) > 0);
-    assert.ok((body.result?.matchedKeywords || []).includes('react'));
+    assert.ok((body.result?.matchedKeywords || []).includes('React.js'));
     assert.equal((body.result?.warnings || []).includes('Resume text could not be extracted from URL. Score may be lower.'), false);
   } finally {
     await stopServer(server);
