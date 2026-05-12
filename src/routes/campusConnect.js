@@ -11,6 +11,7 @@ const { isValidUuid, asyncHandler, normalizeEmail, stripUndefined } = require('.
 const { createNotification } = require('../services/notifications');
 const { notifyUser } = require('../services/notificationOrchestrator');
 const { ensureRoleProfile } = require('../services/profileTables');
+const { normalizeCompanyKey } = require('../services/companyDirectory');
 const {
   countEligibleCampusStudentsForDrive,
   enqueueCampusDriveFanout,
@@ -21,6 +22,10 @@ const router = express.Router();
 const ELIGIBLE_ACCOUNT_STATUSES = new Set(['active', 'linked_existing']);
 const DRIVE_VISIBILITY_SCOPES = new Set(['campus_only', 'platform_open']);
 const CAMPUS_APPLICATION_STATUSES = new Set(['applied', 'shortlisted', 'rejected', 'withdrawn', 'selected']);
+const CONNECTION_SOURCE = {
+  COMPANY: 'company',
+  COLLEGE: 'college'
+};
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -66,6 +71,248 @@ const ensureCollegeProfile = async (userId) => {
   }
 
   return { data, error: null };
+};
+
+const getPortalBaseUrl = () =>
+  String(config.oauthClientUrl || config.corsOrigins?.[0] || 'https://hhh-jobs.com').replace(/\/+$/, '');
+
+const buildPortalUrl = (path = '/') => {
+  const normalizedPath = String(path || '/').startsWith('/') ? String(path || '/') : `/${path}`;
+  return `${getPortalBaseUrl()}${normalizedPath}`;
+};
+
+const getCollegeProfileByUserId = async (userId) => {
+  const { data, error } = await supabase
+    .from('colleges')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  return { data, error };
+};
+
+const buildConnectionActionText = ({ source, status, companyName = '', collegeName = '' } = {}) => {
+  if (source === CONNECTION_SOURCE.COLLEGE) {
+    if (status === 'accepted') {
+      return {
+        title: 'College invitation accepted',
+        message: `${companyName || 'The company'} accepted your campus collaboration invite.`,
+        emailSubject: `Campus collaboration confirmed with ${companyName || 'a company'}`
+      };
+    }
+
+    return {
+      title: 'College invitation declined',
+      message: `${companyName || 'The company'} declined your campus collaboration invite.`,
+      emailSubject: `Campus collaboration update from ${companyName || 'a company'}`
+    };
+  }
+
+  if (status === 'accepted') {
+    return {
+      title: 'Company request approved',
+      message: `${collegeName || 'The college'} approved your campus collaboration request.`,
+      emailSubject: `${collegeName || 'A college'} approved your campus request`
+    };
+  }
+
+  return {
+    title: 'Company request declined',
+    message: `${collegeName || 'The college'} declined your campus collaboration request.`,
+    emailSubject: `${collegeName || 'A college'} responded to your campus request`
+  };
+};
+
+const buildConnectionEmailPayload = ({
+  subject,
+  preview,
+  detailLines = [],
+  ctaLabel,
+  ctaUrl
+} = {}) => ({
+  subject,
+  text: [
+    preview || '',
+    ...detailLines.filter(Boolean),
+    '',
+    ctaLabel && ctaUrl ? `${ctaLabel}: ${ctaUrl}` : ''
+  ].filter(Boolean).join('\n'),
+  html: `
+    <p>${preview || ''}</p>
+    ${detailLines.filter(Boolean).map((line) => `<p>${line}</p>`).join('')}
+    ${ctaLabel && ctaUrl ? `<p><a href="${ctaUrl}">${ctaLabel}</a></p>` : ''}
+  `.trim()
+});
+
+const choosePreferredCompanyContact = (current, candidate) => {
+  if (!candidate) return current;
+  if (!current) return candidate;
+
+  const currentScore = [
+    current.isVerified ? 1 : 0,
+    current.isHrApproved ? 1 : 0,
+    current.lastLoginAt ? 1 : 0,
+    current.createdAt ? 1 : 0
+  ];
+  const candidateScore = [
+    candidate.isVerified ? 1 : 0,
+    candidate.isHrApproved ? 1 : 0,
+    candidate.lastLoginAt ? 1 : 0,
+    candidate.createdAt ? 1 : 0
+  ];
+
+  for (let index = 0; index < candidateScore.length; index += 1) {
+    if (candidateScore[index] !== currentScore[index]) {
+      return candidateScore[index] > currentScore[index] ? candidate : current;
+    }
+  }
+
+  return String(candidate.companyName || '').localeCompare(String(current.companyName || '')) < 0 ? candidate : current;
+};
+
+const rankConnectionStatus = (status = '') => {
+  switch (String(status || '').trim().toLowerCase()) {
+    case 'accepted':
+      return 3;
+    case 'pending':
+      return 2;
+    case 'rejected':
+      return 1;
+    default:
+      return 0;
+  }
+};
+
+const pickPreferredConnection = (current, candidate) => {
+  if (!candidate) return current;
+  if (!current) return candidate;
+
+  const currentRank = rankConnectionStatus(current.status);
+  const candidateRank = rankConnectionStatus(candidate.status);
+  if (candidateRank !== currentRank) {
+    return candidateRank > currentRank ? candidate : current;
+  }
+
+  return new Date(candidate.created_at || 0).getTime() > new Date(current.created_at || 0).getTime()
+    ? candidate
+    : current;
+};
+
+const listCompanyDirectoryForCollege = async ({ collegeId }) => {
+  const [profilesResponse, connectionsResponse, jobsResponse] = await Promise.all([
+    supabase
+      .from('hr_profiles')
+      .select(`
+        user_id,
+        company_name,
+        company_website,
+        company_size,
+        location,
+        about,
+        logo_url,
+        is_verified,
+        industry_type,
+        company_type,
+        created_at,
+        updated_at,
+        users!inner(id, name, email, status, is_hr_approved, created_at, last_login_at)
+      `),
+    supabase
+      .from('campus_connections')
+      .select('*')
+      .eq('college_id', collegeId),
+    supabase
+      .from('jobs')
+      .select('created_by, company_name, status, valid_till')
+      .eq('status', 'open')
+      .gte('valid_till', new Date().toISOString())
+  ]);
+
+  if (profilesResponse.error) throw profilesResponse.error;
+  if (connectionsResponse.error) throw connectionsResponse.error;
+  if (jobsResponse.error) throw jobsResponse.error;
+
+  const connectionsByUserId = Object.fromEntries((connectionsResponse.data || []).map((item) => [item.company_user_id, item]));
+  const openRolesByCompanyKey = (jobsResponse.data || []).reduce((acc, job) => {
+    const companyKey = normalizeCompanyKey(job.company_name);
+    if (!companyKey) return acc;
+    acc[companyKey] = (acc[companyKey] || 0) + 1;
+    return acc;
+  }, {});
+
+  const groupedCompanies = new Map();
+
+  for (const profile of profilesResponse.data || []) {
+    const user = Array.isArray(profile.users) ? profile.users[0] : profile.users;
+    if (!user) continue;
+
+    const companyName = String(profile.company_name || '').trim();
+    const companyKey = normalizeCompanyKey(companyName);
+    if (!companyKey) continue;
+
+    const normalizedStatus = String(user.status || '').trim().toLowerCase();
+    if (normalizedStatus !== USER_STATUSES.ACTIVE || user.is_hr_approved === false) continue;
+
+    const entry = {
+      companyUserId: profile.user_id,
+      companyName,
+      companyWebsite: profile.company_website || '',
+      companySize: profile.company_size || '',
+      location: profile.location || '',
+      about: profile.about || '',
+      logoUrl: profile.logo_url || '',
+      industryType: profile.industry_type || '',
+      companyType: profile.company_type || '',
+      isVerified: Boolean(profile.is_verified),
+      contactName: user.name || companyName,
+      contactEmail: user.email || '',
+      lastLoginAt: user.last_login_at || null,
+      createdAt: profile.created_at || user.created_at || null,
+      isHrApproved: user.is_hr_approved !== false,
+      connection: connectionsByUserId[profile.user_id] || null,
+      openRoles: openRolesByCompanyKey[companyKey] || 0
+    };
+
+    const existingGroup = groupedCompanies.get(companyKey) || { primary: null, connection: null, openRoles: 0 };
+    existingGroup.primary = choosePreferredCompanyContact(existingGroup.primary, entry);
+    existingGroup.connection = pickPreferredConnection(existingGroup.connection, entry.connection);
+    existingGroup.openRoles = Math.max(existingGroup.openRoles || 0, entry.openRoles || 0);
+    groupedCompanies.set(companyKey, existingGroup);
+  }
+
+  return [...groupedCompanies.values()]
+    .map((group) => {
+      const primary = group.primary;
+      const connection = group.connection;
+      const status = connection?.status || 'available';
+
+      return {
+        companyUserId: primary.companyUserId,
+        companyName: primary.companyName,
+        companyWebsite: primary.companyWebsite || null,
+        companySize: primary.companySize || null,
+        location: primary.location || null,
+        about: primary.about || null,
+        logoUrl: primary.logoUrl || null,
+        industryType: primary.industryType || null,
+        companyType: primary.companyType || null,
+        isVerified: primary.isVerified,
+        contactName: primary.contactName || null,
+        contactEmail: primary.contactEmail || null,
+        openRoles: group.openRoles || 0,
+        status,
+        connectionId: connection?.id || null,
+        initiatedBy: connection?.initiation_source || null,
+        invitedAt: connection?.created_at || null,
+        respondedAt: connection?.responded_at || null,
+        canInvite: status === 'available' || status === 'rejected'
+      };
+    })
+    .sort((left, right) => {
+      if (Number(right.isVerified) !== Number(left.isVerified)) return Number(right.isVerified) - Number(left.isVerified);
+      if ((right.openRoles || 0) !== (left.openRoles || 0)) return (right.openRoles || 0) - (left.openRoles || 0);
+      return String(left.companyName || '').localeCompare(String(right.companyName || ''));
+    });
 };
 
 const parseCSV = (csvText) => {
@@ -1319,62 +1566,148 @@ router.get('/connections', asyncHandler(async (req, res) => {
   res.send({ status: true, connections: data || [] });
 }));
 
-// HR companies send a connection request to a college
+router.get('/connections/directory', asyncHandler(async (req, res) => {
+  if (!ensureServerConfig(res)) return;
+
+  const collegeId = await getCollegeId(req.user.id);
+  if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
+
+  try {
+    const companies = await listCompanyDirectoryForCollege({ collegeId });
+    res.send({
+      status: true,
+      companies,
+      summary: {
+        totalCompanies: companies.length,
+        connectedCompanies: companies.filter((company) => company.status === 'accepted').length,
+        pendingInvites: companies.filter((company) => company.status === 'pending').length,
+        availableCompanies: companies.filter((company) => company.status === 'available' || company.status === 'rejected').length
+      }
+    });
+  } catch (error) {
+    sendSupabaseError(res, error);
+  }
+}));
+
 router.post('/connections', asyncHandler(async (req, res) => {
   if (!ensureServerConfig(res)) return;
 
-  const { collegeId, message } = req.body || {};
+  const collegeProfileResponse = await getCollegeProfileByUserId(req.user.id);
+  if (collegeProfileResponse.error) { sendSupabaseError(res, collegeProfileResponse.error); return; }
+  if (!collegeProfileResponse.data) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  if (!isValidUuid(collegeId)) {
-    res.status(400).send({ status: false, message: 'Valid collegeId is required.' });
+  const { companyUserId, message } = req.body || {};
+  if (!isValidUuid(companyUserId)) {
+    res.status(400).send({ status: false, message: 'Valid companyUserId is required.' });
     return;
   }
 
-  const { data: college } = await supabase
-    .from('colleges')
-    .select('id, name, user_id')
-    .eq('id', collegeId)
-    .maybeSingle();
-
-  if (!college) { res.status(404).send({ status: false, message: 'College not found.' }); return; }
-
-  const { data: hrProfile } = await supabase
+  const { data: companyProfile, error: companyProfileError } = await supabase
     .from('hr_profiles')
-    .select('company_name')
-    .eq('user_id', req.user.id)
+    .select(`
+      user_id,
+      company_name,
+      company_website,
+      location,
+      users!inner(id, name, email, status, is_hr_approved)
+    `)
+    .eq('user_id', companyUserId)
     .maybeSingle();
 
-  const { data, error } = await supabase
-    .from('campus_connections')
-    .insert({
-      college_id: collegeId,
-      company_user_id: req.user.id,
-      company_name: hrProfile?.company_name || req.user.name || 'Company',
-      message: message || null,
-      status: 'pending'
-    })
-    .select('*')
-    .single();
+  if (companyProfileError) { sendSupabaseError(res, companyProfileError); return; }
 
-  if (error) {
-    if (error.code === '23505') {
-      res.status(409).send({ status: false, message: 'Connection request already sent.' });
+  const companyUser = Array.isArray(companyProfile?.users) ? companyProfile.users[0] : companyProfile?.users;
+  if (!companyProfile || !companyUser) { res.status(404).send({ status: false, message: 'Company contact not found.' }); return; }
+
+  const normalizedCompanyStatus = String(companyUser.status || '').trim().toLowerCase();
+  if (normalizedCompanyStatus !== USER_STATUSES.ACTIVE || companyUser.is_hr_approved === false) {
+    res.status(400).send({ status: false, message: 'This company contact is not active for campus invitations yet.' });
+    return;
+  }
+
+  const { data: existingConnection, error: existingConnectionError } = await supabase
+    .from('campus_connections')
+    .select('*')
+    .eq('college_id', collegeProfileResponse.data.id)
+    .eq('company_user_id', companyUserId)
+    .maybeSingle();
+
+  if (existingConnectionError) { sendSupabaseError(res, existingConnectionError); return; }
+
+  if (existingConnection?.status === 'accepted') {
+    res.status(409).send({ status: false, message: 'This company is already connected to your college.' });
+    return;
+  }
+
+  if (existingConnection?.status === 'pending') {
+    if (existingConnection.initiation_source !== CONNECTION_SOURCE.COLLEGE) {
+      res.status(409).send({ status: false, message: 'This company already has a pending request. Review it from incoming requests.' });
       return;
     }
-    sendSupabaseError(res, error);
-    return;
   }
 
-  // Notify college admin
-  await createNotification({
-    userId: college.user_id,
-    type: 'connection_request',
-    title: 'New Company Connection Request',
-    message: `${data.company_name} wants to connect with your college for campus recruitment.`,
-    link: '/portal/campus-connect/connections'
+  const payload = {
+    college_id: collegeProfileResponse.data.id,
+    company_user_id: companyUserId,
+    company_name: companyProfile.company_name || companyUser.name || 'Company',
+    message: String(message || '').trim() || null,
+    status: 'pending',
+    responded_at: null,
+    initiated_by_user_id: req.user.id,
+    initiation_source: CONNECTION_SOURCE.COLLEGE
+  };
+
+  const upsertResponse = existingConnection
+    ? await supabase
+      .from('campus_connections')
+      .update({
+        ...payload,
+        status: 'pending',
+        responded_at: null
+      })
+      .eq('id', existingConnection.id)
+      .select('*')
+      .single()
+    : await supabase
+      .from('campus_connections')
+      .insert(payload)
+      .select('*')
+      .single();
+
+  if (upsertResponse.error) { sendSupabaseError(res, upsertResponse.error); return; }
+
+  const connection = upsertResponse.data;
+  const preview = `${collegeProfileResponse.data.name || 'A college'} invited your company to collaborate on campus hiring through HHH Jobs.`;
+  const actionUrl = buildPortalUrl('/portal/hr/campus-connections');
+
+  await notifyUser({
+    userId: companyUserId,
+    channels: ['in_app', 'email'],
+    notification: {
+      type: 'college_connection_invite',
+      title: 'New college collaboration invite',
+      message: preview,
+      link: '/portal/hr/campus-connections',
+      meta: {
+        connectionId: connection.id,
+        collegeId: collegeProfileResponse.data.id,
+        initiationSource: CONNECTION_SOURCE.COLLEGE
+      }
+    },
+    emailPayload: buildConnectionEmailPayload({
+      subject: `New campus collaboration invite from ${collegeProfileResponse.data.name || 'a college'}`,
+      preview,
+      detailLines: [
+        message ? `Message from college: ${String(message).trim()}` : '',
+        companyProfile.company_name ? `Company: ${companyProfile.company_name}` : '',
+        collegeProfileResponse.data.contact_email ? `College contact: ${collegeProfileResponse.data.contact_email}` : ''
+      ],
+      ctaLabel: 'Review invite',
+      ctaUrl: actionUrl
+    })
   });
 
-  res.status(201).send({ status: true, connection: data });
+  res.status(existingConnection ? 200 : 201).send({ status: true, connection });
 }));
 
 router.patch('/connections/:id', asyncHandler(async (req, res) => {
@@ -1382,6 +1715,8 @@ router.patch('/connections/:id', asyncHandler(async (req, res) => {
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
+  const collegeProfileResponse = await getCollegeProfileByUserId(req.user.id);
+  if (collegeProfileResponse.error) { sendSupabaseError(res, collegeProfileResponse.error); return; }
 
   const { id } = req.params;
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid connection id.' }); return; }
@@ -1403,15 +1738,45 @@ router.patch('/connections/:id', asyncHandler(async (req, res) => {
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'Connection not found.' }); return; }
 
-  // Notify the HR company
-  await createNotification({
+  const source = data.initiation_source || CONNECTION_SOURCE.COMPANY;
+  const actionText = buildConnectionActionText({
+    source,
+    status,
+    companyName: data.company_name,
+    collegeName: collegeProfileResponse.data?.name || ''
+  });
+  const actionUrl = buildPortalUrl(status === 'accepted' ? '/portal/hr/campus-drives' : '/portal/hr/campus-connections');
+
+  await notifyUser({
     userId: data.company_user_id,
-    type: 'connection_response',
-    title: status === 'accepted' ? 'Connection Request Accepted' : 'Connection Request Declined',
-    message: status === 'accepted'
-      ? 'Your campus connection request was accepted. You can now access the student pool.'
-      : 'Your campus connection request was declined.',
-    link: '/portal/hr/candidates'
+    channels: ['in_app', 'email'],
+    notification: {
+      type: 'connection_response',
+      title: actionText.title,
+      message: status === 'accepted'
+        ? `${collegeProfileResponse?.data?.name || 'The college'} accepted your campus collaboration request.`
+        : `${collegeProfileResponse?.data?.name || 'The college'} declined your campus collaboration request.`,
+      link: status === 'accepted' ? '/portal/hr/campus-drives' : '/portal/hr/campus-connections',
+      meta: {
+        connectionId: data.id,
+        status,
+        initiationSource: source
+      }
+    },
+    emailPayload: buildConnectionEmailPayload({
+      subject: actionText.emailSubject,
+      preview: status === 'accepted'
+        ? `${collegeProfileResponse?.data?.name || 'The college'} accepted your campus collaboration request.`
+        : `${collegeProfileResponse?.data?.name || 'The college'} declined your campus collaboration request.`,
+      detailLines: [
+        data.company_name ? `Company: ${data.company_name}` : '',
+        status === 'accepted'
+          ? 'You can now review shared campus drives and candidate updates inside your HR portal.'
+          : 'You can continue discovering other colleges or send a fresh request later.'
+      ],
+      ctaLabel: status === 'accepted' ? 'Open campus drives' : 'View campus connections',
+      ctaUrl: actionUrl
+    })
   });
 
   res.send({ status: true, connection: data });
