@@ -303,15 +303,17 @@ const sendViaResend = async (message) => {
 };
 
 const sendEmailWithFallback = async (message) => {
+  const providerErrors = [];
+
   if (isResendConfigured()) {
     try {
       const resendResult = await sendViaResend(message);
       if (resendResult.sent) return resendResult;
       console.error('[RESEND ERROR]', resendResult.reason);
-      return resendResult;
+      providerErrors.push(resendResult.reason || 'resend_send_failed');
     } catch (error) {
       console.error('[RESEND ERROR]', error.message);
-      return { sent: false, reason: error.message || 'resend_send_failed' };
+      providerErrors.push(error.message || 'resend_send_failed');
     }
   }
 
@@ -320,17 +322,17 @@ const sendEmailWithFallback = async (message) => {
       const sendGridResult = await sendViaSendGrid(message);
       if (sendGridResult.sent) return sendGridResult;
       console.error('[SENDGRID ERROR]', sendGridResult.reason);
-      return sendGridResult;
+      providerErrors.push(sendGridResult.reason || 'sendgrid_send_failed');
     } catch (error) {
       console.error('[SENDGRID ERROR]', error.message);
-      return { sent: false, reason: error.message || 'sendgrid_send_failed' };
+      providerErrors.push(error.message || 'sendgrid_send_failed');
     }
   }
 
   const transportPlans = getTransportPlans();
 
   if (transportPlans.length === 0) {
-    return { sent: false, reason: 'smtp_not_configured' };
+    return { sent: false, reason: providerErrors[providerErrors.length - 1] || 'smtp_not_configured' };
   }
 
   let lastError = null;
@@ -353,7 +355,10 @@ const sendEmailWithFallback = async (message) => {
     }
   }
 
-  return { sent: false, reason: lastError?.message || 'email_send_failed' };
+  return {
+    sent: false,
+    reason: lastError?.message || providerErrors[providerErrors.length - 1] || 'email_send_failed'
+  };
 };
 
 scheduleTransportWarmup();

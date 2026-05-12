@@ -125,7 +125,31 @@ const clearPendingSignup = (email) => {
 const buildOtpEmailWarning = ({ sent, reason }) => {
   if (sent) return undefined;
 
+  const normalizedReason = String(reason || '').trim();
   const lower = String(reason || '').toLowerCase();
+  let parsedReason = null;
+  if (normalizedReason.startsWith('{') || normalizedReason.startsWith('[')) {
+    try {
+      parsedReason = JSON.parse(normalizedReason);
+    } catch {
+      parsedReason = null;
+    }
+  }
+  const providerMessage = String(parsedReason?.message || parsedReason?.error || '').trim().toLowerCase();
+  const providerName = String(parsedReason?.name || parsedReason?.code || '').trim().toLowerCase();
+
+  if (
+    lower.includes('daily_quota_exceeded')
+    || lower.includes('quota exceeded')
+    || lower.includes('quota')
+    || providerName.includes('daily_quota_exceeded')
+    || providerMessage.includes('daily email sending quota')
+    || providerMessage.includes('quota')
+    || providerMessage.includes('rate limit')
+  ) {
+    return 'OTP email sending limit has been reached for today. Switch to another configured email provider, wait for the quota to reset, or use a backup SMTP provider.';
+  }
+
   if (
     lower.includes('username and password')
     || lower.includes('invalid login')
@@ -143,7 +167,7 @@ const buildOtpEmailWarning = ({ sent, reason }) => {
   if (reason === 'sendgrid_not_configured') {
     return 'OTP email service is not configured right now. Add a valid SendGrid API key on the backend and try again.';
   }
-  return `OTP email could not be sent (${reason}). Check your email provider settings or resend OTP from the verification screen.`;
+  return 'We could not send the OTP email right now. Please check the configured email provider and try Resend OTP again.';
 };
 
 const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
