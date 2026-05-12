@@ -34,6 +34,48 @@ const buildDataEntryProfileResponse = ({ user = {}, employeeProfile = {}, dataEn
   };
 };
 
+const phoneCountryOptions = [
+  { code: '+91', label: 'India (+91)', digits: 10 },
+  { code: '+1', label: 'USA/Canada (+1)', digits: 10 },
+  { code: '+44', label: 'UK (+44)', digits: 10 },
+  { code: '+61', label: 'Australia (+61)', digits: 9 },
+  { code: '+971', label: 'UAE (+971)', digits: 9 }
+];
+
+const parseMobileValue = (value = '') => {
+  const rawMobile = String(value || '').trim();
+  const matchedCountry = [...phoneCountryOptions]
+    .sort((left, right) => right.code.length - left.code.length)
+    .find((item) => rawMobile.startsWith(item.code));
+  const selectedCountry = matchedCountry || phoneCountryOptions[0];
+  const digits = matchedCountry
+    ? rawMobile.slice(selectedCountry.code.length).replace(/\D/g, '')
+    : rawMobile.replace(/\D/g, '');
+
+  return {
+    selectedCountry,
+    digits
+  };
+};
+
+const validateMobileValue = (value = '') => {
+  const { selectedCountry, digits } = parseMobileValue(value);
+
+  if (!digits) {
+    return 'Mobile number is required.';
+  }
+
+  if (digits.length !== selectedCountry.digits) {
+    return `Mobile number must be exactly ${selectedCountry.digits} digits for ${selectedCountry.label}.`;
+  }
+
+  if (selectedCountry.code === '+91' && !/^[6-9]\d{9}$/.test(digits)) {
+    return 'Enter a valid India mobile number with 10 digits starting from 6-9.';
+  }
+
+  return '';
+};
+
 const normalizeDataEntryEntry = (entry = {}) => {
   const data = entry.data && typeof entry.data === 'object' ? entry.data : {};
 
@@ -469,7 +511,15 @@ router.patch('/profile', asyncHandler(async (req, res) => {
   } = req.body || {};
   const updates = { updated_at: new Date().toISOString() };
   if (name) updates.name = String(name).trim();
-  if (mobile) updates.mobile = String(mobile).trim();
+  if (mobile !== undefined) {
+    const mobileError = validateMobileValue(mobile);
+    if (mobileError) {
+      return res.status(400).send({ status: false, message: mobileError });
+    }
+
+    const { selectedCountry, digits } = parseMobileValue(mobile);
+    updates.mobile = `${selectedCountry.code}${digits}`;
+  }
 
   const { data: user, error } = await supabase
     .from('users')

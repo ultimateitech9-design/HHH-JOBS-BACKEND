@@ -1,12 +1,13 @@
 const PASSWORD_POLICY_MESSAGE =
-  'Password must be at least 8 characters and include a letter, a number, and a special symbol.';
+  'Password must be at least 8 characters and include uppercase, lowercase, number, and special symbol.';
 
 const isStrongPassword = (value) => {
   const password = String(value || '');
 
   return (
     password.length >= 8
-    && /[A-Za-z]/.test(password)
+    && /[A-Z]/.test(password)
+    && /[a-z]/.test(password)
     && /\d/.test(password)
     && /[^A-Za-z0-9]/.test(password)
   );

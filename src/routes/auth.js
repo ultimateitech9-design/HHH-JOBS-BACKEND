@@ -761,16 +761,17 @@ const getOAuthConfigErrorMessage = (providerKey) => (
 const getResolvedOAuthConfig = ({ req, providerKey, provider }) => {
   const clientConfig = provider.getClientConfig();
   const requiresTrustedHttpsRedirect = providerKey === 'linkedin';
+  const resolvedRedirectUri = resolveOAuthRedirectUri({
+    req,
+    providerKey,
+    explicitRedirectUri: clientConfig.redirectUri,
+    explicitLocalRedirectUri: clientConfig.localRedirectUri,
+    requireTrustedHttps: requiresTrustedHttpsRedirect
+  });
 
   return {
     ...clientConfig,
-    redirectUri: resolveOAuthRedirectUri({
-      req,
-      providerKey,
-      explicitRedirectUri: clientConfig.redirectUri,
-      explicitLocalRedirectUri: clientConfig.localRedirectUri,
-      requireTrustedHttps: requiresTrustedHttpsRedirect
-    })
+    redirectUri: resolvedRedirectUri
   };
 };
 

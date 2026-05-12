@@ -7,8 +7,9 @@ const config = require('./src/config');
 const { ensureServerConfig, supabase, sendSupabaseError } = require('./src/supabase');
 const { asyncHandler, normalizeEmail } = require('./src/utils/helpers');
 const { mapJobFromRow } = require('./src/utils/mappers');
-const { requireAuth } = require('./src/middleware/auth');
+const { requireAuth, optionalAuth } = require('./src/middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('./src/middleware/roles');
+const { readMaintenanceMode, requireNotInMaintenance } = require('./src/middleware/maintenance');
 const errorHandler = require('./src/middleware/errorHandler');
 const { createRateLimitMiddleware } = require('./src/middleware/rateLimit');
 const { createAutomationProtection, createBrowserWriteProtection } = require('./src/middleware/requestProtection');
@@ -173,6 +174,12 @@ app.get('/api/version', (req, res) => {
   res.json({ version: '2.0.0', name: 'HHH Jobs API', environment: config.nodeEnv });
 });
 
+app.get('/public/settings', asyncHandler(async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const maintenanceMode = await readMaintenanceMode();
+  res.json({ status: true, settings: { maintenanceMode } });
+}));
+
 mountRoute('/assets', safeRequireRoute('./src/routes/assets', 'assets'));
 
 if (shouldUseUpstreamProxy) {
@@ -197,6 +204,7 @@ const authRoutes = safeRequireRoute('./src/routes/auth', 'auth');
 if (authRoutes) {
   app.use('/auth', browserWriteProtection, automationProtection, authRateLimiter, authRoutes);
 }
+app.use(optionalAuth, requireNotInMaintenance);
 mountRoute('/admin', safeRequireRoute('./src/routes/admin', 'admin'));
 mountRoute('/hr', safeRequireRoute('./src/routes/hr', 'hr'));
 mountRoute('/interviews', safeRequireRoute('./src/routes/interviews', 'interviews'));

@@ -2,8 +2,10 @@ const express = require('express');
 const { ROLES, USER_STATUSES, JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
 const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
+const { resetMaintenanceModeCache } = require('../middleware/maintenance');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
+const { getPasswordPolicyError } = require('../utils/passwordPolicy');
 const { getRoleSyncSummary, repairRoleProfiles, upsertRoleProfile } = require('../services/profileTables');
 const { notifyMatchingJobAlerts } = require('../services/notifications');
 const { notifyRecommendedStudentsForJob } = require('../services/recommendations');
@@ -162,6 +164,11 @@ router.post('/users', asyncHandler(async (req, res) => {
 
   if (!name || !email || !password || !role) {
     return res.status(400).send({ status: false, message: 'name, email, password and role are required' });
+  }
+
+  const passwordError = getPasswordPolicyError(password);
+  if (passwordError) {
+    return res.status(400).send({ status: false, message: passwordError });
   }
 
   const { data: authData, error: authError } = await supabase.auth.admin.createUser({
@@ -671,6 +678,10 @@ router.put('/settings', asyncHandler(async (req, res) => {
     acc[row.key] = row.value;
     return acc;
   }, {});
+
+  if (Object.prototype.hasOwnProperty.call(settings, 'maintenanceMode') || Object.prototype.hasOwnProperty.call(body, 'maintenance_mode')) {
+    resetMaintenanceModeCache();
+  }
 
   await supabase.from('system_logs').insert({
     action: 'settings_updated',
