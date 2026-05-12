@@ -25,7 +25,11 @@ test('enhanceAtsAnalysisWithAi merges AI summary and priority edits into ATS res
     topRisks: ['Impact metrics are light'],
     priorityEdits: ['Add 2 quantified outcomes in experience bullets.', 'Move React and TypeScript higher in the summary.'],
     missingKeywords: ['accessibility'],
-    suggestedSummary: 'Frontend developer focused on React, TypeScript, and API-driven product delivery.'
+    suggestedSummary: 'Frontend developer focused on React, TypeScript, and API-driven product delivery.',
+    calibrationDelta: 4,
+    calibrationReason: 'The resume appears stronger than raw similarity alone because the core stack is directly relevant.',
+    seniorityAssessment: 'Seniority looks aligned for a mid-level frontend role.',
+    businessVerdict: 'Worth progressing if project depth is genuine.'
   }));
 
   const enhanced = await enhanceAtsAnalysisWithAi({
@@ -37,22 +41,35 @@ test('enhanceAtsAnalysisWithAi merges AI summary and priority edits into ATS res
     baseAnalysis: {
       score: 68,
       keywordScore: 70,
+      mustHaveScore: 72,
       similarityScore: 66,
+      titleScore: 74,
+      seniorityScore: 80,
       formatScore: 72,
+      impactScore: 58,
+      confidenceScore: 76,
       matchedKeywords: ['react', 'typescript'],
       missingKeywords: ['api'],
+      mustHaveKeywords: ['react', 'typescript', 'api'],
+      businessLogicFlags: [],
+      priorityActions: ['Add API delivery examples.'],
+      riskFlags: [],
+      seniorityInsights: 'The resume appears broadly aligned with a mid-level frontend role.',
       warnings: ['The resume content is only weakly aligned with the selected role or job description.'],
       suggestions: ['Add missing role keywords where genuinely relevant, especially api.']
     }
   });
 
   assert.equal(enhanced.aiPowered, true);
+  assert.equal(enhanced.score, 72);
   assert.match(enhanced.aiSummary, /frontend fundamentals/i);
   assert.ok(enhanced.aiStrengths.includes('React alignment'));
   assert.ok(enhanced.aiPriorityEdits.includes('Add 2 quantified outcomes in experience bullets.'));
   assert.ok(enhanced.missingKeywords.includes('accessibility'));
   assert.ok(enhanced.suggestions.includes('Move React and TypeScript higher in the summary.'));
   assert.match(enhanced.aiSuggestedSummary, /React, TypeScript/i);
+  assert.equal(enhanced.aiCalibrationDelta, 4);
+  assert.match(enhanced.aiCalibrationReason, /stronger than raw similarity/i);
 });
 
 test('enhanceAtsAnalysisWithAi safely falls back when AI response is unavailable', async () => {
@@ -63,10 +80,20 @@ test('enhanceAtsAnalysisWithAi safely falls back when AI response is unavailable
   const baseline = {
     score: 61,
     keywordScore: 64,
+    mustHaveScore: 60,
     similarityScore: 59,
+    titleScore: 55,
+    seniorityScore: 57,
     formatScore: 70,
+    impactScore: 42,
+    confidenceScore: 61,
     matchedKeywords: ['react'],
     missingKeywords: ['api'],
+    mustHaveKeywords: ['react', 'api'],
+    businessLogicFlags: ['evidence_quality_low'],
+    priorityActions: ['Add quantified delivery proof.'],
+    riskFlags: [],
+    seniorityInsights: 'Experience level is not very clear from the resume.',
     warnings: ['The resume is brief.'],
     suggestions: ['Add a dedicated skills section.']
   };

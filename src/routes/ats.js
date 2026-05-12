@@ -14,7 +14,11 @@ const router = express.Router();
 const serializeAtsResult = (analysis = {}) => ({
   score: analysis.score,
   keywordScore: analysis.keywordScore,
+  mustHaveScore: analysis.mustHaveScore,
   similarityScore: analysis.similarityScore,
+  titleScore: analysis.titleScore,
+  seniorityScore: analysis.seniorityScore,
+  benchmarkScore: analysis.benchmarkScore,
   formatScore: analysis.formatScore,
   impactScore: analysis.impactScore,
   confidenceScore: analysis.confidenceScore,
@@ -22,18 +26,26 @@ const serializeAtsResult = (analysis = {}) => ({
   fitLevel: analysis.fitLevel || '',
   matchedKeywords: analysis.matchedKeywords || [],
   missingKeywords: analysis.missingKeywords || [],
+  mustHaveKeywords: analysis.mustHaveKeywords || [],
   sectionCoverage: analysis.sectionCoverage || [],
   riskFlags: analysis.riskFlags || [],
+  businessLogicFlags: analysis.businessLogicFlags || [],
   priorityActions: analysis.priorityActions || [],
   warnings: analysis.warnings || [],
   suggestions: analysis.suggestions || [],
   targetRole: analysis.targetRole || '',
   benchmarkKeywords: analysis.benchmarkKeywords || [],
+  seniorityInsights: analysis.seniorityInsights || '',
+  resumeYearsExperience: analysis.resumeYearsExperience,
   aiPowered: Boolean(analysis.aiPowered),
   aiSummary: analysis.aiSummary || '',
   aiStrengths: analysis.aiStrengths || [],
   aiPriorityEdits: analysis.aiPriorityEdits || [],
-  aiSuggestedSummary: analysis.aiSuggestedSummary || ''
+  aiSuggestedSummary: analysis.aiSuggestedSummary || '',
+  aiCalibrationDelta: analysis.aiCalibrationDelta || 0,
+  aiCalibrationReason: analysis.aiCalibrationReason || '',
+  aiSeniorityAssessment: analysis.aiSeniorityAssessment || '',
+  aiBusinessVerdict: analysis.aiBusinessVerdict || ''
 });
 
 const buildPreviewJob = ({ jobTitle = '', targetText = '' }) => {
@@ -102,7 +114,7 @@ const createAtsResult = async ({ jobRow, resumeText = '', resumeUrl = '' }) => {
 
   return {
     ...analysis,
-    score,
+    score: Number(analysis?.score ?? score),
     warnings: [...new Set([...(analysis.warnings || []), ...(extraction.warnings || [])])].slice(0, 8)
   };
 };

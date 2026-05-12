@@ -1,7 +1,7 @@
 const { STOP_WORDS } = require('../constants');
 const { clamp } = require('./helpers');
 
-const SHORT_TOKEN_ALLOWLIST = new Set(['ui', 'ux', 'qa', 'ai', 'ml', 'bi', 'hr', 'vr', 'ar', 'c#', 'c++']);
+const SHORT_TOKEN_ALLOWLIST = new Set(['ui', 'ux', 'qa', 'ai', 'ml', 'bi', 'hr', 'vr', 'ar', 'c#', 'c++', 'ci', 'cd']);
 const GENERIC_JOB_TOKENS = new Set([
   'developer',
   'engineer',
@@ -19,11 +19,14 @@ const GENERIC_JOB_TOKENS = new Set([
   'level',
   'full',
   'time',
-  'part',
   'remote',
   'onsite',
   'hybrid',
-  'hhh'
+  'hhh',
+  'role',
+  'position',
+  'candidate',
+  'looking'
 ]);
 
 const TOKEN_ALIASES = new Map([
@@ -38,21 +41,24 @@ const TOKEN_ALIASES = new Map([
   ['vue.js', 'vue'],
   ['springboot', 'spring'],
   ['spring-boot', 'spring'],
-  ['js', 'javascript'],
-  ['ts', 'typescript'],
-  ['c#', 'csharp'],
-  ['c++', 'cpp'],
-  ['postgresql', 'postgres'],
   ['restful', 'rest'],
   ['apis', 'api'],
-  ['frontend', 'frontend'],
+  ['micro-services', 'microservices'],
   ['front-end', 'frontend'],
   ['backend', 'backend'],
   ['back-end', 'backend'],
   ['full-stack', 'fullstack'],
-  ['fullstack', 'fullstack'],
+  ['full stack', 'fullstack'],
   ['ux/ui', 'ux'],
-  ['ui/ux', 'ui']
+  ['ui/ux', 'ui'],
+  ['postgresql', 'postgres'],
+  ['postgre', 'postgres'],
+  ['js', 'javascript'],
+  ['ts', 'typescript'],
+  ['c#', 'csharp'],
+  ['c++', 'cpp'],
+  ['ci/cd', 'ci'],
+  ['power bi', 'powerbi']
 ]);
 
 const IMPACT_VERBS = new Set([
@@ -73,8 +79,22 @@ const IMPACT_VERBS = new Set([
   'shipped',
   'automated',
   'streamlined',
-  'resolved'
+  'resolved',
+  'scaled',
+  'migrated',
+  'drove',
+  'raised',
+  'cut'
 ]);
+
+const EXPERIENCE_HINTS = [
+  { match: /\b(intern|internship|trainee|fresher|graduate trainee|entry level|entry-level)\b/, min: 0, max: 1, label: 'entry' },
+  { match: /\b(junior|associate|analyst)\b/, min: 0, max: 2, label: 'junior' },
+  { match: /\b(mid|mid-level|mid level|software engineer|developer)\b/, min: 2, max: 5, label: 'mid' },
+  { match: /\b(senior|sr\.?)\b/, min: 4, max: 8, label: 'senior' },
+  { match: /\b(lead|principal|staff|architect)\b/, min: 6, max: 12, label: 'lead' },
+  { match: /\b(manager|head|director|vp|vice president)\b/, min: 8, max: 18, label: 'manager' }
+];
 
 const ROLE_BENCHMARKS = [
   {
@@ -106,14 +126,48 @@ const ROLE_BENCHMARKS = [
     keywords: ['python', 'api', 'automation', 'sql', 'analysis']
   },
   {
+    match: /\b(product)\b/,
+    keywords: ['roadmap', 'stakeholder', 'analytics', 'research', 'prioritization', 'delivery']
+  },
+  {
+    match: /\b(qa|quality|test)\b/,
+    keywords: ['testing', 'automation', 'selenium', 'api', 'regression', 'quality']
+  },
+  {
     match: /\b(marketing|seo|content)\b/,
     keywords: ['seo', 'content', 'campaigns', 'analytics', 'conversion', 'research']
   }
 ];
 
+const REQUIREMENT_PATTERNS = [
+  /\bmust have\b/i,
+  /\brequired\b/i,
+  /\bstrong\b/i,
+  /\bproficient\b/i,
+  /\bexpertise\b/i,
+  /\bexperience with\b/i,
+  /\bhands on\b/i,
+  /\bshould have\b/i,
+  /\bneed(s)?\b/i
+];
+
+const SECTION_CHECKS = [
+  { key: 'contact', label: 'Contact details', regex: /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|\b(?:\+?\d[\s-]?){8,14}\d\b/i },
+  { key: 'summary', label: 'Professional summary', regex: /\b(summary|profile|professional summary|career objective)\b/i },
+  { key: 'skills', label: 'Skills section', regex: /\b(skills|technical skills|core skills|technologies|tools)\b/i },
+  { key: 'experience', label: 'Experience', regex: /\b(experience|work history|employment|internship|internships)\b/i },
+  { key: 'projects', label: 'Projects', regex: /\b(projects|project experience|portfolio)\b/i },
+  { key: 'education', label: 'Education', regex: /\b(education|academic|degree|b\.?tech|bachelor|master|university|college)\b/i },
+  { key: 'impact', label: 'Measurable impact', regex: /\b\d+(?:\.\d+)?%?\b|₹\s?\d+|\$\s?\d+|reduced|increased|improved|optimized|scaled/i }
+];
+
 const normalizeToken = (token = '') => {
-  const trimmed = String(token || '').trim().toLowerCase();
+  const trimmed = String(token || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^[^a-z0-9+#]+|[^a-z0-9+#]+$/g, '');
   if (!trimmed) return '';
+  if (/^\d+(?:[-–]\d+)?$/.test(trimmed)) return '';
 
   if (TOKEN_ALIASES.has(trimmed)) return TOKEN_ALIASES.get(trimmed);
 
@@ -158,37 +212,84 @@ const getRoleBenchmarkKeywords = (jobTitle = '') => {
       .filter((entry) => entry.match.test(normalizedTitle))
       .flatMap((entry) => entry.keywords)
       .map((item) => normalizeToken(item))
+      .filter(Boolean)
   )];
 };
 
-const extractJobKeywords = (job = {}) => {
-  const weighted = new Map();
+const getRelevantDescriptionSlices = (text = '') => String(text || '')
+  .split(/[\n.;•]+/)
+  .map((part) => String(part || '').trim())
+  .filter(Boolean)
+  .filter((part) => REQUIREMENT_PATTERNS.some((pattern) => pattern.test(part)));
 
-  addWeightedTokens(weighted, job.job_title, 5);
-  addWeightedTokens(weighted, job.description, 2);
-  addWeightedTokens(weighted, job.experience_level, 1);
-  addWeightedTokens(weighted, job.employment_type, 1);
+const buildWeightedKeywordMap = (job = {}) => {
+  const mustHave = new Map();
+  const preferred = new Map();
+  const add = (bucket, text, weight) => addWeightedTokens(bucket, text, weight);
+
+  add(mustHave, job.job_title, 6);
 
   const skills = Array.isArray(job.skills) ? job.skills : [];
   skills.forEach((skill) => {
     if (typeof skill === 'string') {
-      addWeightedTokens(weighted, skill, 4);
+      add(mustHave, skill, 8);
       return;
     }
 
     if (skill && typeof skill === 'object') {
-      addWeightedTokens(weighted, `${skill.value || ''} ${skill.label || ''}`, 4);
+      add(mustHave, `${skill.value || ''} ${skill.label || ''}`, 8);
     }
   });
 
   getRoleBenchmarkKeywords(job.job_title).forEach((keyword) => {
-    weighted.set(keyword, (weighted.get(keyword) || 0) + 4);
+    if (!keyword || GENERIC_JOB_TOKENS.has(keyword)) return;
+    preferred.set(keyword, Math.max(preferred.get(keyword) || 0, 4));
   });
 
-  return [...weighted.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([token]) => token)
-    .slice(0, 18);
+  getRelevantDescriptionSlices(job.description).forEach((slice) => add(mustHave, slice, 5));
+  add(preferred, job.description, 2);
+  add(preferred, job.experience_level, 2);
+  add(preferred, job.employment_type, 1);
+  add(preferred, job.salary_type, 1);
+  add(preferred, job.job_location, 1);
+
+  const merged = new Map();
+  [...mustHave.entries(), ...preferred.entries()].forEach(([token, weight]) => {
+    if (!token || GENERIC_JOB_TOKENS.has(token)) return;
+    merged.set(token, Math.max(merged.get(token) || 0, weight));
+  });
+
+  return {
+    mustHave,
+    preferred,
+    merged
+  };
+};
+
+const getWeightedKeywordCoverage = (resumeText = '', keywordMap = new Map()) => {
+  const resumeSet = new Set(tokenize(resumeText));
+  const sortedEntries = [...keywordMap.entries()].sort((left, right) => right[1] - left[1]);
+  const matched = [];
+  const missing = [];
+  let totalWeight = 0;
+  let matchedWeight = 0;
+
+  sortedEntries.forEach(([keyword, weight]) => {
+    totalWeight += Number(weight || 0);
+    if (resumeSet.has(keyword)) {
+      matchedWeight += Number(weight || 0);
+      matched.push(keyword);
+    } else {
+      missing.push(keyword);
+    }
+  });
+
+  const score = totalWeight > 0 ? (matchedWeight / totalWeight) * 100 : 100;
+  return {
+    score: clamp(score, 0, 100),
+    matched,
+    missing
+  };
 };
 
 const getTfIdfSimilarity = (aText = '', bText = '') => {
@@ -225,27 +326,21 @@ const getTfIdfSimilarity = (aText = '', bText = '') => {
   }
 
   if (aNorm === 0 || bNorm === 0) return 0;
-
   return clamp((dot / (Math.sqrt(aNorm) * Math.sqrt(bNorm))) * 100, 0, 100);
 };
 
-const getKeywordMatch = (resumeText, requiredKeywords) => {
+const getTitleAlignmentScore = (jobTitle = '', resumeText = '') => {
+  const normalizedTitle = String(jobTitle || '').trim();
+  if (!normalizedTitle) return 50;
+
+  const titleTokens = tokenize(normalizedTitle).filter((token) => !GENERIC_JOB_TOKENS.has(token));
+  if (titleTokens.length === 0) return 50;
+
   const resumeSet = new Set(tokenize(resumeText));
-  const uniqueRequired = [...new Set(requiredKeywords)];
-  const matched = [];
-  const missing = [];
-
-  uniqueRequired.forEach((keyword) => {
-    if (resumeSet.has(keyword)) matched.push(keyword);
-    else missing.push(keyword);
-  });
-
-  const score = uniqueRequired.length === 0 ? 100 : (matched.length / uniqueRequired.length) * 100;
-  return {
-    score: clamp(score, 0, 100),
-    matched,
-    missing
-  };
+  const matchedCount = titleTokens.filter((token) => resumeSet.has(token)).length;
+  const exactPhraseMatch = String(resumeText || '').toLowerCase().includes(normalizedTitle.toLowerCase());
+  const ratio = matchedCount / titleTokens.length;
+  return clamp((ratio * 75) + (exactPhraseMatch ? 25 : 0), 0, 100);
 };
 
 const checkResumeFormat = (resumeText = '', targetTitle = '') => {
@@ -254,49 +349,46 @@ const checkResumeFormat = (resumeText = '', targetTitle = '') => {
   const wordCount = raw.split(/\s+/).filter(Boolean).length;
   const warnings = [];
   const suggestions = [];
-  let score = 35;
+  let score = 38;
 
   if (wordCount < 180) {
-    score -= 22;
+    score -= 20;
     warnings.push('The resume is brief. Add more detail about tools, scope, and outcomes.');
   } else if (wordCount >= 220 && wordCount <= 900) {
     score += 10;
   } else if (wordCount > 1200) {
-    score -= 8;
+    score -= 10;
     suggestions.push('Trim repetitive content so the strongest evidence stays easy to scan.');
   }
 
-  const sections = [
-    { key: 'summary', regex: /\b(summary|profile|professional summary)\b/, suggestion: `Add a professional summary aligned to ${targetTitle || 'the target role'}.` },
-    { key: 'skills', regex: /\b(skills|technical skills|core skills)\b/, suggestion: 'Add a dedicated skills section with the tools and platforms you actually used.' },
-    { key: 'experience', regex: /\b(experience|work history|employment)\b/, suggestion: 'Add a clear experience section with role, scope, and outcomes.' },
-    { key: 'projects', regex: /\b(projects|project experience)\b/, suggestion: 'Add 1-2 relevant projects that support the target role.' },
-    { key: 'education', regex: /\b(education|academic)\b/, suggestion: 'Add an education section with degree, institute, and completion year.' }
-  ];
-
-  sections.forEach((section) => {
+  [
+    { regex: /\b(summary|profile|professional summary)\b/, suggestion: `Add a professional summary aligned to ${targetTitle || 'the target role'}.` },
+    { regex: /\b(skills|technical skills|core skills)\b/, suggestion: 'Add a dedicated skills section with the tools and platforms you actually used.' },
+    { regex: /\b(experience|work history|employment)\b/, suggestion: 'Add a clear experience section with role, scope, and outcomes.' },
+    { regex: /\b(projects|project experience)\b/, suggestion: 'Add 1-2 relevant projects that support the target role.' },
+    { regex: /\b(education|academic)\b/, suggestion: 'Add an education section with degree, institute, and completion year.' }
+  ].forEach((section) => {
     if (section.regex.test(text)) {
-      score += 11;
-      return;
+      score += 10;
+    } else {
+      score -= 6;
+      suggestions.push(section.suggestion);
     }
-
-    score -= 6;
-    suggestions.push(section.suggestion);
   });
 
   if (/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(raw)) {
-    score += 5;
+    score += 6;
   } else {
     warnings.push('Contact email was not detected in the resume text.');
   }
 
-  if (/(https?:\/\/)?(www\.)?(linkedin\.com|github\.com)/i.test(raw)) {
-    score += 4;
+  if (/(https?:\/\/)?(www\.)?(linkedin\.com|github\.com|portfolio)/i.test(raw)) {
+    score += 5;
   }
 
   const bulletCount = (raw.match(/^[\s]*[-*•]/gm) || []).length;
-  if (bulletCount >= 3) {
-    score += 6;
+  if (bulletCount >= 4) {
+    score += 7;
   } else {
     suggestions.push('Use concise bullet points so recruiters can scan achievements faster.');
   }
@@ -309,16 +401,6 @@ const checkResumeFormat = (resumeText = '', targetTitle = '') => {
   };
 };
 
-const SECTION_CHECKS = [
-  { key: 'contact', label: 'Contact details', regex: /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|\b(?:\+?\d[\s-]?){8,14}\d\b/i },
-  { key: 'summary', label: 'Professional summary', regex: /\b(summary|profile|professional summary|career objective)\b/i },
-  { key: 'skills', label: 'Skills section', regex: /\b(skills|technical skills|core skills|technologies|tools)\b/i },
-  { key: 'experience', label: 'Experience', regex: /\b(experience|work history|employment|internship|internships)\b/i },
-  { key: 'projects', label: 'Projects', regex: /\b(projects|project experience|portfolio)\b/i },
-  { key: 'education', label: 'Education', regex: /\b(education|academic|degree|b\.?tech|bachelor|master|university|college)\b/i },
-  { key: 'impact', label: 'Measurable impact', regex: /\b\d+(?:\.\d+)?%?\b|₹\s?\d+|\$\s?\d+|reduced|increased|improved|optimized|scaled/i }
-];
-
 const getSectionCoverage = (resumeText = '') => {
   const raw = String(resumeText || '');
   return SECTION_CHECKS.map((section) => ({
@@ -326,6 +408,146 @@ const getSectionCoverage = (resumeText = '') => {
     label: section.label,
     present: section.regex.test(raw)
   }));
+};
+
+const getRoleBenchmarkCoverageScore = (resumeText = '', benchmarkKeywords = []) => {
+  const keywords = [...new Set(benchmarkKeywords || [])].filter(Boolean);
+  if (!keywords.length) return 55;
+
+  const resumeSet = new Set(tokenize(resumeText));
+  const matched = keywords.filter((keyword) => resumeSet.has(keyword)).length;
+  return clamp((matched / keywords.length) * 100, 0, 100);
+};
+
+const getImpactScore = (resumeText = '') => {
+  const text = String(resumeText || '');
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const tokens = tokenize(text);
+  const metricHits = (text.match(/\b\d+(?:\.\d+)?%?\b|₹\s?\d+|\$\s?\d+/g) || []).length;
+  const actionHits = tokens.filter((token) => IMPACT_VERBS.has(token)).length;
+  const impactLines = lines.filter((line) => /\b\d+(?:\.\d+)?%?\b|₹\s?\d+|\$\s?\d+/.test(line) && /\b(built|improved|increased|reduced|optimized|scaled|led|launched|automated)\b/i.test(line)).length;
+  let score = 28;
+  const suggestions = [];
+
+  score += Math.min(metricHits, 6) * 7;
+  score += Math.min(actionHits, 8) * 4;
+  score += Math.min(impactLines, 4) * 6;
+
+  if (metricHits < 2) {
+    suggestions.push('Add measurable outcomes such as percentages, scale, volume, or time saved.');
+  }
+  if (actionHits < 4) {
+    suggestions.push('Start experience bullets with strong action verbs that show ownership and execution.');
+  }
+  if (impactLines < 2) {
+    suggestions.push('Convert generic responsibility bullets into outcome-driven bullets with metrics.');
+  }
+
+  return {
+    score: clamp(score, 0, 100),
+    suggestions
+  };
+};
+
+const extractResumeExperienceYears = (resumeText = '') => {
+  const raw = String(resumeText || '');
+  const explicitMatches = [...raw.matchAll(/(\d{1,2})(?:\+)?\s*(?:years?|yrs?)(?:\s+of)?\s+experience/gi)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= 40);
+
+  const rangeMatches = [...raw.matchAll(/(\d{1,2})\s*[-–to]+\s*(\d{1,2})\s*(?:years?|yrs?)/gi)]
+    .map((match) => Math.max(Number(match[1]), Number(match[2])))
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= 40);
+
+  const allMatches = [...explicitMatches, ...rangeMatches];
+  if (!allMatches.length) {
+    if (/\b(internship|intern|fresher|entry level|graduate trainee)\b/i.test(raw)) {
+      return 0;
+    }
+    return null;
+  }
+
+  return Math.max(...allMatches);
+};
+
+const inferJobSeniorityTarget = (jobRow = {}) => {
+  const sourceText = [
+    jobRow.job_title,
+    jobRow.description,
+    jobRow.experience_level
+  ].join(' ');
+  const explicitYears = [...String(sourceText).matchAll(/(\d{1,2})(?:\+)?\s*(?:years?|yrs?)/gi)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= 40);
+
+  if (explicitYears.length) {
+    const min = Math.min(...explicitYears);
+    const max = Math.max(min + 2, ...explicitYears);
+    return { min, max, label: 'explicit_years' };
+  }
+
+  const normalizedText = String(sourceText || '').toLowerCase();
+  const matchedHint = EXPERIENCE_HINTS.find((entry) => entry.match.test(normalizedText));
+  if (matchedHint) {
+    return {
+      min: matchedHint.min,
+      max: matchedHint.max,
+      label: matchedHint.label
+    };
+  }
+
+  return null;
+};
+
+const getSeniorityAlignment = ({ resumeText = '', jobRow = {} }) => {
+  const resumeYears = extractResumeExperienceYears(resumeText);
+  const target = inferJobSeniorityTarget(jobRow);
+  const flags = [];
+  let score = 60;
+  let message = 'Experience alignment could not be fully estimated from the available resume and job details.';
+
+  if (!target && resumeYears === null) {
+    return { score, resumeYears, target, flags, message };
+  }
+
+  if (target && resumeYears === null) {
+    score = target.min <= 1 ? 58 : 50;
+    message = `The role looks ${target.label}, but the resume does not clearly state years of relevant experience.`;
+    flags.push('seniority_unclear');
+    return { score, resumeYears, target, flags, message };
+  }
+
+  if (!target && resumeYears !== null) {
+    score = resumeYears <= 2 ? 66 : resumeYears <= 6 ? 72 : 76;
+    message = `The resume suggests about ${resumeYears} year${resumeYears === 1 ? '' : 's'} of experience.`;
+    return { score, resumeYears, target, flags, message };
+  }
+
+  const min = Number(target.min || 0);
+  const max = Number(target.max || min + 3);
+  const years = Number(resumeYears || 0);
+
+  if (years >= min && years <= max) {
+    score = 92;
+    message = `Experience alignment looks strong. Resume evidence fits the target seniority band of ${min}-${max} years.`;
+    return { score, resumeYears, target, flags, message };
+  }
+
+  if (years < min) {
+    const gap = min - years;
+    score = clamp(88 - (gap * 16), 12, 88);
+    message = `The role appears to expect ${min}-${max} years, but the resume signals about ${years} year${years === 1 ? '' : 's'}.`;
+    if (gap >= 2) flags.push('underqualified_for_role');
+    return { score, resumeYears, target, flags, message };
+  }
+
+  const overGap = years - max;
+  score = clamp(90 - (overGap * 8), 28, 90);
+  message = `The resume signals about ${years} years, while the role appears closer to ${min}-${max} years.`;
+  if (years >= 10 && max <= 4) flags.push('possibly_overqualified_for_role');
+  else if (overGap >= 4) flags.push('seniority_mismatch_high');
+
+  return { score, resumeYears, target, flags, message };
 };
 
 const detectKeywordStuffing = (resumeText = '', requiredKeywords = []) => {
@@ -346,53 +568,23 @@ const detectKeywordStuffing = (resumeText = '', requiredKeywords = []) => {
   return flags.slice(0, 3);
 };
 
-const getResumeRiskFlags = ({
-  resumeText = '',
+const getConfidenceScore = ({
+  resumeWordCount = 0,
   jobText = '',
-  formatResult = {},
-  keywordResult = {},
-  similarityScore = 0,
-  impactResult = {},
-  requiredKeywords = [],
-  targetTitle = ''
+  mergedKeywords = [],
+  mustHaveKeywords = [],
+  resumeYears = null
 }) => {
-  const raw = String(resumeText || '').trim();
-  const wordCount = Number(formatResult.wordCount || 0);
-  const risks = [];
-
-  if (!raw) {
-    risks.push('No readable resume text was available for analysis.');
-  }
-  if (wordCount > 0 && wordCount < 120) {
-    risks.push('Resume text is too short for a reliable ATS match.');
-  }
-  if (wordCount > 1200) {
-    risks.push('Resume is long. ATS can parse it, but recruiter scanning may suffer.');
-  }
-  if (!String(jobText || '').trim()) {
-    risks.push('Target job details are thin, so the score relies more on generic role benchmarks.');
-  }
-  if (targetTitle && similarityScore < 45) {
-    risks.push(`Resume positioning is weak for "${targetTitle}".`);
-  }
-  if ((keywordResult.missing || []).length > Math.max(6, Math.ceil(requiredKeywords.length * 0.55))) {
-    risks.push('Many important role keywords are missing or not phrased clearly.');
-  }
-  if (Number(impactResult.score || 0) < 45) {
-    risks.push('Impact evidence is light. Add metrics, scale, ownership, or outcomes.');
-  }
-
-  return [...new Set([...risks, ...detectKeywordStuffing(resumeText, requiredKeywords)])].slice(0, 8);
-};
-
-const getConfidenceScore = ({ resumeWordCount = 0, jobText = '', requiredKeywords = [] }) => {
-  let score = 25;
-  if (resumeWordCount >= 180) score += 25;
-  else if (resumeWordCount >= 80) score += 14;
-  if (String(jobText || '').trim().length >= 220) score += 20;
-  else if (String(jobText || '').trim().length >= 80) score += 10;
-  if (requiredKeywords.length >= 8) score += 15;
-  else if (requiredKeywords.length >= 4) score += 8;
+  let score = 24;
+  if (resumeWordCount >= 180) score += 24;
+  else if (resumeWordCount >= 80) score += 12;
+  if (String(jobText || '').trim().length >= 220) score += 18;
+  else if (String(jobText || '').trim().length >= 80) score += 9;
+  if (mergedKeywords.length >= 10) score += 14;
+  else if (mergedKeywords.length >= 5) score += 8;
+  if (mustHaveKeywords.length >= 5) score += 12;
+  else if (mustHaveKeywords.length >= 2) score += 6;
+  if (resumeYears !== null) score += 10;
   return clamp(score, 0, 100);
 };
 
@@ -405,50 +597,92 @@ const getFitLevel = (score = 0) => {
   return 'Needs major revision';
 };
 
-const getTitleAlignmentScore = (jobTitle = '', resumeText = '') => {
-  const normalizedTitle = String(jobTitle || '').trim();
-  if (!normalizedTitle) return 50;
+const getResumeRiskFlags = ({
+  resumeText = '',
+  jobText = '',
+  formatResult = {},
+  keywordCoverage = {},
+  mustHaveCoverage = {},
+  similarityScore = 0,
+  impactResult = {},
+  requiredKeywords = [],
+  targetTitle = '',
+  seniority = {}
+}) => {
+  const raw = String(resumeText || '').trim();
+  const wordCount = Number(formatResult.wordCount || 0);
+  const risks = [];
 
-  const titleTokens = tokenize(normalizedTitle).filter((token) => !GENERIC_JOB_TOKENS.has(token));
-  if (titleTokens.length === 0) return 50;
+  if (!raw) risks.push('No readable resume text was available for analysis.');
+  if (wordCount > 0 && wordCount < 120) risks.push('Resume text is too short for a reliable ATS match.');
+  if (wordCount > 1200) risks.push('Resume is long. ATS can parse it, but recruiter scanning may suffer.');
+  if (!String(jobText || '').trim()) risks.push('Target job details are thin, so the score relies more on generic role benchmarks.');
+  if (targetTitle && similarityScore < 45) risks.push(`Resume positioning is weak for "${targetTitle}".`);
+  if (Number(mustHaveCoverage.score || 0) < 45) risks.push('Must-have role requirements are only partially visible in the resume.');
+  if ((keywordCoverage.missing || []).length > Math.max(6, Math.ceil(requiredKeywords.length * 0.55))) {
+    risks.push('Many important role keywords are missing or not phrased clearly.');
+  }
+  if (Number(impactResult.score || 0) < 45) risks.push('Impact evidence is light. Add metrics, scale, ownership, or outcomes.');
+  if ((seniority.flags || []).includes('underqualified_for_role')) risks.push('Experience level appears below the role expectation.');
+  if ((seniority.flags || []).includes('possibly_overqualified_for_role')) risks.push('Resume may look overqualified for this role, which can affect recruiter response.');
 
-  const resumeSet = new Set(tokenize(resumeText));
-  const matchedCount = titleTokens.filter((token) => resumeSet.has(token)).length;
-  const exactPhraseMatch = String(resumeText || '').toLowerCase().includes(normalizedTitle.toLowerCase());
-
-  const ratio = matchedCount / titleTokens.length;
-  const score = (ratio * 75) + (exactPhraseMatch ? 25 : 0);
-  return clamp(score, 0, 100);
+  return [...new Set([...risks, ...detectKeywordStuffing(resumeText, requiredKeywords)])].slice(0, 8);
 };
 
-const getImpactScore = (resumeText = '') => {
-  const text = String(resumeText || '');
-  const tokens = tokenize(text);
-  const metricHits = (text.match(/\b\d+(?:\.\d+)?%?\b|₹\s?\d+|\$\s?\d+/g) || []).length;
-  const actionHits = tokens.filter((token) => IMPACT_VERBS.has(token)).length;
-  let score = 30;
-  const suggestions = [];
+const getBusinessLogicFlags = ({
+  mustHaveScore = 0,
+  titleAlignmentScore = 0,
+  similarityScore = 0,
+  impactScore = 0,
+  seniority = {},
+  confidenceScore = 0
+}) => {
+  const flags = [];
+  if (mustHaveScore < 40) flags.push('insufficient_core_skills');
+  if (titleAlignmentScore < 45 && similarityScore < 45) flags.push('role_alignment_low');
+  if (impactScore < 40) flags.push('evidence_quality_low');
+  if ((seniority.flags || []).includes('underqualified_for_role')) flags.push('seniority_gap');
+  if ((seniority.flags || []).includes('possibly_overqualified_for_role')) flags.push('possible_overqualification');
+  if (confidenceScore < 55) flags.push('low_analysis_confidence');
+  return [...new Set(flags)];
+};
 
-  score += Math.min(metricHits, 6) * 8;
-  score += Math.min(actionHits, 8) * 4;
+const applyBusinessScoreGuards = ({
+  score = 0,
+  mustHaveScore = 0,
+  similarityScore = 0,
+  titleAlignmentScore = 0,
+  seniorityScore = 0,
+  requiredKeywordCount = 0
+}) => {
+  let guardedScore = Number(score || 0);
 
-  if (metricHits < 2) {
-    suggestions.push('Add measurable outcomes such as percentages, scale, volume, or time saved.');
+  if (requiredKeywordCount >= 6 && mustHaveScore < 35) {
+    guardedScore = Math.min(guardedScore, 58);
+  }
+  if (similarityScore < 30 && titleAlignmentScore < 40) {
+    guardedScore = Math.min(guardedScore, 54);
+  }
+  if (seniorityScore < 35) {
+    guardedScore = Math.min(guardedScore, 62);
   }
 
-  if (actionHits < 4) {
-    suggestions.push('Start experience bullets with strong action verbs that show ownership and execution.');
-  }
-
-  return {
-    score: clamp(score, 0, 100),
-    suggestions
-  };
+  return clamp(Math.round(guardedScore), 0, 100);
 };
 
 const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
   const targetTitle = String(jobRow?.job_title || '').trim();
   const benchmarkKeywords = getRoleBenchmarkKeywords(targetTitle);
+  const weightedKeywords = buildWeightedKeywordMap(jobRow);
+  const mustHaveCoverage = getWeightedKeywordCoverage(resumeText, weightedKeywords.mustHave);
+  const preferredCoverage = getWeightedKeywordCoverage(resumeText, weightedKeywords.preferred);
+  const mergedCoverage = getWeightedKeywordCoverage(resumeText, weightedKeywords.merged);
+
+  const requiredKeywords = [...weightedKeywords.merged.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([token]) => token)
+    .slice(0, 24);
+
   const jobText = [
     targetTitle,
     jobRow?.description,
@@ -460,75 +694,123 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
     jobRow?.job_location
   ].join(' ');
 
-  const requiredKeywords = extractJobKeywords(jobRow);
-  const keywordResult = getKeywordMatch(resumeText, requiredKeywords);
-  const textSimilarityScore = getTfIdfSimilarity(jobText, resumeText);
+  const tfidfScore = getTfIdfSimilarity(jobText, resumeText);
   const titleAlignmentScore = getTitleAlignmentScore(targetTitle, resumeText);
+  const benchmarkScore = getRoleBenchmarkCoverageScore(resumeText, benchmarkKeywords);
   const formatResult = checkResumeFormat(resumeText, targetTitle);
   const impactResult = getImpactScore(resumeText);
   const sectionCoverage = getSectionCoverage(resumeText);
+  const seniority = getSeniorityAlignment({ resumeText, jobRow });
 
-  const similarityScore = clamp(Math.round((textSimilarityScore * 0.7) + (titleAlignmentScore * 0.3)), 0, 100);
-  const finalScore = Math.round(
-    (keywordResult.score * 0.45)
-    + (similarityScore * 0.3)
-    + (formatResult.score * 0.15)
-    + (impactResult.score * 0.1)
+  const similarityScore = clamp(
+    Math.round((tfidfScore * 0.55) + (titleAlignmentScore * 0.25) + (benchmarkScore * 0.2)),
+    0,
+    100
   );
-  const normalizedFinalScore = clamp(finalScore, 0, 100);
+  const keywordScore = clamp(
+    Math.round((mustHaveCoverage.score * 0.7) + (preferredCoverage.score * 0.3)),
+    0,
+    100
+  );
+
+  const rawScore = (
+    (mustHaveCoverage.score * 0.22)
+    + (keywordScore * 0.18)
+    + (similarityScore * 0.18)
+    + (titleAlignmentScore * 0.08)
+    + (benchmarkScore * 0.08)
+    + (seniority.score * 0.1)
+    + (formatResult.score * 0.08)
+    + (impactResult.score * 0.08)
+  );
+
+  const confidenceScore = getConfidenceScore({
+    resumeWordCount: formatResult.wordCount,
+    jobText,
+    mergedKeywords: requiredKeywords,
+    mustHaveKeywords: [...weightedKeywords.mustHave.keys()],
+    resumeYears: seniority.resumeYears
+  });
+
+  const normalizedFinalScore = applyBusinessScoreGuards({
+    score: rawScore,
+    mustHaveScore: mustHaveCoverage.score,
+    similarityScore,
+    titleAlignmentScore,
+    seniorityScore: seniority.score,
+    requiredKeywordCount: requiredKeywords.length
+  });
+
   const riskFlags = getResumeRiskFlags({
     resumeText,
     jobText,
     formatResult,
-    keywordResult,
+    keywordCoverage: mergedCoverage,
+    mustHaveCoverage,
     similarityScore,
     impactResult,
     requiredKeywords,
-    targetTitle
+    targetTitle,
+    seniority
   });
-  const confidenceScore = getConfidenceScore({
-    resumeWordCount: formatResult.wordCount,
-    jobText,
-    requiredKeywords
+
+  const businessLogicFlags = getBusinessLogicFlags({
+    mustHaveScore: mustHaveCoverage.score,
+    titleAlignmentScore,
+    similarityScore,
+    impactScore: impactResult.score,
+    seniority,
+    confidenceScore
   });
 
   const suggestions = [
     ...(titleAlignmentScore < 60 && targetTitle
       ? [`Align your headline and summary more clearly with "${targetTitle}".`]
       : []),
-    ...(keywordResult.missing.length > 0
-      ? [`Add missing role keywords where genuinely relevant, especially ${keywordResult.missing.slice(0, 4).join(', ')}.`]
+    ...(mustHaveCoverage.missing.length > 0
+      ? [`Strengthen must-have role coverage, especially ${mustHaveCoverage.missing.slice(0, 4).join(', ')}.`]
+      : []),
+    ...(mergedCoverage.missing.length > 0
+      ? [`Add missing role keywords where genuinely relevant, especially ${mergedCoverage.missing.slice(0, 4).join(', ')}.`]
       : []),
     ...formatResult.suggestions,
     ...impactResult.suggestions
   ];
 
-  const warnings = [...formatResult.warnings, ...riskFlags];
-  if (similarityScore < 45) {
-    warnings.push('The resume content is only weakly aligned with the selected role or job description.');
-  }
-  if (confidenceScore < 55) {
-    warnings.push('Analysis confidence is limited because resume text or job details are incomplete.');
-  }
+  const warnings = [
+    ...formatResult.warnings,
+    ...riskFlags,
+    ...(similarityScore < 45 ? ['The resume content is only weakly aligned with the selected role or job description.'] : []),
+    ...(confidenceScore < 55 ? ['Analysis confidence is limited because resume text or job details are incomplete.'] : []),
+    ...(seniority.message ? [seniority.message] : [])
+  ];
 
   return {
     score: normalizedFinalScore,
-    keywordScore: Number(keywordResult.score.toFixed(2)),
+    keywordScore: Number(keywordScore.toFixed(2)),
+    mustHaveScore: Number(mustHaveCoverage.score.toFixed(2)),
     similarityScore: Number(similarityScore.toFixed(2)),
+    titleScore: Number(titleAlignmentScore.toFixed(2)),
+    seniorityScore: Number(seniority.score.toFixed(2)),
+    benchmarkScore: Number(benchmarkScore.toFixed(2)),
     formatScore: Number(formatResult.score.toFixed(2)),
     impactScore: Number(impactResult.score.toFixed(2)),
     confidenceScore: Number(confidenceScore.toFixed(2)),
     resumeWordCount: formatResult.wordCount,
     fitLevel: getFitLevel(normalizedFinalScore),
-    matchedKeywords: keywordResult.matched.slice(0, 18),
-    missingKeywords: keywordResult.missing.slice(0, 18),
+    matchedKeywords: [...new Set([...mustHaveCoverage.matched, ...mergedCoverage.matched])].slice(0, 24),
+    missingKeywords: [...new Set([...mustHaveCoverage.missing, ...mergedCoverage.missing])].slice(0, 24),
+    mustHaveKeywords: [...new Set([...weightedKeywords.mustHave.keys()])].slice(0, 16),
     sectionCoverage,
     riskFlags,
-    priorityActions: [...new Set(suggestions)].filter(Boolean).slice(0, 6),
-    warnings: [...new Set(warnings)].slice(0, 8),
-    suggestions: [...new Set(suggestions)].filter(Boolean).slice(0, 12),
+    businessLogicFlags,
+    priorityActions: [...new Set(suggestions)].filter(Boolean).slice(0, 8),
+    warnings: [...new Set(warnings)].slice(0, 10),
+    suggestions: [...new Set(suggestions)].filter(Boolean).slice(0, 14),
     targetRole: targetTitle,
-    benchmarkKeywords
+    benchmarkKeywords,
+    seniorityInsights: seniority.message || '',
+    resumeYearsExperience: seniority.resumeYears
   };
 };
 

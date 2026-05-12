@@ -49,9 +49,11 @@ test('runAtsAnalysis rewards role-aligned resumes and surfaces actionable improv
 
   assert.ok(strong.score > weak.score, `expected strong score ${strong.score} to be greater than weak score ${weak.score}`);
   assert.ok(strong.keywordScore > weak.keywordScore);
+  assert.ok(strong.mustHaveScore > weak.mustHaveScore);
   assert.ok(strong.similarityScore > weak.similarityScore);
   assert.ok(strong.matchedKeywords.includes('react'));
   assert.ok(strong.matchedKeywords.includes('typescript'));
+  assert.ok(strong.mustHaveKeywords.includes('react'));
   assert.ok(weak.missingKeywords.includes('react'));
   assert.ok(weak.suggestions.length > 0);
 });
@@ -79,4 +81,32 @@ test('runAtsAnalysis surfaces normal case metadata for UI display', () => {
   assert.ok(result.resumeWordCount > 0);
   assert.ok(result.sectionCoverage.some((item) => item.key === 'skills' && item.present));
   assert.ok(Array.isArray(result.priorityActions));
+  assert.equal(typeof result.seniorityScore, 'number');
+  assert.ok(Array.isArray(result.businessLogicFlags));
+});
+
+test('runAtsAnalysis penalizes clear seniority mismatch and surfaces business flags', () => {
+  const juniorJob = {
+    ...frontendJob,
+    job_title: 'Junior Frontend Developer',
+    description: 'Looking for a junior frontend developer with 1-2 years of experience in React, JavaScript, HTML, CSS, and REST API integration.',
+    experience_level: 'junior'
+  };
+
+  const overqualifiedResume = [
+    'Senior frontend architect with 14 years of experience building enterprise React platforms.',
+    'Summary',
+    'Led large engineering teams, defined architecture, and owned multi-product delivery.',
+    'Skills',
+    'React, JavaScript, TypeScript, HTML, CSS, REST API, Leadership',
+    'Experience',
+    'Built and scaled frontend systems across multiple business units and managed platform strategy.',
+    'Education',
+    'B.Tech'
+  ].join('\n');
+
+  const result = runAtsAnalysis({ jobRow: juniorJob, resumeText: overqualifiedResume });
+
+  assert.ok(result.seniorityInsights);
+  assert.ok(result.businessLogicFlags.includes('possible_overqualification') || result.riskFlags.some((item) => /overqualified/i.test(item)));
 });
