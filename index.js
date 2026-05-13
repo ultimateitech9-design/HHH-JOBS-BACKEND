@@ -57,10 +57,15 @@ const setCatalogCacheHeaders = (_req, res, next) => {
   res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
   next();
 };
+const captureRawBody = (req, _res, buffer) => {
+  if (buffer?.length) {
+    req.rawBody = buffer.toString('utf8');
+  }
+};
 
 app.disable('x-powered-by');
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '10mb', verify: captureRawBody }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.use((req, res, next) => {

@@ -22,6 +22,7 @@ const {
   updateRolePlanBySlug,
   quoteRolePlan,
   createRolePlanPurchase,
+  createRolePlanAutopaySession,
   getRolePlanPurchaseById,
   updateRolePlanPurchaseStatus,
   listRolePlanPurchases,
@@ -32,6 +33,7 @@ const {
 } = require('../services/commercial');
 const { PURCHASE_STATUSES } = require('../modules/pricing/constants');
 const { logAudit, getClientIp } = require('../services/audit');
+const { notifyPlanPurchased, notifyPaymentReceived } = require('../services/planNotifications');
 
 const router = express.Router();
 
@@ -180,18 +182,42 @@ router.post('/role-plans/quote', requireAuth, requireActiveUser, requireRole(...
 
 router.post('/role-plans/checkout', requireAuth, requireActiveUser, requireRole(...ROLE_PLAN_ALLOWED_ROLES), asyncHandler(async (req, res) => {
   const paymentStatus = String(req.body?.paymentStatus || PURCHASE_STATUSES.PENDING).toLowerCase();
+  const provider = String(req.body?.provider || '').trim().toLowerCase();
   if (![PURCHASE_STATUSES.PENDING, PURCHASE_STATUSES.PAID].includes(paymentStatus)) {
     res.status(400).send({ status: false, message: 'paymentStatus must be pending or paid' });
     return;
   }
 
   try {
+    if (provider === 'razorpay') {
+      const checkout = await createRolePlanAutopaySession({
+        user: req.user,
+        audienceRole: req.user.role,
+        planSlug: req.body?.planSlug || req.body?.plan_slug,
+        quantity: req.body?.quantity,
+        couponCode: req.body?.couponCode || req.body?.coupon_code || ''
+      });
+
+      res.status(201).send({
+        status: true,
+        mode: checkout.mode,
+        alreadyAuthorized: Boolean(checkout.alreadyAuthorized),
+        fallbackReason: checkout.fallbackReason || null,
+        quote: checkout.quote,
+        purchase: checkout.purchase || null,
+        subscription: checkout.subscription,
+        grantedCreditId: checkout.grantedCredit?.id || null,
+        paymentSession: checkout.paymentSession
+      });
+      return;
+    }
+
     const checkout = await createRolePlanPurchase({
       user: req.user,
       audienceRole: req.user.role,
       planSlug: req.body?.planSlug || req.body?.plan_slug,
       quantity: req.body?.quantity,
-      provider: req.body?.provider,
+      provider,
       referenceId: req.body?.referenceId,
       note: req.body?.note,
       couponCode: req.body?.couponCode || req.body?.coupon_code || '',
@@ -214,6 +240,25 @@ router.post('/role-plans/checkout', requireAuth, requireActiveUser, requireRole(
       },
       ipAddress: getClientIp(req)
     });
+
+    // Send plan activation notification if payment is confirmed
+    if (checkout.purchase.status === PURCHASE_STATUSES.PAID) {
+      notifyPlanPurchased({
+        userId: req.user.id,
+        planName: checkout.quote?.plan?.name || checkout.purchase.role_plan_slug,
+        planSlug: checkout.purchase.role_plan_slug,
+        amount: checkout.purchase.total_amount || 0,
+        currency: checkout.quote?.currency || 'INR'
+      }).catch(() => {});
+
+      notifyPaymentReceived({
+        userId: req.user.id,
+        amount: checkout.purchase.total_amount || 0,
+        currency: checkout.quote?.currency || 'INR',
+        referenceId: checkout.purchase.id,
+        planName: checkout.quote?.plan?.name || checkout.purchase.role_plan_slug
+      }).catch(() => {});
+    }
 
     res.status(201).send({
       status: true,
@@ -300,6 +345,18 @@ router.patch('/role-plan-purchases/:id/status', requireAuth, requireActiveUser, 
       },
       ipAddress: getClientIp(req)
     });
+
+    // Notify user when payment status changes to paid
+    if (nextStatus === PURCHASE_STATUSES.PAID && existing.status !== PURCHASE_STATUSES.PAID) {
+      const ownerUserId = existing.user_id || req.user.id;
+      notifyPlanPurchased({
+        userId: ownerUserId,
+        planName: updated.purchase.role_plan_slug,
+        planSlug: updated.purchase.role_plan_slug,
+        amount: updated.purchase.total_amount || 0,
+        currency: 'INR'
+      }).catch(() => {});
+    }
 
     res.send({
       status: true,

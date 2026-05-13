@@ -27,6 +27,7 @@ const {
   sanitizePanelMembers,
   buildCalendarEventUrl
 } = require('../services/interviews');
+const { attachPlanAccess, requirePlanFeature } = require('../middleware/planAccess');
 
 const router = express.Router();
 
@@ -356,7 +357,7 @@ router.get('/analytics', asyncHandler(async (req, res) => {
   });
 }));
 
-router.get('/candidates/search', requireApprovedHr, asyncHandler(async (req, res) => {
+router.get('/candidates/search', requireApprovedHr, attachPlanAccess, asyncHandler(async (req, res) => {
   try {
     const result = await searchDiscoverableCandidates({
       hrUser: req.user,
@@ -461,7 +462,7 @@ router.post('/candidates/:studentId/interest', requireApprovedHr, asyncHandler(a
   res.status(201).send({ status: true, interest: data });
 }));
 
-router.post('/candidates/bulk-interest', requireApprovedHr, asyncHandler(async (req, res) => {
+router.post('/candidates/bulk-interest', requireApprovedHr, requirePlanFeature('hr.candidate_bulk_interest'), asyncHandler(async (req, res) => {
   const studentIds = Array.isArray(req.body?.studentIds) ? req.body.studentIds.filter((id) => isValidUuid(id)) : [];
   const access = await getHrSourcingAccess({ userId: req.user.id, role: req.user.role });
   if (!access.hasPaidAccess) {

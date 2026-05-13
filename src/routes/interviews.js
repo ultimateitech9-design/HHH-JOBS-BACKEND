@@ -1,5 +1,10 @@
 const express = require('express');
 const multer = require('multer');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const ts = require('typescript');
 const { ROLES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
@@ -27,6 +32,19 @@ const upload = multer({
 
 const router = express.Router();
 
+const CODE_EXECUTION_TIMEOUT_MS = 15000;
+const LOCAL_CODE_RUNNER_LANGUAGE_ALIASES = {
+  javascript: 'javascript',
+  js: 'javascript',
+  typescript: 'typescript',
+  ts: 'typescript',
+  python: 'python',
+  py: 'python',
+  java: 'java',
+  cpp: 'cpp',
+  'c++': 'cpp'
+};
+
 router.use(requireAuth, requireActiveUser, requireRole(
   ROLES.STUDENT,
   ROLES.RETIRED_EMPLOYEE,
@@ -38,6 +56,345 @@ router.use(requireAuth, requireActiveUser, requireRole(
 const isValidDateString = (value) => {
   if (!value) return false;
   return !Number.isNaN(new Date(value).getTime());
+};
+
+const createCodeExecutionTimeoutError = () => {
+  const error = new Error('Code execution timed out. Please try a smaller or faster program.');
+  error.statusCode = 504;
+  return error;
+};
+
+const createCodeExecutionError = (message, statusCode = 400) => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+};
+
+const canAccessPath = async (targetPath) => {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch (error) {
+    return false;
+  }
+};
+
+const isResolvableCommand = async (command) => {
+  const normalizedCommand = String(command || '').trim();
+  if (!normalizedCommand) return false;
+
+  if (normalizedCommand.includes('\\') || normalizedCommand.includes('/')) {
+    return canAccessPath(normalizedCommand);
+  }
+
+  try {
+    await runCommand({
+      command: 'where.exe',
+      args: [normalizedCommand],
+      cwd: process.cwd(),
+      timeoutMs: 4000
+    });
+    return true;
+  } catch (error) {
+    return false;
+  }
+};
+
+const resolveAvailableCommand = async (candidates, label) => {
+  for (const candidate of candidates) {
+    if (await isResolvableCommand(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw createCodeExecutionError(`Required compiler/runtime for ${label} is not installed on this server.`, 503);
+};
+
+const resolveLlvmMingwCommand = async (commandName) => {
+  const packagesRoot = process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Packages')
+    : '';
+
+  if (!packagesRoot || !(await canAccessPath(packagesRoot))) {
+    return null;
+  }
+
+  try {
+    const packageEntries = await fs.readdir(packagesRoot, { withFileTypes: true });
+    const llvmPackageDir = packageEntries.find((entry) =>
+      entry.isDirectory() && entry.name.startsWith('MartinStorsjo.LLVM-MinGW.UCRT_')
+    );
+
+    if (!llvmPackageDir) return null;
+
+    const llvmPackagePath = path.join(packagesRoot, llvmPackageDir.name);
+    const llvmPackageContents = await fs.readdir(llvmPackagePath, { withFileTypes: true });
+    const toolchainDir = llvmPackageContents.find((entry) =>
+      entry.isDirectory() && entry.name.startsWith('llvm-mingw-')
+    );
+
+    if (!toolchainDir) return null;
+
+    const candidatePath = path.join(llvmPackagePath, toolchainDir.name, 'bin', commandName);
+    return (await canAccessPath(candidatePath)) ? candidatePath : null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const runCommand = ({ command, args = [], cwd, stdin = '', timeoutMs = CODE_EXECUTION_TIMEOUT_MS }) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: 'pipe',
+      windowsHide: true
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      reject(createCodeExecutionTimeoutError());
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      if (error.code === 'ENOENT') {
+        reject(createCodeExecutionError(`Required compiler/runtime "${command}" is not installed on this server.`, 503));
+        return;
+      }
+      reject(error);
+    });
+
+    child.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      resolve({
+        code,
+        signal,
+        stdout,
+        stderr,
+        output: `${stdout}${stderr}`.trim()
+      });
+    });
+
+    if (stdin) {
+      child.stdin.write(stdin);
+    }
+    child.stdin.end();
+  });
+
+const ensureTempWorkspace = async () =>
+  fs.mkdtemp(path.join(os.tmpdir(), 'hhh-interview-run-'));
+
+const resolveJavaEntryClass = (source) => {
+  const publicClassMatch = String(source || '').match(/\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)/);
+  if (publicClassMatch?.[1]) return publicClassMatch[1];
+
+  const classMatch = String(source || '').match(/\bclass\s+([A-Za-z_][A-Za-z0-9_]*)/);
+  if (classMatch?.[1]) return classMatch[1];
+
+  return 'Main';
+};
+
+const executeInterviewCode = async ({ language, source, stdin = '' }) => {
+  const normalizedLanguage = LOCAL_CODE_RUNNER_LANGUAGE_ALIASES[String(language || '').trim().toLowerCase()];
+  if (!normalizedLanguage) {
+    throw createCodeExecutionError('Unsupported language requested for interview compiler.', 400);
+  }
+
+  const workspaceDir = await ensureTempWorkspace();
+  try {
+    if (normalizedLanguage === 'javascript') {
+      const filePath = path.join(workspaceDir, 'main.js');
+      await fs.writeFile(filePath, String(source || ''), 'utf8');
+      const run = await runCommand({
+        command: process.execPath,
+        args: [filePath],
+        cwd: workspaceDir,
+        stdin
+      });
+
+      return {
+        runtime: { language: 'javascript', version: process.version },
+        compile: null,
+        run
+      };
+    }
+
+    if (normalizedLanguage === 'typescript') {
+      const tsFilePath = path.join(workspaceDir, 'main.ts');
+      const jsFilePath = path.join(workspaceDir, 'main.js');
+      await fs.writeFile(tsFilePath, String(source || ''), 'utf8');
+
+      const transpiled = ts.transpileModule(String(source || ''), {
+        compilerOptions: {
+          module: ts.ModuleKind.CommonJS,
+          target: ts.ScriptTarget.ES2020,
+          esModuleInterop: true,
+          strict: false
+        },
+        reportDiagnostics: true
+      });
+
+      const diagnostics = Array.isArray(transpiled.diagnostics)
+        ? transpiled.diagnostics.map((diagnostic) => {
+            const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
+            return message.trim();
+          }).filter(Boolean)
+        : [];
+
+      const compileOutput = diagnostics.join('\n').trim();
+      if (diagnostics.some((message) => /error/i.test(message))) {
+        return {
+          runtime: { language: 'typescript', version: ts.version },
+          compile: {
+            code: 1,
+            signal: null,
+            stdout: '',
+            stderr: compileOutput,
+            output: compileOutput
+          },
+          run: null
+        };
+      }
+
+      await fs.writeFile(jsFilePath, transpiled.outputText || '', 'utf8');
+      const run = await runCommand({
+        command: process.execPath,
+        args: [jsFilePath],
+        cwd: workspaceDir,
+        stdin
+      });
+
+      return {
+        runtime: { language: 'typescript', version: ts.version },
+        compile: compileOutput
+          ? {
+              code: 0,
+              signal: null,
+              stdout: compileOutput,
+              stderr: '',
+              output: compileOutput
+            }
+          : null,
+        run
+      };
+    }
+
+    if (normalizedLanguage === 'python') {
+      const filePath = path.join(workspaceDir, 'main.py');
+      await fs.writeFile(filePath, String(source || ''), 'utf8');
+      const run = await runCommand({
+        command: 'python',
+        args: [filePath],
+        cwd: workspaceDir,
+        stdin
+      });
+
+      return {
+        runtime: { language: 'python', version: 'local-python' },
+        compile: null,
+        run
+      };
+    }
+
+    if (normalizedLanguage === 'java') {
+      const entryClass = resolveJavaEntryClass(source);
+      const filePath = path.join(workspaceDir, `${entryClass}.java`);
+      await fs.writeFile(filePath, String(source || ''), 'utf8');
+
+      const compile = await runCommand({
+        command: 'javac',
+        args: [filePath],
+        cwd: workspaceDir
+      });
+
+      if ((compile.code ?? 0) !== 0) {
+        return {
+          runtime: { language: 'java', version: 'local-jdk' },
+          compile,
+          run: null
+        };
+      }
+
+      const run = await runCommand({
+        command: 'java',
+        args: ['-cp', workspaceDir, entryClass],
+        cwd: workspaceDir,
+        stdin
+      });
+
+      return {
+        runtime: { language: 'java', version: 'local-jdk' },
+        compile,
+        run
+      };
+    }
+
+    if (normalizedLanguage === 'cpp') {
+      const filePath = path.join(workspaceDir, 'main.cpp');
+      const executablePath = path.join(workspaceDir, 'main.exe');
+      const llvmMingwGpp = await resolveLlvmMingwCommand('g++.exe');
+      const llvmMingwClangpp = await resolveLlvmMingwCommand('clang++.exe');
+      const cppCompilerCommand = await resolveAvailableCommand(
+        [
+          'g++',
+          llvmMingwGpp,
+          'clang++.exe',
+          llvmMingwClangpp,
+          'C:\\Program Files\\LLVM\\bin\\clang++.exe'
+        ].filter(Boolean),
+        'C++'
+      );
+      await fs.writeFile(filePath, String(source || ''), 'utf8');
+
+      const compile = await runCommand({
+        command: cppCompilerCommand,
+        args: [filePath, '-std=c++17', '-O2', '-o', executablePath],
+        cwd: workspaceDir
+      });
+
+      if ((compile.code ?? 0) !== 0) {
+        return {
+          runtime: { language: 'cpp', version: path.basename(cppCompilerCommand).toLowerCase().includes('clang') ? 'local-clang' : 'local-g++' },
+          compile,
+          run: null
+        };
+      }
+
+      const run = await runCommand({
+        command: executablePath,
+        cwd: workspaceDir,
+        stdin
+      });
+
+      return {
+        runtime: { language: 'cpp', version: path.basename(cppCompilerCommand).toLowerCase().includes('clang') ? 'local-clang' : 'local-g++' },
+        compile,
+        run
+      };
+    }
+
+    throw createCodeExecutionError('Unsupported language requested for interview compiler.', 400);
+  } finally {
+    await fs.rm(workspaceDir, { recursive: true, force: true }).catch(() => {});
+  }
 };
 
 const getAuthorizedContext = async (req, res) => {
@@ -275,6 +632,43 @@ router.patch('/:id/workspace', asyncHandler(async (req, res) => {
 
   const refreshed = await getInterviewContext({ interviewId: context.interview.id, user: req.user });
   await sendRoomPayload({ req, res, context: refreshed });
+}));
+
+router.post('/:id/code/execute', asyncHandler(async (req, res) => {
+  const context = await getAuthorizedContext(req, res);
+  if (!context) return;
+
+  const language = String(req.body?.language || '').trim().toLowerCase();
+  const source = String(req.body?.source || '');
+  const stdin = String(req.body?.stdin || '');
+
+  if (!language) {
+    res.status(400).send({ status: false, message: 'Language is required.' });
+    return;
+  }
+
+  if (!source.trim()) {
+    res.status(400).send({ status: false, message: 'Source code is required.' });
+    return;
+  }
+
+  if (source.length > 25000) {
+    res.status(413).send({ status: false, message: 'Source code is too large for the interview compiler.' });
+    return;
+  }
+
+  try {
+    const execution = await executeInterviewCode({ language, source, stdin });
+    res.send({
+      status: true,
+      execution
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).send({
+      status: false,
+      message: error.message || 'Unable to execute the submitted code.'
+    });
+  }
 }));
 
 router.post('/:id/end', asyncHandler(async (req, res) => {

@@ -17,6 +17,7 @@ const {
   enqueueCampusDriveFanout,
   enqueueCampusInviteEmail
 } = require('../services/sideEffectQueue');
+const { attachPlanAccess, requirePlanFeature } = require('../middleware/planAccess');
 
 const router = express.Router();
 const ELIGIBLE_ACCOUNT_STATUSES = new Set(['active', 'linked_existing']);
@@ -883,7 +884,7 @@ router.get('/students', asyncHandler(async (req, res) => {
   });
 }));
 
-router.post('/students/import', upload.single('csv'), asyncHandler(async (req, res) => {
+router.post('/students/import', requirePlanFeature('campus.bulk_student_upload'), upload.single('csv'), asyncHandler(async (req, res) => {
   if (!ensureServerConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
@@ -1850,7 +1851,7 @@ router.get('/stats', asyncHandler(async (req, res) => {
 
 // ── Placement Report Export ───────────────────────────────────────────────────
 
-router.get('/reports/export', asyncHandler(async (req, res) => {
+router.get('/reports/export', requirePlanFeature('campus.reports_export'), asyncHandler(async (req, res) => {
   if (!ensureServerConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);

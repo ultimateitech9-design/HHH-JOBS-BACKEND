@@ -26,7 +26,7 @@ const {
 } = require('../services/accountRoles');
 const { backfillCampusDriveNotificationsForStudent } = require('../services/campusDrives');
 const { enqueueWelcomeEmail } = require('../services/sideEffectQueue');
-const { upsertCommercialLeadForUser } = require('../services/commercial');
+const { upsertCommercialLeadForUser, ensureRolePlanTrialSubscription } = require('../services/commercial');
 const {
   isEmployeeProfileRole,
   getProfileRoleKey,
@@ -258,6 +258,17 @@ const queueCommercialLeadSyncForUser = (user = {}) => {
       name: user.name,
       email: user.email,
       mobile: user.mobile
+    });
+  });
+};
+const queueRolePlanTrialProvisionForUser = (user = {}) => {
+  if (![ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT].includes(String(user?.role || '').trim().toLowerCase())) return;
+
+  runAsyncSideEffect('role-plan-trial-provision', async () => {
+    await ensureRolePlanTrialSubscription({
+      userId: user.id,
+      audienceRole: user.role,
+      user
     });
   });
 };
@@ -957,6 +968,7 @@ const completeOAuthFlow = async ({
 
   if (created) {
     queueEimagerSyncForUser({ user: authUser, fallbackProfile: authUser, source: 'oauth-signup' });
+    queueRolePlanTrialProvisionForUser(authUser);
   }
 
   if (created) {
@@ -1504,6 +1516,7 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
     });
     queueWelcomeEmailForUser(userRow);
     queueCommercialLeadSyncForUser(userRow);
+    queueRolePlanTrialProvisionForUser(userRow);
 
     const token = createAuthToken(userRow);
     const publicUser = isStudentPortalRole(userRow.role) && pendingSignup?.reqBody?.dateOfBirth
@@ -1595,6 +1608,7 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
   queueEimagerSyncForUser({ user, source: 'signup-verified' });
   queueWelcomeEmailForUser(user);
   queueCommercialLeadSyncForUser(user);
+  queueRolePlanTrialProvisionForUser(user);
 
   const token = createAuthToken(user);
   let publicUser = user;

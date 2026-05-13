@@ -1,10 +1,15 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
-const { asyncHandler } = require('../utils/helpers');
+const { asyncHandler, isValidUuid } = require('../utils/helpers');
 const { ROLES } = require('../constants');
 const razorpay = require('../services/razorpay');
-const { createPlanPurchase, updatePurchaseStatus, getPurchaseById } = require('../services/pricing');
+const { createPlanPurchase } = require('../services/pricing');
+const {
+  normalizeAudienceRole,
+  confirmRolePlanAutopayPayment,
+  handleRoleSubscriptionWebhook
+} = require('../services/commercial');
 
 const router = express.Router();
 
@@ -47,17 +52,51 @@ router.post('/verify-payment', requireAuth, requireActiveUser, asyncHandler(asyn
   res.json({ status: true, ...result });
 }));
 
+router.post('/role-subscriptions/verify', requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT, ROLES.ADMIN), asyncHandler(async (req, res) => {
+  const localSubscriptionId = String(req.body?.localSubscriptionId || '').trim();
+  const razorpaySubscriptionId = String(req.body?.razorpaySubscriptionId || '').trim();
+  const razorpayPaymentId = String(req.body?.razorpayPaymentId || '').trim();
+  const razorpaySignature = String(req.body?.razorpaySignature || '').trim();
+  const audienceRole = normalizeAudienceRole(req.body?.audienceRole || req.user?.role);
+
+  if (!isValidUuid(localSubscriptionId) || !razorpaySubscriptionId || !razorpayPaymentId || !razorpaySignature || !audienceRole) {
+    return res.status(400).json({ status: false, message: 'Missing recurring auto-pay verification fields' });
+  }
+
+  const subscription = await confirmRolePlanAutopayPayment({
+    userId: req.user.id,
+    audienceRole,
+    localSubscriptionId,
+    razorpaySubscriptionId,
+    razorpayPaymentId,
+    razorpaySignature
+  });
+
+  res.json({ status: true, subscription });
+}));
+
 router.post('/webhook', express.raw({ type: 'application/json' }), asyncHandler(async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
-  const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+  const rawBody = req.rawBody
+    || (Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body));
 
   if (!razorpay.verifyWebhookSignature(rawBody, signature)) {
     return res.status(400).json({ status: false, message: 'Invalid webhook signature' });
   }
 
-  const event = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
-  const result = await razorpay.handleWebhookEvent(event);
-  res.json({ status: true, ...result });
+  const event = typeof req.body === 'string'
+    ? JSON.parse(req.body)
+    : (Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString('utf8')) : req.body);
+  const [jobResult, roleResult] = await Promise.all([
+    razorpay.handleWebhookEvent(event),
+    handleRoleSubscriptionWebhook(event)
+  ]);
+
+  res.json({
+    status: true,
+    jobResult,
+    roleResult
+  });
 }));
 
 router.get('/payment/:paymentId', requireAuth, requireActiveUser, asyncHandler(async (req, res) => {

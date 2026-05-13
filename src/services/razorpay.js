@@ -9,6 +9,11 @@ const RAZORPAY_API = 'https://api.razorpay.com/v1';
 
 const isRazorpayConfigured = () => Boolean(RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET);
 
+const getPublicConfig = () => ({
+  configured: isRazorpayConfigured(),
+  keyId: RAZORPAY_KEY_ID
+});
+
 const razorpayFetch = async (path, { method = 'GET', body } = {}) => {
   if (!isRazorpayConfigured()) {
     throw Object.assign(new Error('Razorpay is not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.'), { statusCode: 500 });
@@ -41,7 +46,7 @@ const razorpayFetch = async (path, { method = 'GET', body } = {}) => {
 const createRazorpayOrder = async ({ amount, currency = 'INR', receipt, notes = {} }) => {
   const amountInPaise = Math.round(Number(amount) * 100);
   if (!amountInPaise || amountInPaise < 100) {
-    throw Object.assign(new Error('Minimum order amount is ₹1'), { statusCode: 400 });
+    throw Object.assign(new Error('Minimum order amount is Rs 1'), { statusCode: 400 });
   }
 
   return razorpayFetch('/orders', {
@@ -55,9 +60,60 @@ const createRazorpayOrder = async ({ amount, currency = 'INR', receipt, notes = 
   });
 };
 
-const verifyRazorpaySignature = ({ orderId, paymentId, signature }) => {
+const createRazorpayPlan = async ({
+  period,
+  interval,
+  amount,
+  currency = 'INR',
+  name,
+  description = '',
+  notes = {}
+} = {}) => razorpayFetch('/plans', {
+  method: 'POST',
+  body: {
+    period,
+    interval,
+    item: {
+      name: String(name || 'HHH Jobs Plan').slice(0, 128),
+      description: String(description || '').slice(0, 256),
+      amount: Math.round(Number(amount || 0) * 100),
+      currency
+    },
+    notes
+  }
+});
+
+const createRazorpaySubscription = async ({
+  planId,
+  totalCount,
+  quantity = 1,
+  customerNotify = true,
+  startAt = null,
+  expireBy = null,
+  notes = {}
+} = {}) => razorpayFetch('/subscriptions', {
+  method: 'POST',
+  body: {
+    plan_id: planId,
+    total_count: totalCount,
+    quantity: Math.max(1, parseInt(quantity || 1, 10) || 1),
+    customer_notify: Boolean(customerNotify),
+    ...(startAt ? { start_at: startAt } : {}),
+    ...(expireBy ? { expire_by: expireBy } : {}),
+    notes
+  }
+});
+
+const verifyRazorpayOrderSignature = ({ orderId, paymentId, signature }) => {
   if (!RAZORPAY_KEY_SECRET) return false;
   const body = `${orderId}|${paymentId}`;
+  const expected = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(body).digest('hex');
+  return expected === signature;
+};
+
+const verifyRazorpaySubscriptionSignature = ({ subscriptionId, paymentId, signature }) => {
+  if (!RAZORPAY_KEY_SECRET) return false;
+  const body = `${paymentId}|${subscriptionId}`;
   const expected = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(body).digest('hex');
   return expected === signature;
 };
@@ -69,6 +125,7 @@ const verifyWebhookSignature = (rawBody, webhookSignature) => {
 };
 
 const fetchPaymentDetails = async (paymentId) => razorpayFetch(`/payments/${paymentId}`);
+const fetchSubscriptionDetails = async (subscriptionId) => razorpayFetch(`/subscriptions/${subscriptionId}`);
 
 const initiateRefund = async (paymentId, { amount, notes = {} } = {}) => {
   const body = { notes };
@@ -110,7 +167,7 @@ const createCheckoutOrder = async ({ purchaseId, hrId, planSlug, totalAmount, cu
 };
 
 const confirmCheckoutPayment = async ({ razorpayOrderId, razorpayPaymentId, razorpaySignature, purchaseId }) => {
-  const isValid = verifyRazorpaySignature({
+  const isValid = verifyRazorpayOrderSignature({
     orderId: razorpayOrderId,
     paymentId: razorpayPaymentId,
     signature: razorpaySignature
@@ -197,11 +254,16 @@ const handleWebhookEvent = async (event) => {
 };
 
 module.exports = {
+  getPublicConfig,
   isRazorpayConfigured,
   createRazorpayOrder,
-  verifyRazorpaySignature,
+  createRazorpayPlan,
+  createRazorpaySubscription,
+  verifyRazorpayOrderSignature,
+  verifyRazorpaySubscriptionSignature,
   verifyWebhookSignature,
   fetchPaymentDetails,
+  fetchSubscriptionDetails,
   initiateRefund,
   createCheckoutOrder,
   confirmCheckoutPayment,

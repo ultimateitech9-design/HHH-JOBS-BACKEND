@@ -29,6 +29,7 @@ const {
   sendStudentAutoApplyDigest
 } = require('../services/autoApply');
 const { enqueueRecommendationDigest } = require('../services/sideEffectQueue');
+const { requirePlanFeature } = require('../middleware/planAccess');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -1755,7 +1756,7 @@ router.get('/auto-apply', asyncHandler(async (req, res) => {
   }
 }));
 
-router.put('/auto-apply', asyncHandler(async (req, res) => {
+router.put('/auto-apply', requirePlanFeature('student.auto_apply'), asyncHandler(async (req, res) => {
   const targetUserId = getTargetStudentId(req, 'body');
   const runNow = Boolean(req.body?.runNow);
 
@@ -1829,7 +1830,7 @@ router.put('/auto-apply', asyncHandler(async (req, res) => {
   }
 }));
 
-router.post('/auto-apply/run', asyncHandler(async (req, res) => {
+router.post('/auto-apply/run', requirePlanFeature('student.auto_apply'), asyncHandler(async (req, res) => {
   const targetUserId = getTargetStudentId(req, 'body');
   const limit = Math.min(40, Math.max(1, parseInt(req.body?.limit || '20', 10)));
 
