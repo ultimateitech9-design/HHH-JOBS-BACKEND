@@ -25,13 +25,20 @@ const {
   normalizeInterviewStatus,
   normalizeRoomStatus,
   sanitizePanelMembers,
-  buildCalendarEventUrl
+  buildCalendarEventUrl,
+  getInterviewScheduleCapabilities
 } = require('../services/interviews');
 const { attachPlanAccess, requirePlanFeature } = require('../middleware/planAccess');
 
 const router = express.Router();
 
 router.use(requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN, ROLES.SUPER_ADMIN));
+
+const getInterviewRoomHostId = (interview = {}) => interview.shared_room_host_interview_id || interview.id;
+const uniqueValidUuids = (values = []) => [...new Set((Array.isArray(values) ? values : []).filter((value) => isValidUuid(value)))];
+const MAX_INTERVIEW_ROOM_PARTICIPANTS = 25;
+const DEFAULT_CAMPUS_APPLICANTS_PAGE_SIZE = 25;
+const MAX_CAMPUS_APPLICANTS_PAGE_SIZE = 100;
 
 router.get('/profile', asyncHandler(async (req, res) => {
   const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query.userId)
@@ -704,9 +711,11 @@ router.get('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
   const interviews = data || [];
   const candidateIds = [...new Set(interviews.map((item) => item.candidate_id).filter(Boolean))];
   const jobIds = [...new Set(interviews.map((item) => item.job_id).filter(Boolean))];
+  const campusDriveIds = [...new Set(interviews.map((item) => item.campus_drive_id).filter(Boolean))];
 
   let candidateMap = {};
   let jobMap = {};
+  let campusDriveMap = {};
 
   if (candidateIds.length > 0) {
     const candidatesResp = await supabase
@@ -736,20 +745,63 @@ router.get('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
     jobMap = Object.fromEntries((jobsResp.data || []).map((item) => [item.id, item]));
   }
 
+  if (campusDriveIds.length > 0) {
+    const campusDriveResp = await supabase
+      .from('campus_drives')
+      .select('id, job_title, company_name')
+      .in('id', campusDriveIds);
+
+    if (campusDriveResp.error) {
+      sendSupabaseError(res, campusDriveResp.error);
+      return;
+    }
+
+    campusDriveMap = Object.fromEntries((campusDriveResp.data || []).map((item) => [item.id, item]));
+  }
+
+  const roomGroups = interviews.reduce((acc, item) => {
+    const roomInterviewId = getInterviewRoomHostId(item);
+    if (!acc[roomInterviewId]) {
+      acc[roomInterviewId] = {
+        ids: [],
+        candidateNames: []
+      };
+    }
+    acc[roomInterviewId].ids.push(item.id);
+    const candidateName = candidateMap[item.candidate_id]?.name;
+    if (candidateName) acc[roomInterviewId].candidateNames.push(candidateName);
+    return acc;
+  }, {});
+
   res.send({
     status: true,
     interviews: interviews.map((item) => ({
       ...item,
+      room_interview_id: getInterviewRoomHostId(item),
+      is_group_room: (roomGroups[getInterviewRoomHostId(item)]?.ids.length || 0) > 1,
+      room_participant_count: roomGroups[getInterviewRoomHostId(item)]?.ids.length || 1,
+      room_participant_names: roomGroups[getInterviewRoomHostId(item)]?.candidateNames || [],
       candidate_name: candidateMap[item.candidate_id]?.name || null,
       candidate_email: candidateMap[item.candidate_id]?.email || null,
-      company_name: item.company_name || jobMap[item.job_id]?.company_name || null,
-      job_title: item.job_title || jobMap[item.job_id]?.job_title || null
+      company_name: item.company_name || jobMap[item.job_id]?.company_name || campusDriveMap[item.campus_drive_id]?.company_name || null,
+      job_title: item.job_title || jobMap[item.job_id]?.job_title || campusDriveMap[item.campus_drive_id]?.job_title || null
     }))
   });
 }));
 
 router.post('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
+  const interviewCapabilities = await getInterviewScheduleCapabilities({ force: true });
+  const sourceType = String(req.body?.sourceType || 'job').trim().toLowerCase() === 'campus' ? 'campus' : 'job';
   const applicationId = req.body?.applicationId;
+  const applicationIds = uniqueValidUuids([
+    ...toArray(req.body?.applicationIds),
+    applicationId
+  ]);
+  const campusDriveId = isValidUuid(req.body?.campusDriveId) ? req.body.campusDriveId : null;
+  const campusApplicationIds = uniqueValidUuids([
+    ...toArray(req.body?.campusApplicationIds),
+    req.body?.campusApplicationId
+  ]);
   const scheduledAt = req.body?.scheduledAt;
   const mode = normalizeInterviewMode(req.body?.mode);
   const meetingLink = String(req.body?.meetingLink || '').trim() || null;
@@ -763,100 +815,316 @@ router.post('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
   const panelMembers = sanitizePanelMembers(req.body?.panelMembers);
   const calendarProvider = String(req.body?.calendarProvider || 'google').trim().toLowerCase() || 'google';
   const candidateConsentRequired = req.body?.candidateConsentRequired !== false;
+  const wantsSharedRoom = applicationIds.length > 1 || campusApplicationIds.length > 1;
+  const participantCount = sourceType === 'campus' ? campusApplicationIds.length : applicationIds.length;
 
-  if (!isValidUuid(applicationId) || !scheduledAt) {
-    res.status(400).send({ status: false, message: 'applicationId and scheduledAt are required' });
+  if (!scheduledAt) {
+    res.status(400).send({ status: false, message: 'scheduledAt is required' });
     return;
   }
 
-  const { data: application, error: appError } = await supabase
-    .from('applications')
-    .select('*')
-    .eq('id', applicationId)
-    .maybeSingle();
-
-  if (appError) {
-    sendSupabaseError(res, appError);
-    return;
-  }
-  if (!application) {
-    res.status(404).send({ status: false, message: 'Application not found' });
+  if (participantCount > MAX_INTERVIEW_ROOM_PARTICIPANTS) {
+    res.status(400).send({
+      status: false,
+      message: `A single interview room can include up to ${MAX_INTERVIEW_ROOM_PARTICIPANTS} participants. Filter the list and schedule the remaining students in batches.`
+    });
     return;
   }
 
-  const job = await assertJobOwnership(application.job_id, req.user, res);
-  if (!job) return;
+  if (sourceType === 'campus' && (!interviewCapabilities.hasSourceType || !interviewCapabilities.hasCampusDriveId || !interviewCapabilities.hasCampusApplicationId)) {
+    res.status(409).send({
+      status: false,
+      message: 'Campus interview rooms require the latest interview-room migration. Apply the new Supabase migration and retry.'
+    });
+    return;
+  }
+
+  if (wantsSharedRoom && !interviewCapabilities.hasSharedRoomHostInterviewId) {
+    res.status(409).send({
+      status: false,
+      message: 'Shared interview rooms require the latest interview-room migration. Apply the new Supabase migration and retry.'
+    });
+    return;
+  }
+
+  const targets = [];
+  let schedulingTitleBase = '';
+  let schedulingCompanyName = '';
+  let driveContext = null;
+
+  if (sourceType === 'job') {
+    if (applicationIds.length === 0) {
+      res.status(400).send({ status: false, message: 'Select at least one job applicant.' });
+      return;
+    }
+
+    const { data: applications, error: appError } = await supabase
+      .from('applications')
+      .select('*')
+      .in('id', applicationIds);
+
+    if (appError) {
+      sendSupabaseError(res, appError);
+      return;
+    }
+
+    const applicationRows = applications || [];
+    if (applicationRows.length !== applicationIds.length) {
+      res.status(404).send({ status: false, message: 'One or more selected job applications were not found.' });
+      return;
+    }
+
+    const jobIdsForSelection = [...new Set(applicationRows.map((item) => item.job_id).filter(Boolean))];
+    if (jobIdsForSelection.length !== 1) {
+      res.status(400).send({ status: false, message: 'Select applicants from a single job posting for one shared room.' });
+      return;
+    }
+
+    const job = await assertJobOwnership(jobIdsForSelection[0], req.user, res);
+    if (!job) return;
+
+    schedulingTitleBase = job.job_title;
+    schedulingCompanyName = job.company_name;
+    applicationRows.forEach((application) => {
+      targets.push({
+        sourceType: 'job',
+        applicationId: application.id,
+        jobId: application.job_id,
+        candidateId: application.applicant_id,
+        jobTitle: job.job_title,
+        companyName: job.company_name
+      });
+    });
+  } else {
+    if (!campusDriveId || campusApplicationIds.length === 0) {
+      res.status(400).send({ status: false, message: 'Select a campus drive and at least one campus applicant.' });
+      return;
+    }
+
+    const { data: hrProfile } = await supabase
+      .from('hr_profiles')
+      .select('company_name')
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+
+    const companyName = String(hrProfile?.company_name || '').trim();
+
+    const { data: drive, error: driveErr } = await supabase
+      .from('campus_drives')
+      .select('*, college:colleges!campus_drives_college_id_fkey(id, name, user_id)')
+      .eq('id', campusDriveId)
+      .maybeSingle();
+
+    if (driveErr) {
+      sendSupabaseError(res, driveErr);
+      return;
+    }
+    if (!drive) {
+      res.status(404).send({ status: false, message: 'Campus drive not found.' });
+      return;
+    }
+    if (companyName.toLowerCase() !== String(drive.company_name || '').toLowerCase()) {
+      res.status(403).send({ status: false, message: 'This campus drive does not belong to your company.' });
+      return;
+    }
+
+    const { data: conn } = await supabase
+      .from('campus_connections')
+      .select('id')
+      .eq('company_user_id', req.user.id)
+      .eq('college_id', drive.college_id)
+      .eq('status', 'accepted')
+      .maybeSingle();
+
+    if (!conn) {
+      res.status(403).send({ status: false, message: 'You do not have an accepted connection with this college.' });
+      return;
+    }
+
+    const { data: campusApplications, error: campusAppsErr } = await supabase
+      .from('campus_drive_applications')
+      .select('*')
+      .eq('drive_id', campusDriveId)
+      .eq('college_id', drive.college_id)
+      .in('id', campusApplicationIds);
+
+    if (campusAppsErr) {
+      sendSupabaseError(res, campusAppsErr);
+      return;
+    }
+
+    const campusAppRows = (campusApplications || []).filter((item) => isValidUuid(item.student_user_id));
+    if (campusAppRows.length !== campusApplicationIds.length) {
+      res.status(400).send({ status: false, message: 'One or more selected campus applicants cannot join an interview room yet.' });
+      return;
+    }
+
+    schedulingTitleBase = drive.job_title;
+    schedulingCompanyName = drive.company_name;
+    driveContext = drive;
+    campusAppRows.forEach((application) => {
+      targets.push({
+        sourceType: 'campus',
+        campusDriveId,
+        campusApplicationId: application.id,
+        candidateId: application.student_user_id,
+        jobTitle: drive.job_title,
+        companyName: drive.company_name
+      });
+    });
+  }
 
   const scheduledStart = new Date(scheduledAt);
   const scheduledEndAt = new Date(scheduledStart.getTime() + (durationMinutes * 60 * 1000)).toISOString();
-  const interviewTitle = title || `${job.job_title} ${roundLabel}`;
+  const interviewTitle = title || `${schedulingTitleBase} ${roundLabel}`;
   const calendarEventUrl = calendarProvider === 'google'
     ? buildCalendarEventUrl({
       title: interviewTitle,
       startAt: scheduledStart.toISOString(),
       endAt: scheduledEndAt,
-      details: note || `Join the in-app interview room for ${job.job_title}.`,
+      details: note || `Join the in-app interview room for ${schedulingTitleBase}.`,
       location: mode === 'virtual' ? 'HHH Jobs Interview Room' : (location || 'HHH Jobs')
     })
     : null;
 
-  const { data, error } = await supabase
+  const baseInsert = {
+    hr_id: req.user.id,
+    title: interviewTitle,
+    round_label: roundLabel,
+    scheduled_at: scheduledStart.toISOString(),
+    scheduled_end_at: scheduledEndAt,
+    duration_minutes: durationMinutes,
+    timezone,
+    mode,
+    meeting_link: meetingLink,
+    location,
+    note,
+    room_status: 'scheduled',
+    calendar_provider: calendarProvider,
+    calendar_event_url: calendarEventUrl,
+    panel_mode: panelMode,
+    panel_members: panelMembers,
+    candidate_consent_required: candidateConsentRequired,
+    recording_status: candidateConsentRequired ? 'pending_consent' : 'ready'
+  };
+  if (interviewCapabilities.hasSourceType) {
+    baseInsert.source_type = sourceType;
+  }
+
+  const anchorTarget = targets[0];
+  const anchorInsert = {
+    ...baseInsert,
+    application_id: anchorTarget.applicationId || null,
+    job_id: anchorTarget.jobId || null,
+    candidate_id: anchorTarget.candidateId
+  };
+  if (interviewCapabilities.hasCampusDriveId) {
+    anchorInsert.campus_drive_id = anchorTarget.campusDriveId || null;
+  }
+  if (interviewCapabilities.hasCampusApplicationId) {
+    anchorInsert.campus_application_id = anchorTarget.campusApplicationId || null;
+  }
+
+  const { data: anchorInterview, error: anchorError } = await supabase
     .from('interview_schedules')
-    .insert({
-      application_id: applicationId,
-      job_id: application.job_id,
-      hr_id: req.user.id,
-      candidate_id: application.applicant_id,
-      title: interviewTitle,
-      round_label: roundLabel,
-      scheduled_at: scheduledStart.toISOString(),
-      scheduled_end_at: scheduledEndAt,
-      duration_minutes: durationMinutes,
-      timezone,
-      mode,
-      meeting_link: meetingLink,
-      location,
-      note,
-      room_status: 'scheduled',
-      calendar_provider: calendarProvider,
-      calendar_event_url: calendarEventUrl,
-      panel_mode: panelMode,
-      panel_members: panelMembers,
-      candidate_consent_required: candidateConsentRequired,
-      recording_status: candidateConsentRequired ? 'pending_consent' : 'ready'
-    })
+    .insert(anchorInsert)
     .select('*')
     .single();
 
-  if (error) {
-    sendSupabaseError(res, error);
+  if (anchorError) {
+    sendSupabaseError(res, anchorError);
     return;
   }
 
-  // Keep application funnel in sync when interview is created.
-  await supabase
-    .from('applications')
-    .update({
-      status: 'interviewed',
-      hr_id: req.user.id,
-      status_updated_at: new Date().toISOString()
-    })
-    .eq('id', applicationId)
-    .in('status', ['applied', 'shortlisted']);
+  const siblingTargets = targets.slice(1);
+  let siblingInterviews = [];
 
-  await createNotification({
-    userId: application.applicant_id,
+  if (siblingTargets.length > 0) {
+    const siblingInsertRows = siblingTargets.map((target) => {
+      const row = {
+        ...baseInsert,
+        application_id: target.applicationId || null,
+        job_id: target.jobId || null,
+        candidate_id: target.candidateId
+      };
+      if (interviewCapabilities.hasCampusDriveId) {
+        row.campus_drive_id = target.campusDriveId || null;
+      }
+      if (interviewCapabilities.hasCampusApplicationId) {
+        row.campus_application_id = target.campusApplicationId || null;
+      }
+      if (interviewCapabilities.hasSharedRoomHostInterviewId) {
+        row.shared_room_host_interview_id = anchorInterview.id;
+      }
+      return row;
+    });
+    const { data: insertedSiblings, error: siblingError } = await supabase
+      .from('interview_schedules')
+      .insert(siblingInsertRows)
+      .select('*');
+
+    if (siblingError) {
+      sendSupabaseError(res, siblingError);
+      return;
+    }
+
+    siblingInterviews = insertedSiblings || [];
+  }
+
+  if (sourceType === 'job') {
+    await supabase
+      .from('applications')
+      .update({
+        status: 'interviewed',
+        hr_id: req.user.id,
+        status_updated_at: new Date().toISOString()
+      })
+      .in('id', applicationIds)
+      .in('status', ['applied', 'shortlisted']);
+  } else if (driveContext) {
+    await supabase
+      .from('campus_drive_applications')
+      .update({
+        status: 'shortlisted',
+        current_round: roundLabel,
+        reviewed_at: new Date().toISOString(),
+        reviewed_by_user_id: req.user.id
+      })
+      .in('id', campusApplicationIds)
+      .eq('drive_id', driveContext.id)
+      .eq('college_id', driveContext.college_id);
+  }
+
+  const createdInterviews = [anchorInterview, ...siblingInterviews];
+  await Promise.all(createdInterviews.map((item) => createNotification({
+    userId: item.candidate_id,
     type: 'interview_scheduled',
     title: 'Interview scheduled',
-    message: `Your interview for ${job.job_title} is scheduled on ${new Date(data.scheduled_at).toLocaleString()}. Open HHH Jobs to join at the scheduled time.`,
+    message: `Your interview for ${schedulingTitleBase} is scheduled on ${new Date(item.scheduled_at).toLocaleString()}. Open HHH Jobs to join at the scheduled time.`,
     link: '/portal/student/interviews',
-    meta: { interviewId: data.id, applicationId, jobId: application.job_id }
-  });
+    meta: {
+      interviewId: item.id,
+      roomInterviewId: anchorInterview.id,
+      applicationId: item.application_id || null,
+      campusApplicationId: item.campus_application_id || null,
+      jobId: item.job_id || null,
+      campusDriveId: item.campus_drive_id || null
+    }
+  })));
 
-  res.status(201).send({ status: true, interview: data });
+  res.status(201).send({
+    status: true,
+    interview: anchorInterview,
+    interviews: createdInterviews,
+    roomInterviewId: anchorInterview.id,
+    createdCount: createdInterviews.length,
+    sourceType,
+    companyName: schedulingCompanyName
+  });
 }));
 
 router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res) => {
+  const interviewCapabilities = await getInterviewScheduleCapabilities({ force: true });
   const interviewId = req.params.id;
   const status = req.body?.status;
   const scheduledAt = req.body?.scheduledAt;
@@ -906,6 +1174,7 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
     return;
   }
 
+  const roomInterviewId = getInterviewRoomHostId(existing);
   const nextScheduledAt = updateDoc.scheduled_at || existing.scheduled_at;
   const nextDuration = updateDoc.duration_minutes || existing.duration_minutes || 45;
   updateDoc.scheduled_end_at = new Date(new Date(nextScheduledAt).getTime() + (nextDuration * 60 * 1000)).toISOString();
@@ -921,29 +1190,48 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
     })
     : null;
 
+  const relatedQuery = supabase
+    .from('interview_schedules')
+    .select('*')
+    .eq('hr_id', req.user.id);
+
+  const { data: relatedInterviews, error: relatedError } = interviewCapabilities.hasSharedRoomHostInterviewId
+    ? await relatedQuery.or(`id.eq.${roomInterviewId},shared_room_host_interview_id.eq.${roomInterviewId}`)
+    : await relatedQuery.eq('id', roomInterviewId);
+
+  if (relatedError) {
+    sendSupabaseError(res, relatedError);
+    return;
+  }
+
+  const relatedIds = (relatedInterviews || []).map((item) => item.id);
   const { data, error } = await supabase
     .from('interview_schedules')
     .update(updateDoc)
-    .eq('id', interviewId)
-    .eq('hr_id', req.user.id)
-    .select('*')
-    .single();
+    .in('id', relatedIds)
+    .select('*');
 
   if (error) {
     sendSupabaseError(res, error);
     return;
   }
 
-  await createNotification({
-    userId: data.candidate_id,
+  await Promise.all((data || []).map((item) => createNotification({
+    userId: item.candidate_id,
     type: 'interview_updated',
     title: 'Interview updated',
     message: 'Your interview schedule was updated. Please check the in-app interview room details.',
     link: '/portal/student/interviews',
-    meta: { interviewId: data.id, applicationId: data.application_id }
-  });
+    meta: {
+      interviewId: item.id,
+      roomInterviewId,
+      applicationId: item.application_id || null,
+      campusApplicationId: item.campus_application_id || null
+    }
+  })));
 
-  res.send({ status: true, interview: data });
+  const hostInterview = (data || []).find((item) => item.id === roomInterviewId) || existing;
+  res.send({ status: true, interview: hostInterview, interviews: data || [] });
 }));
 
 // =============================================
@@ -1625,7 +1913,15 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
 
   if (driveErr) {
     if (isMissingCampusTable(driveErr)) {
-      res.send({ status: true, drive: null, applications: [], summary: { total: 0 } });
+      res.send({
+        status: true,
+        drive: null,
+        applications: [],
+        summary: { total: 0, applied: 0, shortlisted: 0, selected: 0, rejected: 0, withdrawn: 0, interviewReady: 0 },
+        pagination: { page: 1, limit: DEFAULT_CAMPUS_APPLICANTS_PAGE_SIZE, total: 0, totalPages: 1, count: 0 },
+        filters: { search: '', status: 'all', round: 'all', readyOnly: false },
+        availableRounds: []
+      });
       return;
     }
     sendSupabaseError(res, driveErr);
@@ -1653,61 +1949,91 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
     return;
   }
 
-  // Fetch applications
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const requestedLimit = Number.parseInt(req.query.limit, 10);
+  const limit = Math.min(
+    MAX_CAMPUS_APPLICANTS_PAGE_SIZE,
+    Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : DEFAULT_CAMPUS_APPLICANTS_PAGE_SIZE)
+  );
+  const search = String(req.query.search || '').trim().toLowerCase();
+  const statusFilter = String(req.query.status || '').trim().toLowerCase();
+  const roundFilter = String(req.query.round || '').trim();
+  const readyOnly = String(req.query.readyOnly || '').trim().toLowerCase() === 'true';
+  const includeAll = String(req.query.all || '').trim().toLowerCase() === 'true';
+
+  // Fetch applications for local filtering, summary, and pagination.
   const { data: applications, error: appErr } = await supabase
     .from('campus_drive_applications')
-    .select('*')
+    .select('id, drive_id, college_id, campus_student_id, student_user_id, applicant_email, status, current_round, eliminated_in_round, notes, applied_at, created_at, reviewed_at, decision_at, resume_url')
     .eq('drive_id', driveId)
     .eq('college_id', drive.college_id)
     .order('applied_at', { ascending: false });
 
   if (appErr) {
     if (isMissingCampusTable(appErr)) {
-      res.send({ status: true, drive, applications: [], summary: { total: 0 } });
+      res.send({
+        status: true,
+        drive,
+        applications: [],
+        summary: { total: 0, applied: 0, shortlisted: 0, selected: 0, rejected: 0, withdrawn: 0, interviewReady: 0 },
+        pagination: { page: 1, limit, total: 0, totalPages: 1, count: 0 },
+        filters: { search: '', status: 'all', round: 'all', readyOnly: false },
+        availableRounds: []
+      });
       return;
     }
     sendSupabaseError(res, appErr);
     return;
   }
 
-  const appRows = applications || [];
-
-  // Hydrate student info
-  const campusStudentIds = [...new Set(appRows.map((a) => a.campus_student_id).filter(Boolean))];
-  const userIds = [...new Set(appRows.map((a) => a.student_user_id).filter(Boolean))];
-
-  const [studentsResp, usersResp] = await Promise.all([
-    campusStudentIds.length > 0
-      ? supabase.from('campus_students').select('id, name, email, phone, degree, branch, graduation_year, cgpa, is_placed').in('id', campusStudentIds)
-      : Promise.resolve({ data: [] }),
-    userIds.length > 0
-      ? supabase.from('users').select('id, name, email, mobile').in('id', userIds)
-      : Promise.resolve({ data: [] })
-  ]);
-
-  const studentsById = Object.fromEntries((studentsResp.data || []).map((s) => [s.id, s]));
-  const usersById = Object.fromEntries((usersResp.data || []).map((u) => [u.id, u]));
-
+  const allRows = applications || [];
   const summary = {
-    total: appRows.length,
-    applied: appRows.filter((a) => a.status === 'applied').length,
-    shortlisted: appRows.filter((a) => a.status === 'shortlisted').length,
-    selected: appRows.filter((a) => a.status === 'selected').length,
-    rejected: appRows.filter((a) => a.status === 'rejected').length,
-    withdrawn: appRows.filter((a) => a.status === 'withdrawn').length
+    total: allRows.length,
+    applied: allRows.filter((a) => a.status === 'applied').length,
+    shortlisted: allRows.filter((a) => a.status === 'shortlisted').length,
+    selected: allRows.filter((a) => a.status === 'selected').length,
+    rejected: allRows.filter((a) => a.status === 'rejected').length,
+    withdrawn: allRows.filter((a) => a.status === 'withdrawn').length,
+    interviewReady: allRows.filter((a) => isValidUuid(a.student_user_id)).length
   };
 
-  res.send({
-    status: true,
-    drive: {
-      id: drive.id,
-      companyName: drive.company_name,
-      jobTitle: drive.job_title,
-      driveDate: drive.drive_date,
-      status: drive.status,
-      collegeName: drive.college?.name || ''
-    },
-    applications: appRows.map((app) => {
+  const availableRounds = [...new Set(allRows
+    .map((item) => String(item.current_round || '').trim())
+    .filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+
+  let filteredRows = allRows;
+  if (statusFilter && statusFilter !== 'all') {
+    filteredRows = filteredRows.filter((item) => String(item.status || '').toLowerCase() === statusFilter);
+  }
+  if (roundFilter && roundFilter !== 'all') {
+    if (roundFilter === '__unassigned__') {
+      filteredRows = filteredRows.filter((item) => !String(item.current_round || '').trim());
+    } else {
+      filteredRows = filteredRows.filter((item) => String(item.current_round || '').trim() === roundFilter);
+    }
+  }
+  if (readyOnly) {
+    filteredRows = filteredRows.filter((item) => isValidUuid(item.student_user_id));
+  }
+
+  const hydrateApplications = async (rows = []) => {
+    const campusStudentIds = [...new Set(rows.map((item) => item.campus_student_id).filter(Boolean))];
+    const userIds = [...new Set(rows.map((item) => item.student_user_id).filter(Boolean))];
+
+    const [studentsResp, usersResp] = await Promise.all([
+      campusStudentIds.length > 0
+        ? supabase.from('campus_students').select('id, name, email, phone, degree, branch, graduation_year, cgpa, is_placed').in('id', campusStudentIds)
+        : Promise.resolve({ data: [] }),
+      userIds.length > 0
+        ? supabase.from('users').select('id, name, email, mobile').in('id', userIds)
+        : Promise.resolve({ data: [] })
+        ]);
+
+    const studentsById = Object.fromEntries((studentsResp.data || []).map((item) => [item.id, item]));
+    const usersById = Object.fromEntries((usersResp.data || []).map((item) => [item.id, item]));
+
+    return rows.map((app) => {
       const cs = app.campus_student_id ? studentsById[app.campus_student_id] : null;
       const su = app.student_user_id ? usersById[app.student_user_id] : null;
       return {
@@ -1721,6 +2047,7 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
         reviewedAt: app.reviewed_at || null,
         decisionAt: app.decision_at || null,
         resumeUrl: app.resume_url || '',
+        canScheduleInterview: isValidUuid(app.student_user_id),
         candidate: {
           name: cs?.name || su?.name || app.applicant_email || 'Applicant',
           email: app.applicant_email || cs?.email || su?.email || '',
@@ -1732,8 +2059,67 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
           isPlaced: Boolean(cs?.is_placed)
         }
       };
-    }),
-    summary
+    });
+  };
+
+  let hydratedRows = null;
+  if (search) {
+    hydratedRows = await hydrateApplications(filteredRows);
+    filteredRows = hydratedRows.filter((item) => {
+      const haystack = [
+        item.candidate?.name,
+        item.candidate?.email,
+        item.candidate?.phone,
+        item.candidate?.degree,
+        item.candidate?.branch,
+        item.currentRound,
+        item.status
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+
+      return haystack.includes(search);
+    });
+  }
+
+  const totalFiltered = filteredRows.length;
+  const totalPages = includeAll ? 1 : Math.max(1, Math.ceil(totalFiltered / limit));
+  const safePage = includeAll ? 1 : Math.min(page, totalPages);
+  const startIndex = includeAll ? 0 : (safePage - 1) * limit;
+  const pagedRows = includeAll ? filteredRows : filteredRows.slice(startIndex, startIndex + limit);
+  const pagedApplications = hydratedRows
+    ? pagedRows
+    : await hydrateApplications(pagedRows);
+
+  res.send({
+    status: true,
+    drive: {
+      id: drive.id,
+      companyName: drive.company_name,
+      jobTitle: drive.job_title,
+      driveDate: drive.drive_date,
+      driveMode: drive.drive_mode || '',
+      location: drive.location || '',
+      status: drive.status,
+      collegeName: drive.college?.name || ''
+    },
+    applications: pagedApplications,
+    summary,
+    pagination: {
+      page: safePage,
+      limit: includeAll ? totalFiltered || limit : limit,
+      total: totalFiltered,
+      totalPages,
+      count: pagedApplications.length
+    },
+    filters: {
+      search,
+      status: statusFilter || 'all',
+      round: roundFilter || 'all',
+      readyOnly
+    },
+    availableRounds
   });
 }));
 

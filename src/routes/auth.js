@@ -2,7 +2,13 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const { ROLES, USER_STATUSES, AUDIT_ACTIONS, OTP_EXPIRY_MINUTES } = require('../constants');
+const {
+  ROLES,
+  USER_STATUSES,
+  AUDIT_ACTIONS,
+  OTP_EXPIRY_MINUTES,
+  PASSWORD_RESET_OTP_EXPIRY_MINUTES
+} = require('../constants');
 const config = require('../config');
 const { supabase, ensureServerConfig, sendSupabaseError } = require('../supabase');
 const { mapPublicUser } = require('../utils/mappers');
@@ -1223,7 +1229,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
 
   const passwordHash = await bcrypt.hash(password, 10);
   const otpCode = generateOtp();
-  const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
+  const otpExpiresAt = new Date(Date.now() + PASSWORD_RESET_OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
 
   let userRow;
   let pendingDraft = null;
@@ -1679,7 +1685,11 @@ router.post('/forgot-password', asyncHandler(async (req, res) => {
 
   const emailResult = await deliverEmailWithSoftTimeout({
     label: 'forgot-password-email',
-    task: () => sendPasswordResetEmail({ to: email, otp: otpCode, expiresInMinutes: OTP_EXPIRY_MINUTES })
+    task: () => sendPasswordResetEmail({
+      to: email,
+      otp: otpCode,
+      expiresInMinutes: PASSWORD_RESET_OTP_EXPIRY_MINUTES
+    })
   });
 
   if (!emailResult.sent) {

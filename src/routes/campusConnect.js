@@ -145,6 +145,115 @@ const buildConnectionEmailPayload = ({
   `.trim()
 });
 
+const buildCampusApplicationUpdatePayload = ({
+  existingApplication,
+  requestBody = {},
+  reviewerUserId
+}) => {
+  const nextStatus = requestBody?.status
+    ? String(requestBody.status).trim().toLowerCase()
+    : existingApplication.status;
+  const nextRound = String(requestBody?.currentRound ?? existingApplication.current_round ?? '').trim();
+  const nextNotes = requestBody?.notes !== undefined
+    ? String(requestBody.notes || '').trim()
+    : String(existingApplication.notes || '').trim();
+  const now = new Date().toISOString();
+
+  return {
+    nextStatus,
+    nextRound,
+    nextNotes,
+    updatePayload: stripUndefined({
+      status: nextStatus,
+      current_round: nextRound || null,
+      eliminated_in_round: nextStatus === 'rejected'
+        ? (String(requestBody?.eliminatedInRound || '').trim() || nextRound || existingApplication.eliminated_in_round || null)
+        : (requestBody?.eliminatedInRound !== undefined
+          ? String(requestBody.eliminatedInRound || '').trim() || null
+          : existingApplication.eliminated_in_round),
+      notes: nextNotes || null,
+      reviewed_at: now,
+      reviewed_by_user_id: reviewerUserId,
+      decision_at: ['selected', 'rejected', 'withdrawn'].includes(nextStatus) ? now : existingApplication.decision_at
+    })
+  };
+};
+
+const markCampusStudentPlaced = async ({ drive, application, nextStatus }) => {
+  if (nextStatus !== 'selected' || !application?.campus_student_id) return;
+
+  await supabase
+    .from('campus_students')
+    .update({
+      is_placed: true,
+      placed_company: drive.company_name,
+      placed_role: drive.job_title,
+      placed_salary: drive.package_max || drive.package_min || null
+    })
+    .eq('id', application.campus_student_id);
+};
+
+const notifyCampusApplicationUpdate = async ({
+  drive,
+  application,
+  nextStatus,
+  nextRound,
+  nextNotes
+}) => {
+  if (!application?.student_user_id) return;
+
+  const notificationMeta = buildCampusStatusNotification({
+    drive,
+    nextStatus,
+    currentRound: nextRound
+  });
+
+  await createNotification({
+    userId: application.student_user_id,
+    type: 'campus_drive_status',
+    title: notificationMeta.title,
+    message: notificationMeta.message,
+    link: '/portal/student/campus-connect',
+    meta: {
+      driveId: drive.id,
+      applicationId: application.id,
+      status: nextStatus,
+      currentRound: nextRound || null
+    }
+  });
+
+  await notifyUser({
+    userId: application.student_user_id,
+    channels: ['email'],
+    notification: {
+      type: 'campus_drive_status',
+      title: notificationMeta.title,
+      message: notificationMeta.message,
+      link: '/portal/student/campus-connect',
+      meta: {
+        driveId: drive.id,
+        applicationId: application.id,
+        status: nextStatus,
+        currentRound: nextRound || null
+      }
+    },
+    emailPayload: {
+      subject: notificationMeta.title,
+      text: [
+        notificationMeta.message,
+        nextNotes ? `Notes: ${nextNotes}` : '',
+        '',
+        'Open Campus Connect: https://hhh-jobs.com/portal/student/campus-connect'
+      ].filter(Boolean).join('\n'),
+      html: `
+        <p>${notificationMeta.message}</p>
+        ${nextNotes ? `<p><strong>Notes:</strong> ${nextNotes}</p>` : ''}
+        <p><a href="https://hhh-jobs.com/portal/student/campus-connect">Open Campus Connect</a></p>
+      `.trim()
+    }
+  });
+};
+
 const choosePreferredCompanyContact = (current, candidate) => {
   if (!candidate) return current;
   if (!current) return candidate;
@@ -1383,6 +1492,126 @@ router.get('/drives/:id/applications', asyncHandler(async (req, res) => {
   }
 }));
 
+router.patch('/drives/:driveId/applications', asyncHandler(async (req, res) => {
+  if (!ensureServerConfig(res)) return;
+
+  const collegeId = await getCollegeId(req.user.id);
+  if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
+
+  const { driveId } = req.params;
+  if (!isValidUuid(driveId)) {
+    res.status(400).send({ status: false, message: 'Invalid drive id.' });
+    return;
+  }
+
+  const applicationIds = Array.isArray(req.body?.applicationIds)
+    ? [...new Set(req.body.applicationIds.filter((value) => isValidUuid(value)))]
+    : [];
+
+  if (applicationIds.length === 0) {
+    res.status(400).send({ status: false, message: 'Select at least one application.' });
+    return;
+  }
+
+  const hasStatus = Object.prototype.hasOwnProperty.call(req.body || {}, 'status');
+  const hasCurrentRound = Object.prototype.hasOwnProperty.call(req.body || {}, 'currentRound');
+  const hasNotes = Object.prototype.hasOwnProperty.call(req.body || {}, 'notes');
+  const hasEliminatedInRound = Object.prototype.hasOwnProperty.call(req.body || {}, 'eliminatedInRound');
+
+  if (!hasStatus && !hasCurrentRound && !hasNotes && !hasEliminatedInRound) {
+    res.status(400).send({ status: false, message: 'Choose at least one field to update.' });
+    return;
+  }
+
+  if (hasStatus) {
+    const normalizedStatus = String(req.body?.status || '').trim().toLowerCase();
+    if (!CAMPUS_APPLICATION_STATUSES.has(normalizedStatus)) {
+      res.status(400).send({ status: false, message: 'Invalid application status.' });
+      return;
+    }
+  }
+
+  const [driveResponse, applicationsResponse] = await Promise.all([
+    supabase
+      .from('campus_drives')
+      .select('*')
+      .eq('id', driveId)
+      .eq('college_id', collegeId)
+      .maybeSingle(),
+    supabase
+      .from('campus_drive_applications')
+      .select('*')
+      .eq('drive_id', driveId)
+      .eq('college_id', collegeId)
+      .in('id', applicationIds)
+  ]);
+
+  if (driveResponse.error) { sendSupabaseError(res, driveResponse.error); return; }
+  if (applicationsResponse.error) {
+    if (isMissingCampusDriveApplicationsTable(applicationsResponse.error)) {
+      res.status(503).send({ status: false, message: 'Campus drive workflow tables are not available yet.' });
+      return;
+    }
+    sendSupabaseError(res, applicationsResponse.error);
+    return;
+  }
+  if (!driveResponse.data) { res.status(404).send({ status: false, message: 'Drive not found.' }); return; }
+
+  const applicationRows = applicationsResponse.data || [];
+  if (applicationRows.length === 0) {
+    res.status(404).send({ status: false, message: 'Selected applications were not found.' });
+    return;
+  }
+
+  const updatedApplications = [];
+  for (const existingApplication of applicationRows) {
+    const { nextStatus, nextRound, nextNotes, updatePayload } = buildCampusApplicationUpdatePayload({
+      existingApplication,
+      requestBody: req.body || {},
+      reviewerUserId: req.user.id
+    });
+
+    const updateResponse = await supabase
+      .from('campus_drive_applications')
+      .update(updatePayload)
+      .eq('id', existingApplication.id)
+      .eq('drive_id', driveId)
+      .eq('college_id', collegeId)
+      .select('*')
+      .single();
+
+    if (updateResponse.error) {
+      sendSupabaseError(res, updateResponse.error);
+      return;
+    }
+
+    const updatedApplication = updateResponse.data;
+    updatedApplications.push(updatedApplication);
+
+    await markCampusStudentPlaced({
+      drive: driveResponse.data,
+      application: updatedApplication,
+      nextStatus
+    });
+
+    await Promise.allSettled([
+      notifyCampusApplicationUpdate({
+        drive: driveResponse.data,
+        application: updatedApplication,
+        nextStatus,
+        nextRound,
+        nextNotes
+      })
+    ]);
+  }
+
+  res.send({
+    status: true,
+    updatedCount: updatedApplications.length,
+    applications: updatedApplications
+  });
+}));
+
 router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async (req, res) => {
   if (!ensureServerConfig(res)) return;
 
@@ -1430,20 +1659,10 @@ router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async 
     return;
   }
 
-  const nextRound = String(req.body?.currentRound || existingApplication.current_round || '').trim();
-  const nextNotes = req.body?.notes !== undefined ? String(req.body.notes || '').trim() : existingApplication.notes;
-  const now = new Date().toISOString();
-
-  const updatePayload = stripUndefined({
-    status: nextStatus,
-    current_round: nextRound || null,
-    eliminated_in_round: nextStatus === 'rejected'
-      ? (String(req.body?.eliminatedInRound || '').trim() || nextRound || existingApplication.eliminated_in_round || null)
-      : (req.body?.eliminatedInRound !== undefined ? String(req.body.eliminatedInRound || '').trim() || null : existingApplication.eliminated_in_round),
-    notes: nextNotes || null,
-    reviewed_at: now,
-    reviewed_by_user_id: req.user.id,
-    decision_at: ['selected', 'rejected', 'withdrawn'].includes(nextStatus) ? now : existingApplication.decision_at
+  const { nextRound, nextNotes, updatePayload } = buildCampusApplicationUpdatePayload({
+    existingApplication,
+    requestBody: req.body || {},
+    reviewerUserId: req.user.id
   });
 
   const updateResponse = await supabase
@@ -1459,67 +1678,18 @@ router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async 
 
   const updatedApplication = updateResponse.data;
 
-  if (nextStatus === 'selected' && updatedApplication.campus_student_id) {
-    await supabase
-      .from('campus_students')
-      .update({
-        is_placed: true,
-        placed_company: driveResponse.data.company_name,
-        placed_role: driveResponse.data.job_title,
-        placed_salary: driveResponse.data.package_max || driveResponse.data.package_min || null
-      })
-      .eq('id', updatedApplication.campus_student_id);
-  }
-
-  const notificationMeta = buildCampusStatusNotification({
+  await markCampusStudentPlaced({
     drive: driveResponse.data,
+    application: updatedApplication,
+    nextStatus
+  });
+
+  await notifyCampusApplicationUpdate({
+    drive: driveResponse.data,
+    application: updatedApplication,
     nextStatus,
-    currentRound: nextRound
-  });
-
-  await createNotification({
-    userId: updatedApplication.student_user_id,
-    type: 'campus_drive_status',
-    title: notificationMeta.title,
-    message: notificationMeta.message,
-    link: '/portal/student/campus-connect',
-    meta: {
-      driveId,
-      applicationId: updatedApplication.id,
-      status: nextStatus,
-      currentRound: nextRound || null
-    }
-  });
-
-  await notifyUser({
-    userId: updatedApplication.student_user_id,
-    channels: ['email'],
-    notification: {
-      type: 'campus_drive_status',
-      title: notificationMeta.title,
-      message: notificationMeta.message,
-      link: '/portal/student/campus-connect',
-      meta: {
-        driveId,
-        applicationId: updatedApplication.id,
-        status: nextStatus,
-        currentRound: nextRound || null
-      }
-    },
-    emailPayload: {
-      subject: notificationMeta.title,
-      text: [
-        notificationMeta.message,
-        nextNotes ? `Notes: ${nextNotes}` : '',
-        '',
-        'Open Campus Connect: https://hhh-jobs.com/portal/student/campus-connect'
-      ].filter(Boolean).join('\n'),
-      html: `
-        <p>${notificationMeta.message}</p>
-        ${nextNotes ? `<p><strong>Notes:</strong> ${nextNotes}</p>` : ''}
-        <p><a href="https://hhh-jobs.com/portal/student/campus-connect">Open Campus Connect</a></p>
-      `.trim()
-    }
+    nextRound,
+    nextNotes
   });
 
   res.send({
@@ -1709,6 +1879,43 @@ router.post('/connections', asyncHandler(async (req, res) => {
   });
 
   res.status(existingConnection ? 200 : 201).send({ status: true, connection });
+}));
+
+router.delete('/connections/:id', asyncHandler(async (req, res) => {
+  if (!ensureServerConfig(res)) return;
+
+  const collegeId = await getCollegeId(req.user.id);
+  if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
+
+  const { id } = req.params;
+  if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid connection id.' }); return; }
+
+  const connectionResponse = await supabase
+    .from('campus_connections')
+    .select('*')
+    .eq('id', id)
+    .eq('college_id', collegeId)
+    .maybeSingle();
+
+  if (connectionResponse.error) { sendSupabaseError(res, connectionResponse.error); return; }
+  if (!connectionResponse.data) { res.status(404).send({ status: false, message: 'Connection not found.' }); return; }
+
+  if (connectionResponse.data.initiation_source !== CONNECTION_SOURCE.COLLEGE || connectionResponse.data.status !== 'pending') {
+    res.status(409).send({ status: false, message: 'Only pending invites sent by your campus can be removed.' });
+    return;
+  }
+
+  const deleteResponse = await supabase
+    .from('campus_connections')
+    .delete()
+    .eq('id', id)
+    .eq('college_id', collegeId)
+    .select('id')
+    .maybeSingle();
+
+  if (deleteResponse.error) { sendSupabaseError(res, deleteResponse.error); return; }
+
+  res.send({ status: true, id, message: 'Invite removed.' });
 }));
 
 router.patch('/connections/:id', asyncHandler(async (req, res) => {

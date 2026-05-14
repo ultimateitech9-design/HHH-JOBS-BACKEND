@@ -21,6 +21,8 @@ const {
 const { normalizeCompanyKey } = require('./companyDirectory');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
+const MAX_JOB_POSTING_LOCATIONS = 1;
+const MAX_JOB_POSTING_DESCRIPTION_CHARS = 250;
 
 const notifyBlockedJobToAdmins = async ({
   actor = {},
@@ -93,6 +95,24 @@ const buildJobPayload = (body = {}) => {
     status: body.status ?? undefined,
     plan_slug: body.planSlug ?? body.plan_slug
   };
+};
+
+const validateManualJobPostingRules = (payload = {}) => {
+  const errors = [];
+  const locations = Array.isArray(payload.job_locations)
+    ? payload.job_locations.filter(Boolean)
+    : [];
+  const description = String(payload.description || '').trim();
+
+  if (locations.length > MAX_JOB_POSTING_LOCATIONS) {
+    errors.push(`Only ${MAX_JOB_POSTING_LOCATIONS} job location is allowed per posting.`);
+  }
+
+  if (description.length > MAX_JOB_POSTING_DESCRIPTION_CHARS) {
+    errors.push(`Job description cannot exceed ${MAX_JOB_POSTING_DESCRIPTION_CHARS} characters.`);
+  }
+
+  return errors;
 };
 
 const validateNewJobPayload = (payload) => {
@@ -221,9 +241,19 @@ const applyJobFilters = (query, filters = {}) => {
 const createHrJob = async (req, res) => {
   const payload = buildJobPayload(req.body || {});
   const missing = validateNewJobPayload(payload);
+  const manualValidationErrors = validateManualJobPostingRules(payload);
 
   if (missing.length > 0) {
     res.status(400).send({ status: false, message: `Missing required fields: ${missing.join(', ')}` });
+    return;
+  }
+
+  if (manualValidationErrors.length > 0) {
+    res.status(400).send({
+      status: false,
+      message: 'Job posting rules were not satisfied.',
+      errors: manualValidationErrors
+    });
     return;
   }
 
@@ -353,8 +383,27 @@ const updateHrJob = async (req, res) => {
   if (!existingJob) return;
 
   const payload = buildJobPayload(req.body || {});
+  const manualValidationErrors = validateManualJobPostingRules({
+    ...existingJob,
+    ...payload,
+    job_locations: payload.job_locations !== undefined
+      ? payload.job_locations
+      : (Array.isArray(existingJob.job_locations) && existingJob.job_locations.length > 0
+        ? existingJob.job_locations
+        : [existingJob.job_location]),
+    description: payload.description !== undefined ? payload.description : existingJob.description
+  });
   const allowedStatus = String(req.body?.status || '').toLowerCase();
   const requestedPlanSlug = normalizePlanSlug(payload.plan_slug || req.body?.planSlug || req.body?.plan_slug || '');
+
+  if (manualValidationErrors.length > 0) {
+    res.status(400).send({
+      status: false,
+      message: 'Job posting rules were not satisfied.',
+      errors: manualValidationErrors
+    });
+    return;
+  }
 
   if (requestedPlanSlug && requestedPlanSlug !== normalizePlanSlug(existingJob.plan_slug)) {
     res.status(400).send({

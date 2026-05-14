@@ -66,6 +66,7 @@ const AUDIT_ACTIONS = {
 };
 
 const OTP_EXPIRY_MINUTES = 10;
+const PASSWORD_RESET_OTP_EXPIRY_MINUTES = Number(process.env.PASSWORD_RESET_OTP_EXPIRY_MINUTES) || 5;
 
 const STOP_WORDS = new Set([
   'the', 'and', 'with', 'for', 'this', 'that', 'from', 'your', 'you', 'are', 'our', 'job',
@@ -89,5 +90,6 @@ module.exports = {
   PRICING_PLAN_SLUGS,
   AUDIT_ACTIONS,
   OTP_EXPIRY_MINUTES,
+  PASSWORD_RESET_OTP_EXPIRY_MINUTES,
   STOP_WORDS
 };

@@ -436,7 +436,7 @@ router.post('/:id/join', asyncHandler(async (req, res) => {
   if (!context) return;
 
   const now = new Date().toISOString();
-  const isManager = canManageInterview({ interview: context.interview, user: req.user });
+  const isManager = canManageInterview({ interview: context.participantInterview || context.interview, user: req.user });
   const updateDoc = isManager
     ? { hr_joined_at: now }
     : { candidate_joined_at: now };
@@ -444,19 +444,23 @@ router.post('/:id/join', asyncHandler(async (req, res) => {
   const nextRoomStatus = context.interview.hr_joined_at || context.interview.candidate_joined_at
     ? 'live'
     : 'ready';
-  updateDoc.room_status = normalizeRoomStatus(nextRoomStatus);
 
   const { error } = await supabase
     .from('interview_schedules')
     .update(updateDoc)
-    .eq('id', context.interview.id);
+    .eq('id', isManager ? context.interview.id : context.participantInterview.id);
 
   if (error) {
     sendSupabaseError(res, error);
     return;
   }
 
-  const refreshed = await getInterviewContext({ interviewId: context.interview.id, user: req.user });
+  await supabase
+    .from('interview_schedules')
+    .update({ room_status: normalizeRoomStatus(nextRoomStatus) })
+    .in('id', (context.roomInterviews || []).map((item) => item.id));
+
+  const refreshed = await getInterviewContext({ interviewId: context.participantInterview?.id || context.interview.id, user: req.user });
   await sendRoomPayload({ req, res, context: refreshed });
 }));
 
@@ -465,7 +469,7 @@ router.post('/:id/leave', asyncHandler(async (req, res) => {
   if (!context) return;
 
   const now = new Date().toISOString();
-  const isManager = canManageInterview({ interview: context.interview, user: req.user });
+  const isManager = canManageInterview({ interview: context.participantInterview || context.interview, user: req.user });
   const updateDoc = isManager
     ? { hr_left_at: now }
     : { candidate_left_at: now };
@@ -473,21 +477,21 @@ router.post('/:id/leave', asyncHandler(async (req, res) => {
   const { error } = await supabase
     .from('interview_schedules')
     .update(updateDoc)
-    .eq('id', context.interview.id);
+    .eq('id', isManager ? context.interview.id : context.participantInterview.id);
 
   if (error) {
     sendSupabaseError(res, error);
     return;
   }
 
-  const refreshed = await getInterviewContext({ interviewId: context.interview.id, user: req.user });
+  const refreshed = await getInterviewContext({ interviewId: context.participantInterview?.id || context.interview.id, user: req.user });
   await sendRoomPayload({ req, res, context: refreshed });
 }));
 
 router.post('/:id/consent', asyncHandler(async (req, res) => {
   const context = await getAuthorizedContext(req, res);
   if (!context) return;
-  if (context.interview.candidate_id !== req.user.id && !canManageInterview({ interview: context.interview, user: req.user })) {
+  if (context.participantInterview.candidate_id !== req.user.id && !canManageInterview({ interview: context.participantInterview, user: req.user })) {
     res.status(403).send({ status: false, message: 'Only the candidate can manage consent.' });
     return;
   }
@@ -507,14 +511,14 @@ router.post('/:id/consent', asyncHandler(async (req, res) => {
   const { error } = await supabase
     .from('interview_schedules')
     .update(updateDoc)
-    .eq('id', context.interview.id);
+    .eq('id', context.participantInterview.id);
 
   if (error) {
     sendSupabaseError(res, error);
     return;
   }
 
-  const refreshed = await getInterviewContext({ interviewId: context.interview.id, user: req.user });
+  const refreshed = await getInterviewContext({ interviewId: context.participantInterview.id, user: req.user });
   await sendRoomPayload({ req, res, context: refreshed });
 }));
 
@@ -615,7 +619,7 @@ router.patch('/:id/workspace', asyncHandler(async (req, res) => {
   }
 
   if (Object.keys(updateDoc).length === 0) {
-    const refreshed = await getInterviewContext({ interviewId: context.interview.id, user: req.user });
+    const refreshed = await getInterviewContext({ interviewId: context.participantInterview?.id || context.interview.id, user: req.user });
     await sendRoomPayload({ req, res, context: refreshed });
     return;
   }
@@ -630,7 +634,7 @@ router.patch('/:id/workspace', asyncHandler(async (req, res) => {
     return;
   }
 
-  const refreshed = await getInterviewContext({ interviewId: context.interview.id, user: req.user });
+  const refreshed = await getInterviewContext({ interviewId: context.participantInterview?.id || context.interview.id, user: req.user });
   await sendRoomPayload({ req, res, context: refreshed });
 }));
 
@@ -707,7 +711,7 @@ router.post('/:id/end', asyncHandler(async (req, res) => {
   const { error } = await supabase
     .from('interview_schedules')
     .update(updateDoc)
-    .eq('id', context.interview.id);
+    .in('id', (context.roomInterviews || []).map((item) => item.id));
 
   if (error) {
     sendSupabaseError(res, error);
@@ -715,33 +719,36 @@ router.post('/:id/end', asyncHandler(async (req, res) => {
   }
 
   if (isApplicationStatus(applicationStatus)) {
-    const appUpdate = await supabase
-      .from('applications')
-      .update({
-        status: String(applicationStatus).trim().toLowerCase(),
-        hr_id: context.interview.hr_id,
-        status_updated_at: new Date().toISOString()
-      })
-      .eq('id', context.interview.application_id);
+    const applicationIds = (context.roomInterviews || []).map((item) => item.application_id).filter(Boolean);
+    if (applicationIds.length > 0) {
+      const appUpdate = await supabase
+        .from('applications')
+        .update({
+          status: String(applicationStatus).trim().toLowerCase(),
+          hr_id: context.interview.hr_id,
+          status_updated_at: new Date().toISOString()
+        })
+        .in('id', applicationIds);
 
-    if (appUpdate.error) {
-      sendSupabaseError(res, appUpdate.error);
-      return;
+      if (appUpdate.error) {
+        sendSupabaseError(res, appUpdate.error);
+        return;
+      }
     }
   }
 
-  await createNotification({
-    userId: context.interview.candidate_id,
+  await Promise.all((context.roomInterviews || []).map((item) => createNotification({
+    userId: item.candidate_id,
     type: 'interview_completed',
     title: noShowCandidate ? 'Interview marked as no-show' : 'Interview wrap-up saved',
     message: noShowCandidate
       ? 'The recruiter marked this interview as a no-show.'
       : 'Your interview updates, notes, and outcome status were saved.',
     link: '/portal/student/interviews',
-    meta: { interviewId: context.interview.id, status: updateDoc.status }
-  });
+    meta: { interviewId: item.id, roomInterviewId: context.interview.id, status: updateDoc.status }
+  })));
 
-  const refreshed = await getInterviewContext({ interviewId: context.interview.id, user: req.user });
+  const refreshed = await getInterviewContext({ interviewId: context.participantInterview?.id || context.interview.id, user: req.user });
   await sendRoomPayload({ req, res, context: refreshed });
 }));
 

@@ -10,6 +10,13 @@ const DEFAULT_RTC_CONFIG = Object.freeze({
     { urls: 'stun:stun1.l.google.com:19302' }
   ]
 });
+let interviewScheduleCapabilitiesCache = null;
+let interviewScheduleCapabilitiesFetchedAt = 0;
+
+const isMissingInterviewScheduleColumnError = (error, columnName) => {
+  const message = String(error?.message || error?.details || error?.hint || '').toLowerCase();
+  return message.includes(String(columnName || '').toLowerCase());
+};
 
 const toSlug = (value = '') =>
   String(value || '')
@@ -39,6 +46,57 @@ const normalizeRoomStatus = (status = 'scheduled') => {
 const normalizeSignalType = (signalType = '') => {
   const normalized = String(signalType || '').trim().toLowerCase();
   return INTERVIEW_SIGNAL_TYPES.has(normalized) ? normalized : null;
+};
+
+const getInterviewScheduleCapabilities = async ({ force = false } = {}) => {
+  const now = Date.now();
+  if (!force && interviewScheduleCapabilitiesCache && (now - interviewScheduleCapabilitiesFetchedAt) < 60_000) {
+    return interviewScheduleCapabilitiesCache;
+  }
+
+  const defaults = {
+    hasSourceType: false,
+    hasCampusDriveId: false,
+    hasCampusApplicationId: false,
+    hasSharedRoomHostInterviewId: false
+  };
+
+  const probeColumn = async (columnName) => {
+    const { error } = await supabase
+      .from('interview_schedules')
+      .select(`id, ${columnName}`)
+      .limit(1);
+
+    if (!error) return true;
+    if (isMissingInterviewScheduleColumnError(error, columnName)) return false;
+    throw error;
+  };
+
+  try {
+    const [
+      hasSourceType,
+      hasCampusDriveId,
+      hasCampusApplicationId,
+      hasSharedRoomHostInterviewId
+    ] = await Promise.all([
+      probeColumn('source_type'),
+      probeColumn('campus_drive_id'),
+      probeColumn('campus_application_id'),
+      probeColumn('shared_room_host_interview_id')
+    ]);
+
+    interviewScheduleCapabilitiesCache = {
+      hasSourceType,
+      hasCampusDriveId,
+      hasCampusApplicationId,
+      hasSharedRoomHostInterviewId
+    };
+  } catch (error) {
+    interviewScheduleCapabilitiesCache = defaults;
+  }
+
+  interviewScheduleCapabilitiesFetchedAt = now;
+  return interviewScheduleCapabilitiesCache;
 };
 
 const getInterviewRtcConfig = () => {
@@ -207,13 +265,30 @@ const canManageInterview = ({ interview, user }) =>
 const canJoinInterview = ({ interview, user }) =>
   canManageInterview({ interview, user }) || interview.candidate_id === user.id;
 
-const mapInterviewAudiencePayload = ({ interview, job, application, candidateUser, candidateProfile, hrUser, hrProfile, viewer }) => {
-  const canManage = canManageInterview({ interview, user: viewer });
-  const isCandidateViewer = interview.candidate_id === viewer.id;
+const getRoomHostInterviewId = (interview = {}) => interview.shared_room_host_interview_id || interview.id;
+
+const mapInterviewAudiencePayload = ({
+  interview,
+  participantInterview = interview,
+  job,
+  application,
+  candidateUser,
+  candidateProfile,
+  hrUser,
+  hrProfile,
+  viewer,
+  roomParticipants = []
+}) => {
+  const canManage = canManageInterview({ interview: participantInterview, user: viewer });
+  const isCandidateViewer = participantInterview.candidate_id === viewer.id;
 
   return {
     interview: {
       ...interview,
+      participant_interview_id: participantInterview.id,
+      room_interview_id: interview.id,
+      is_group_room: roomParticipants.length > 1,
+      room_participant_count: roomParticipants.length,
       live_notes: canManage ? interview.live_notes : null,
       final_notes: canManage ? interview.final_notes : null,
       rating: canManage ? interview.rating : null,
@@ -253,9 +328,10 @@ const mapInterviewAudiencePayload = ({ interview, job, application, candidateUse
         logoUrl: hrProfile?.logo_url || ''
       }
       : null,
+    roomParticipants,
     permissions: {
       canManage,
-      canJoin: canJoinInterview({ interview, user: viewer }),
+      canJoin: canManage || isCandidateViewer,
       canConsent: isCandidateViewer,
       isCandidateViewer
     },
@@ -264,31 +340,73 @@ const mapInterviewAudiencePayload = ({ interview, job, application, candidateUse
 };
 
 const getInterviewContext = async ({ interviewId, user }) => {
-  const { data: interview, error } = await supabase
+  const capabilities = await getInterviewScheduleCapabilities();
+  const { data: requestedInterview, error } = await supabase
     .from('interview_schedules')
     .select('*')
     .eq('id', interviewId)
     .maybeSingle();
 
   if (error) throw error;
-  if (!interview) return null;
-  if (!canJoinInterview({ interview, user })) return { forbidden: true, interview };
+  if (!requestedInterview) return null;
 
-  const [jobResp, applicationResp, candidateUserResp, candidateProfileResp, hrUserResp, hrProfileResp] = await Promise.all([
-    supabase.from('jobs').select('id, job_title, company_name, job_location, description').eq('id', interview.job_id).maybeSingle(),
-    supabase.from('applications').select('id, status, resume_url, resume_text, cover_letter').eq('id', interview.application_id).maybeSingle(),
-    supabase.from('users').select('id, name, email, mobile').eq('id', interview.candidate_id).maybeSingle(),
-    supabase.from('student_profiles').select('user_id, headline, location, skills, resume_url, resume_text').eq('user_id', interview.candidate_id).maybeSingle(),
-    supabase.from('users').select('id, name, email').eq('id', interview.hr_id).maybeSingle(),
-    supabase.from('hr_profiles').select('user_id, company_name, company_website, logo_url').eq('user_id', interview.hr_id).maybeSingle()
+  const roomHostInterviewId = getRoomHostInterviewId(requestedInterview);
+  let roomInterviews = [requestedInterview];
+  if (capabilities.hasSharedRoomHostInterviewId) {
+    const roomInterviewsResp = await supabase
+      .from('interview_schedules')
+      .select('*')
+      .or(`id.eq.${roomHostInterviewId},shared_room_host_interview_id.eq.${roomHostInterviewId}`);
+
+    if (roomInterviewsResp.error) throw roomInterviewsResp.error;
+    roomInterviews = roomInterviewsResp.data || [requestedInterview];
+  }
+
+  const roomInterview = roomInterviews.find((item) => item.id === roomHostInterviewId) || requestedInterview;
+  const participantInterview = canManageInterview({ interview: requestedInterview, user })
+    ? requestedInterview
+    : (roomInterviews.find((item) => item.candidate_id === user.id) || requestedInterview);
+
+  if (!canManageInterview({ interview: requestedInterview, user }) && participantInterview.candidate_id !== user.id) {
+    return { forbidden: true, interview: requestedInterview };
+  }
+
+  const participantIds = [...new Set(roomInterviews.map((item) => item.candidate_id).filter(Boolean))];
+
+  const [jobResp, applicationResp, candidateUserResp, candidateProfileResp, hrUserResp, hrProfileResp, participantsResp] = await Promise.all([
+    roomInterview.job_id
+      ? supabase.from('jobs').select('id, job_title, company_name, job_location, description').eq('id', roomInterview.job_id).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    participantInterview.application_id
+      ? supabase.from('applications').select('id, status, resume_url, resume_text, cover_letter').eq('id', participantInterview.application_id).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    supabase.from('users').select('id, name, email, mobile').eq('id', participantInterview.candidate_id).maybeSingle(),
+    supabase.from('student_profiles').select('user_id, headline, location, skills, resume_url, resume_text').eq('user_id', participantInterview.candidate_id).maybeSingle(),
+    supabase.from('users').select('id, name, email').eq('id', roomInterview.hr_id).maybeSingle(),
+    supabase.from('hr_profiles').select('user_id, company_name, company_website, logo_url').eq('user_id', roomInterview.hr_id).maybeSingle(),
+    participantIds.length > 0
+      ? supabase.from('users').select('id, name, email').in('id', participantIds)
+      : Promise.resolve({ data: [], error: null })
   ]);
 
-  const responses = [jobResp, applicationResp, candidateUserResp, candidateProfileResp, hrUserResp, hrProfileResp];
+  const responses = [jobResp, applicationResp, candidateUserResp, candidateProfileResp, hrUserResp, hrProfileResp, participantsResp];
   const firstError = responses.find((response) => response?.error)?.error || null;
   if (firstError) throw firstError;
 
+  const participantsById = Object.fromEntries((participantsResp.data || []).map((item) => [item.id, item]));
+  const roomParticipants = roomInterviews.map((item) => ({
+    interviewId: item.id,
+    candidateId: item.candidate_id,
+    name: participantsById[item.candidate_id]?.name || 'Candidate',
+    email: participantsById[item.candidate_id]?.email || '',
+    status: item.status || 'scheduled'
+  }));
+
   return {
-    interview,
+    interview: roomInterview,
+    participantInterview,
+    roomInterviews,
+    roomParticipants,
     job: jobResp.data || null,
     application: applicationResp.data || null,
     candidateUser: candidateUserResp.data || null,
@@ -342,5 +460,6 @@ module.exports = {
   mapInterviewAudiencePayload,
   getInterviewContext,
   mergeTranscriptSegments,
-  isApplicationStatus
+  isApplicationStatus,
+  getInterviewScheduleCapabilities
 };

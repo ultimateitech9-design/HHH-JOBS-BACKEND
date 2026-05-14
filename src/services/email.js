@@ -593,15 +593,45 @@ const sendCampusInviteEmail = async ({
   });
 };
 
-const sendWelcomeEmail = async ({ to, name, password, role = '', loginUrl = 'https://hhh-jobs.com/login' }) => {
+const sendWelcomeEmail = async ({
+  to,
+  name,
+  password,
+  role = '',
+  loginUrl = 'https://hhh-jobs.com/login',
+  dashboardUrl = '',
+  forgotPasswordUrl = '',
+  passwordResetWindowMinutes = null,
+  headlineOverride = '',
+  introOverride = '',
+  primaryActionLabel = '',
+  secondaryActionLabel = ''
+}) => {
   if (!isEmailConfigured()) {
-    console.log(`[WELCOME EMAIL - NOT CONFIGURED] To: ${to} | Password: ${password}`);
+    const hasPassword = Boolean(String(password || '').trim());
+    console.log(
+      `[WELCOME EMAIL - NOT CONFIGURED] To: ${to} | Flow: ${hasPassword ? 'credentialed_welcome' : 'dashboard_activation'}`
+    );
     return { sent: false, reason: 'smtp_not_configured' };
   }
 
   const normalizedLoginUrl = String(loginUrl || DEFAULT_LOGIN_URL).trim() || DEFAULT_LOGIN_URL;
+  const normalizedDashboardUrl = String(dashboardUrl || normalizedLoginUrl).trim() || normalizedLoginUrl;
+  const normalizedForgotPasswordUrl = String(forgotPasswordUrl || '').trim();
   const displayName = String(name || '').trim() || 'Candidate';
   const normalizedRole = normalizeText(role).toLowerCase();
+  const resetWindowMinutes = Number(passwordResetWindowMinutes);
+  const hasResetWindow = Number.isFinite(resetWindowMinutes) && resetWindowMinutes > 0;
+  const showForgotPasswordCta = Boolean(normalizedForgotPasswordUrl);
+  const forgotPasswordHint = showForgotPasswordCta
+    ? (
+      hasResetWindow
+        ? `If you need first-time access, use Forgot Password. Your reset code is valid for ${resetWindowMinutes} minutes.`
+        : 'If you need first-time access, use Forgot Password from the login page.'
+    )
+    : '';
+  const resolvedPrimaryActionLabel = String(primaryActionLabel || '').trim();
+  const resolvedSecondaryActionLabel = String(secondaryActionLabel || '').trim() || 'Forgot Password';
 
   if (!password) {
     const roleCopy = normalizedRole === 'hr'
@@ -633,10 +663,31 @@ const sendWelcomeEmail = async ({ to, name, password, role = '', loginUrl = 'htt
             'Turn on alerts and track every shortlist, interview, and result update.'
           ]
         };
+    const finalHeadline = String(headlineOverride || '').trim() || roleCopy.headline;
+    const finalIntro = String(introOverride || '').trim() || roleCopy.intro;
+    const finalPrimaryActionLabel = resolvedPrimaryActionLabel || (
+      normalizedDashboardUrl === normalizedLoginUrl
+        ? `Sign in to ${BRAND}`
+        : 'Open your dashboard'
+    );
 
     const stepsHtml = roleCopy.steps
       .map((step) => `<li style="margin:0 0 10px;color:#30415f;font-size:14px;line-height:1.6;">${step}</li>`)
       .join('');
+    const secondaryActionHtml = showForgotPasswordCta
+      ? `
+            <div style="text-align:center;margin:0 0 18px;">
+              <a href="${normalizedForgotPasswordUrl}" style="display:inline-block;background:#ffffff;color:#0b1631;text-decoration:none;padding:12px 28px;border-radius:10px;font-size:14px;font-weight:700;border:1px solid #c9d7ef;">
+                ${resolvedSecondaryActionLabel}
+              </a>
+            </div>`
+      : '';
+    const forgotPasswordHintHtml = forgotPasswordHint
+      ? `
+            <p style="margin:0 0 18px;color:#4f6584;font-size:13px;line-height:1.6;text-align:center;">
+              ${forgotPasswordHint}
+            </p>`
+      : '';
 
     const html = `
 <!DOCTYPE html>
@@ -658,9 +709,9 @@ const sendWelcomeEmail = async ({ to, name, password, role = '', loginUrl = 'htt
         <tr>
           <td style="padding:34px 36px;">
             <p style="margin:0 0 8px;font-size:12px;font-weight:800;color:#1f5ac7;letter-spacing:0.12em;text-transform:uppercase;">Welcome aboard</p>
-            <h2 style="margin:0 0 10px;font-size:24px;font-weight:800;color:#0b1631;">Hi ${displayName}, ${roleCopy.headline}.</h2>
+            <h2 style="margin:0 0 10px;font-size:24px;font-weight:800;color:#0b1631;">Hi ${displayName}, ${finalHeadline}.</h2>
             <p style="margin:0 0 22px;color:#4f6584;font-size:15px;line-height:1.7;">
-              ${roleCopy.intro}
+              ${finalIntro}
             </p>
             <div style="margin:0 0 24px;padding:18px 20px;border-radius:14px;background:#f9fbff;border:1px solid #dbe7ff;">
               <p style="margin:0 0 10px;font-size:13px;font-weight:800;color:#0b1631;letter-spacing:0.04em;text-transform:uppercase;">Start here</p>
@@ -669,10 +720,12 @@ const sendWelcomeEmail = async ({ to, name, password, role = '', loginUrl = 'htt
               </ul>
             </div>
             <div style="text-align:center;margin:0 0 18px;">
-              <a href="${normalizedLoginUrl}" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:10px;font-size:15px;font-weight:700;">
-                Sign in to ${BRAND}
+              <a href="${normalizedDashboardUrl}" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:10px;font-size:15px;font-weight:700;">
+                ${finalPrimaryActionLabel}
               </a>
             </div>
+${secondaryActionHtml}
+${forgotPasswordHintHtml}
             <p style="margin:0;color:#8a9ab5;font-size:12px;line-height:1.6;text-align:center;">
               If you did not create this account, reply to this email and our team will help immediately.
             </p>
@@ -692,12 +745,14 @@ const sendWelcomeEmail = async ({ to, name, password, role = '', loginUrl = 'htt
     const text = [
       `Welcome to ${BRAND}, ${displayName}.`,
       '',
-      roleCopy.intro,
+      finalIntro,
       '',
       'Start here:',
       ...roleCopy.steps.map((step, index) => `${index + 1}. ${step}`),
       '',
-      `Sign in: ${normalizedLoginUrl}`
+      `${finalPrimaryActionLabel}: ${normalizedDashboardUrl}`,
+      ...(showForgotPasswordCta ? ['', `${resolvedSecondaryActionLabel}: ${normalizedForgotPasswordUrl}`] : []),
+      ...(forgotPasswordHint ? ['', forgotPasswordHint] : [])
     ].join('\n');
 
     return sendEmailWithFallback({
@@ -709,6 +764,21 @@ const sendWelcomeEmail = async ({ to, name, password, role = '', loginUrl = 'htt
   }
 
   const subject = `Welcome to ${BRAND} - Your account is ready`;
+  const finalPrimaryActionLabel = resolvedPrimaryActionLabel || `Login to ${BRAND}`;
+  const secondaryActionHtml = showForgotPasswordCta
+    ? `
+            <div style="text-align:center;margin:0 0 20px;">
+              <a href="${normalizedForgotPasswordUrl}" style="display:inline-block;background:#ffffff;color:#0b1631;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:14px;font-weight:700;border:1px solid #c9d7ef;">
+                ${resolvedSecondaryActionLabel}
+              </a>
+            </div>`
+    : '';
+  const forgotPasswordHintHtml = forgotPasswordHint
+    ? `
+            <p style="margin:0 0 18px;color:#4f6584;font-size:13px;line-height:1.6;text-align:center;">
+              ${forgotPasswordHint}
+            </p>`
+    : '';
 
   const html = `
 <!DOCTYPE html>
@@ -749,10 +819,12 @@ const sendWelcomeEmail = async ({ to, name, password, role = '', loginUrl = 'htt
               </td></tr>
             </table>
             <div style="text-align:center;margin:0 0 24px;">
-              <a href="${normalizedLoginUrl}" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 40px;border-radius:8px;font-size:15px;font-weight:700;">
-                Login to ${BRAND}
+              <a href="${normalizedDashboardUrl}" style="display:inline-block;background:linear-gradient(135deg,#1f5ac7,#0b1631);color:#ffffff;text-decoration:none;padding:14px 40px;border-radius:8px;font-size:15px;font-weight:700;">
+                ${finalPrimaryActionLabel}
               </a>
             </div>
+${secondaryActionHtml}
+${forgotPasswordHintHtml}
             <p style="margin:0;color:#8a9ab5;font-size:12px;line-height:1.5;text-align:center;">
               We recommend changing your password after your first login.
             </p>
@@ -772,7 +844,18 @@ const sendWelcomeEmail = async ({ to, name, password, role = '', loginUrl = 'htt
   return sendEmailWithFallback({
     to,
     subject,
-    text: `Welcome to ${BRAND}, ${displayName}!\n\nEmail: ${to}\nPassword: ${password}\n\nLogin: ${normalizedLoginUrl}\n\nPlease change your password after first login.`,
+    text: [
+      `Welcome to ${BRAND}, ${displayName}!`,
+      '',
+      `Email: ${to}`,
+      `Password: ${password}`,
+      '',
+      `${finalPrimaryActionLabel}: ${normalizedDashboardUrl}`,
+      ...(showForgotPasswordCta ? ['', `${resolvedSecondaryActionLabel}: ${normalizedForgotPasswordUrl}`] : []),
+      ...(forgotPasswordHint ? ['', forgotPasswordHint] : []),
+      '',
+      'Please change your password after first login.'
+    ].join('\n'),
     html
   });
 };
