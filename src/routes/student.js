@@ -1623,6 +1623,122 @@ router.get('/applications', asyncHandler(async (req, res) => {
   });
 }));
 
+router.post('/applications/:applicationId/offer-response', asyncHandler(async (req, res) => {
+  const { applicationId } = req.params;
+  if (!isValidUuid(applicationId)) {
+    res.status(400).send({ status: false, message: 'Invalid application id' });
+    return;
+  }
+
+  const decision = String(req.body?.decision || '').trim().toLowerCase();
+  if (!['accept', 'reject'].includes(decision)) {
+    res.status(400).send({ status: false, message: 'decision must be accept or reject' });
+    return;
+  }
+
+  const { data: application, error: applicationError } = await supabase
+    .from('applications')
+    .select('*')
+    .eq('id', applicationId)
+    .eq('applicant_id', req.user.id)
+    .maybeSingle();
+
+  if (applicationError) {
+    sendSupabaseError(res, applicationError);
+    return;
+  }
+
+  if (!application) {
+    res.status(404).send({ status: false, message: 'Application not found' });
+    return;
+  }
+
+  if (String(application.status || '').toLowerCase() !== 'offered') {
+    res.status(400).send({ status: false, message: 'Only offered applications can be updated from the student side.' });
+    return;
+  }
+
+  const { data: job, error: jobError } = await supabase
+    .from('jobs')
+    .select('id, job_title, company_name, posted_by, created_by')
+    .eq('id', application.job_id)
+    .maybeSingle();
+
+  if (jobError) {
+    sendSupabaseError(res, jobError);
+    return;
+  }
+
+  const nextStatus = decision === 'accept' ? 'hired' : 'rejected';
+  const now = new Date().toISOString();
+  const { data: updatedApplication, error: updateError } = await supabase
+    .from('applications')
+    .update({
+      status: nextStatus,
+      status_updated_at: now
+    })
+    .eq('id', application.id)
+    .select('*')
+    .single();
+
+  if (updateError) {
+    sendSupabaseError(res, updateError);
+    return;
+  }
+
+  const recruiterUserId = application.hr_id || job?.posted_by || job?.created_by || null;
+  if (recruiterUserId) {
+    const title = decision === 'accept' ? 'Offer accepted by candidate' : 'Offer rejected by candidate';
+    const message = decision === 'accept'
+      ? `${req.user.name || 'The student'} accepted the offer for ${job?.job_title || 'the role'} at ${job?.company_name || 'your company'}.`
+      : `${req.user.name || 'The student'} rejected the offer for ${job?.job_title || 'the role'} at ${job?.company_name || 'your company'}.`;
+    const link = job?.id ? `/portal/hr/jobs/${job.id}/applicants` : '/portal/hr/jobs';
+
+    await createNotification({
+      userId: recruiterUserId,
+      type: 'application_offer_response',
+      title,
+      message,
+      link,
+      meta: {
+        applicationId: updatedApplication.id,
+        jobId: job?.id || application.job_id,
+        decision,
+        status: nextStatus,
+        studentUserId: req.user.id
+      }
+    });
+
+    await notifyUser({
+      userId: recruiterUserId,
+      channels: ['email'],
+      notification: {
+        type: 'application_offer_response',
+        title,
+        message,
+        link,
+        meta: {
+          applicationId: updatedApplication.id,
+          jobId: job?.id || application.job_id,
+          decision,
+          status: nextStatus,
+          studentUserId: req.user.id
+        }
+      }
+    }).catch(() => {});
+  }
+
+  res.send({
+    status: true,
+    decision,
+    application: {
+      ...mapApplicationFromRow(updatedApplication),
+      jobTitle: job?.job_title || '',
+      companyName: job?.company_name || ''
+    }
+  });
+}));
+
 router.get('/analytics', asyncHandler(async (req, res) => {
   const targetUserId = getTargetStudentId(req, 'query');
 

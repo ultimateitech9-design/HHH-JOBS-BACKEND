@@ -23,7 +23,7 @@ const { enqueueWelcomeEmail } = require('../services/sideEffectQueue');
 
 const router = express.Router();
 
-router.use(requireAuth, requireRole(ROLES.ADMIN));
+router.use(requireAuth, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN));
 
 const DEFAULT_ADMIN_SETTINGS = {
   rolePermissionsV2: true,
@@ -35,6 +35,21 @@ const DEFAULT_ADMIN_SETTINGS = {
   approvalSlaHours: 12,
   paymentAutoReconcile: false
 };
+
+const ADMIN_USER_FILTER_ROLES = new Set([
+  ROLES.ADMIN,
+  ROLES.HR,
+  ROLES.STUDENT,
+  ROLES.RETIRED_EMPLOYEE,
+  ROLES.PLATFORM,
+  ROLES.SALES,
+  ROLES.ACCOUNTS,
+  ROLES.SUPPORT,
+  ROLES.AUDIT,
+  ROLES.DATAENTRY,
+  ROLES.CAMPUS_CONNECT,
+  'company_admin'
+]);
 
 const normalizeAdminSettings = (payload = {}) => {
   const source = payload && typeof payload === 'object' ? payload : {};
@@ -61,6 +76,8 @@ const normalizeAdminSettings = (payload = {}) => {
 // Analytics
 // =============================================
 router.get('/analytics', asyncHandler(async (req, res) => {
+  const excludeCampusConnectUsers = (query) => query.neq('role', ROLES.CAMPUS_CONNECT);
+
   const [
     totalUsers,
     totalHr,
@@ -78,13 +95,13 @@ router.get('/analytics', asyncHandler(async (req, res) => {
     reportsOpen,
     reportsTotal
   ] = await Promise.all([
-    countRows('users'),
+    countRows('users', excludeCampusConnectUsers),
     countRows('users', (q) => q.eq('role', ROLES.HR)),
     countRows('users', (q) => q.eq('role', ROLES.HR).eq('is_hr_approved', true)),
     countRows('users', (q) => q.eq('role', ROLES.STUDENT)),
-    countRows('users', (q) => q.eq('status', USER_STATUSES.ACTIVE)),
-    countRows('users', (q) => q.eq('status', USER_STATUSES.BLOCKED)),
-    countRows('users', (q) => q.eq('status', USER_STATUSES.BANNED)),
+    countRows('users', (q) => excludeCampusConnectUsers(q).eq('status', USER_STATUSES.ACTIVE)),
+    countRows('users', (q) => excludeCampusConnectUsers(q).eq('status', USER_STATUSES.BLOCKED)),
+    countRows('users', (q) => excludeCampusConnectUsers(q).eq('status', USER_STATUSES.BANNED)),
     countRows('jobs'),
     countRows('jobs', (q) => q.eq('status', JOB_STATUSES.OPEN)),
     countRows('jobs', (q) => q.eq('status', JOB_STATUSES.CLOSED)),
@@ -130,7 +147,7 @@ router.get('/users', asyncHandler(async (req, res) => {
     .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at')
     .order('created_at', { ascending: false });
 
-  if ([ROLES.ADMIN, ROLES.HR, ROLES.STUDENT].includes(role)) query = query.eq('role', role);
+  if (ADMIN_USER_FILTER_ROLES.has(role)) query = query.eq('role', role);
   if ([USER_STATUSES.ACTIVE, USER_STATUSES.BLOCKED, USER_STATUSES.BANNED].includes(status)) query = query.eq('status', status);
   if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
 

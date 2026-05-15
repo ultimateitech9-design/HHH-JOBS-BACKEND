@@ -1302,7 +1302,7 @@ router.post('/jobs/:id/applicants/bulk', requireApprovedHr, asyncHandler(async (
     )
   );
 
-  res.send({ status: true, updatedCount: updated.length, status: newStatus });
+  res.send({ status: true, updatedCount: updated.length, newStatus });
 }));
 
 // ── HR Campus Drives (Company-side result updates) ──────────────────────────

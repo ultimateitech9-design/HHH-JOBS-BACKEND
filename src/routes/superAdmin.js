@@ -14,7 +14,7 @@ const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
 
-router.use(requireAuth, requireActiveUser, requireRole(ROLES.SUPER_ADMIN));
+router.use(requireAuth, requireActiveUser, requireRole(ROLES.SUPER_ADMIN, ROLES.ADMIN));
 
 // =============================================
 // Dashboard
@@ -28,6 +28,8 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
     return;
   }
 
+  const excludeCampusConnectUsers = (query) => query.neq('role', ROLES.CAMPUS_CONNECT);
+
   const [
     totalUsers,
     totalHr,
@@ -39,7 +41,7 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
     activeSubscriptions,
     roleSyncSummary
   ] = await Promise.all([
-    countRows('users'),
+    countRows('users', excludeCampusConnectUsers),
     countRows('users', (q) => q.eq('role', ROLES.HR)),
     countRows('users', (q) => q.eq('role', ROLES.STUDENT)),
     countRows('jobs', (q) => q.neq('status', JOB_STATUSES.DELETED)),
@@ -63,6 +65,7 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
   const { data: recentUsers } = await supabase
     .from('users')
     .select('id, name, email, role, status, created_at')
+    .neq('role', ROLES.CAMPUS_CONNECT)
     .order('created_at', { ascending: false })
     .limit(10);
 

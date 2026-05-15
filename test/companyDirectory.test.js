@@ -161,3 +161,40 @@ test('buildCompanyDirectory keeps sponsor companies routable before they post jo
   );
   assert.deepEqual(companies[0].categories, ['Real Estate', 'Property Dealer']);
 });
+
+test('buildCompanyDirectory upgrades company names when a better-cased source arrives later', () => {
+  const companies = buildCompanyDirectory({
+    sponsoredCompanies: [
+      {
+        company_name: 'Indian Trade Mart',
+        company_slug: 'indian-trade-mart',
+        logo_url: null,
+        display_rating: 4.7,
+        reviews_label: '120+ reviews',
+        display_tags: ['B2B Marketplace'],
+        sort_order: 20,
+        created_at: '2026-03-18T09:00:00.000Z',
+        updated_at: '2026-03-19T09:00:00.000Z'
+      }
+    ],
+    hrProfiles: [],
+    portalJobs: [],
+    externalJobs: [
+      {
+        company_name: 'indian trade mart',
+        company_logo: null,
+        job_location: 'Remote',
+        category: 'Business Development',
+        apply_url: 'https://indiantrademart.com/careers/1',
+        source_key: 'career-site-itm',
+        is_remote: true,
+        posted_at: '2026-03-17T09:00:00.000Z',
+        created_at: '2026-03-17T09:00:00.000Z'
+      }
+    ]
+  });
+
+  assert.equal(companies.length, 1);
+  assert.equal(companies[0].name, 'Indian Trade Mart');
+  assert.equal(companies[0].slug, 'indian-trade-mart');
+});

@@ -9,6 +9,32 @@ const router = express.Router();
 
 router.use(requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT));
 
+const findSupportTicket = async (ticketIdentifier) => {
+  const identifier = String(ticketIdentifier || '').trim();
+  if (!identifier) return { ticket: null, error: null };
+
+  const byIdResult = await supabase
+    .from('support_tickets')
+    .select('*')
+    .eq('id', identifier)
+    .maybeSingle();
+
+  if (byIdResult.error || byIdResult.data) {
+    return { ticket: byIdResult.data || null, error: byIdResult.error || null };
+  }
+
+  const byTicketNumberResult = await supabase
+    .from('support_tickets')
+    .select('*')
+    .eq('ticket_number', identifier)
+    .maybeSingle();
+
+  return {
+    ticket: byTicketNumberResult.data || null,
+    error: byTicketNumberResult.error || null
+  };
+};
+
 // =============================================
 // Stats
 // =============================================
@@ -114,11 +140,7 @@ router.get('/tickets', asyncHandler(async (req, res) => {
 }));
 
 router.get('/tickets/:id', asyncHandler(async (req, res) => {
-  const { data: ticket, error } = await supabase
-    .from('support_tickets')
-    .select('*')
-    .eq('id', req.params.id)
-    .maybeSingle();
+  const { ticket, error } = await findSupportTicket(req.params.id);
 
   if (error) { sendSupabaseError(res, error); return; }
   if (!ticket) return res.status(404).send({ status: false, message: 'Ticket not found' });
@@ -134,6 +156,8 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
 
 router.post('/tickets', asyncHandler(async (req, res) => {
   const { title, description, category, priority } = req.body || {};
+  const requesterName = String(req.body?.customer || req.user?.name || '').trim();
+  const assigneeName = String(req.body?.assignedTo || '').trim();
 
   if (!title) return res.status(400).send({ status: false, message: 'title is required' });
 
@@ -150,8 +174,9 @@ router.post('/tickets', asyncHandler(async (req, res) => {
       priority: ['low', 'medium', 'high', 'critical'].includes(priority) ? priority : 'medium',
       status: 'open',
       requester_id: req.user?.id,
-      requester_name: req.user?.name,
+      requester_name: requesterName || req.user?.name || null,
       requester_email: req.user?.email,
+      assignee_name: assigneeName || null,
       sla_due_at: new Date(Date.now() + 24 * 3600000).toISOString()
     })
     .select('*')

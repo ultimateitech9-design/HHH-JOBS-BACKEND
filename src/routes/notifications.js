@@ -142,4 +142,32 @@ router.patch('/read-all', asyncHandler(async (req, res) => {
   res.send({ status: true });
 }));
 
+router.delete('/:id', asyncHandler(async (req, res) => {
+  const notificationId = req.params.id;
+  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.body?.userId)
+    ? req.body.userId
+    : req.user.id;
+
+  const { data, error } = await supabase
+    .from('notifications')
+    .delete()
+    .eq('id', notificationId)
+    .eq('user_id', targetUserId)
+    .select('id, user_id')
+    .maybeSingle();
+
+  if (error) {
+    sendSupabaseError(res, error);
+    return;
+  }
+
+  if (!data) {
+    res.status(404).send({ status: false, message: 'Notification not found' });
+    return;
+  }
+
+  pushNotificationEvent(targetUserId, 'notification.deleted', { notificationId: data.id });
+  res.send({ status: true, notificationId: data.id });
+}));
+
 module.exports = router;

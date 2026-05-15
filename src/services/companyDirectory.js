@@ -24,6 +24,38 @@ const pickPreferredText = (...values) => {
   return '';
 };
 
+const scoreCompanyDisplayName = (value = '') => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return -1;
+
+  let score = normalized.length;
+
+  if (/[A-Z]/.test(normalized)) score += 18;
+  if (/[A-Z][a-z]/.test(normalized)) score += 20;
+  if (/^[A-Z0-9&.,'()/-\s]+$/.test(normalized) && /[A-Z]{2,}/.test(normalized)) score += 10;
+  if (/^[a-z0-9&.,'()/-\s]+$/.test(normalized)) score -= 16;
+  if (/[&.,'()/-]/.test(normalized)) score += 4;
+
+  return score;
+};
+
+const pickBetterCompanyName = (currentValue = '', nextValue = '') => {
+  const current = String(currentValue || '').trim();
+  const next = String(nextValue || '').trim();
+
+  if (!current) return next;
+  if (!next) return current;
+
+  const currentScore = scoreCompanyDisplayName(current);
+  const nextScore = scoreCompanyDisplayName(next);
+
+  if (nextScore !== currentScore) {
+    return nextScore > currentScore ? next : current;
+  }
+
+  return next.length > current.length ? next : current;
+};
+
 const toTextArray = (value) =>
   Array.isArray(value)
     ? value.map((item) => String(item || '').trim()).filter(Boolean)
@@ -71,7 +103,7 @@ const getOrCreateEntry = (directory, companyName) => {
   if (!directory[key]) {
     directory[key] = {
       id: key,
-      name: String(companyName || '').trim(),
+      name: '',
       preferredSlug: '',
       logoUrl: '',
       websiteUrl: '',
@@ -193,7 +225,7 @@ const buildCompanyDirectory = ({
     const entry = getOrCreateEntry(directory, companyName);
     if (!entry) continue;
 
-    entry.name = pickPreferredText(entry.name, companyName);
+    entry.name = pickBetterCompanyName(entry.name, companyName);
     entry.preferredSlug = pickPreferredText(entry.preferredSlug, sponsor.company_slug);
     entry.logoUrl = pickPreferredText(entry.logoUrl, sponsor.logo_url);
     entry.websiteUrl = pickPreferredText(entry.websiteUrl, sponsor.website_url);
@@ -213,7 +245,7 @@ const buildCompanyDirectory = ({
     const entry = getOrCreateEntry(directory, companyName);
     if (!entry) continue;
 
-    entry.name = pickPreferredText(entry.name, companyName);
+    entry.name = pickBetterCompanyName(entry.name, companyName);
     entry.logoUrl = pickPreferredText(entry.logoUrl, profile.logo_url);
     entry.websiteUrl = pickPreferredText(entry.websiteUrl, profile.company_website);
     entry.websiteHost = pickPreferredText(entry.websiteHost, toHostname(profile.company_website));
@@ -232,7 +264,7 @@ const buildCompanyDirectory = ({
     const entry = getOrCreateEntry(directory, companyName);
     if (!entry) continue;
 
-    entry.name = pickPreferredText(entry.name, companyName);
+    entry.name = pickBetterCompanyName(entry.name, companyName);
     entry.logoUrl = pickPreferredText(entry.logoUrl, job.company_logo);
     entry.location = pickPreferredText(entry.location, job.job_location);
     entry.portalJobs += 1;
@@ -247,7 +279,7 @@ const buildCompanyDirectory = ({
     const entry = getOrCreateEntry(directory, companyName);
     if (!entry) continue;
 
-    entry.name = pickPreferredText(entry.name, companyName);
+    entry.name = pickBetterCompanyName(entry.name, companyName);
     entry.logoUrl = pickPreferredText(entry.logoUrl, job.company_logo);
     entry.websiteUrl = pickPreferredText(entry.websiteUrl, job.apply_url);
     entry.websiteHost = pickPreferredText(entry.websiteHost, toHostname(job.apply_url));
