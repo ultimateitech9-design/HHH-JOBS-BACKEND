@@ -16,6 +16,13 @@ const router = express.Router();
 
 router.use(requireAuth, requireActiveUser, requireRole(ROLES.SUPER_ADMIN, ROLES.ADMIN));
 
+const getFirstRelation = (value) => {
+  if (Array.isArray(value)) return value[0] || null;
+  return value || null;
+};
+
+const isLiveCampusDriveStatus = (value = '') => !['completed', 'cancelled', 'closed', 'archived'].includes(String(value || '').toLowerCase());
+
 // =============================================
 // Dashboard
 // =============================================
@@ -354,6 +361,148 @@ router.get('/companies', asyncHandler(async (req, res) => {
         application_count: ownerId ? (applicationCountByOwner[ownerId] || 0) : 0
       };
     }),
+    total: count || 0,
+    page,
+    limit
+  });
+}));
+
+router.get('/campuses', asyncHandler(async (req, res) => {
+  const search = String(req.query.search || '').trim();
+  const page = Math.max(1, parseInt(req.query.page || '1', 10));
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
+  const offset = (page - 1) * limit;
+
+  let query = supabase
+    .from('colleges')
+    .select(`
+      id, name, city, state, affiliation, created_at, user_id,
+      users!inner(id, name, email, status, last_login_at)
+    `, { count: 'exact' })
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (search) {
+    query = query.or(`name.ilike.%${search}%,city.ilike.%${search}%,state.ilike.%${search}%,affiliation.ilike.%${search}%`);
+  }
+
+  const { data, error, count } = await query;
+  if (error) { sendSupabaseError(res, error); return; }
+
+  const campuses = data || [];
+  const campusIds = campuses.map((campus) => campus.id).filter(Boolean);
+
+  let studentsByCampus = {};
+  let drivesByCampus = {};
+  let connectionsByCampus = {};
+
+  if (campusIds.length > 0) {
+    const [studentsResponse, drivesResponse, connectionsResponse] = await Promise.all([
+      supabase.from('campus_students').select('college_id, is_placed').in('college_id', campusIds),
+      supabase.from('campus_drives').select('college_id, status').in('college_id', campusIds),
+      supabase.from('campus_connections').select('college_id, status').in('college_id', campusIds)
+    ]);
+
+    if (studentsResponse.error) { sendSupabaseError(res, studentsResponse.error); return; }
+    if (drivesResponse.error) { sendSupabaseError(res, drivesResponse.error); return; }
+    if (connectionsResponse.error) { sendSupabaseError(res, connectionsResponse.error); return; }
+
+    studentsByCampus = (studentsResponse.data || []).reduce((acc, student) => {
+      const key = student.college_id;
+      if (!key) return acc;
+      if (!acc[key]) {
+        acc[key] = { totalPool: 0, placedStudents: 0 };
+      }
+      acc[key].totalPool += 1;
+      if (student.is_placed) acc[key].placedStudents += 1;
+      return acc;
+    }, {});
+
+    drivesByCampus = (drivesResponse.data || []).reduce((acc, drive) => {
+      const key = drive.college_id;
+      if (!key) return acc;
+      if (!acc[key]) {
+        acc[key] = { activeDrives: 0 };
+      }
+      if (isLiveCampusDriveStatus(drive.status)) acc[key].activeDrives += 1;
+      return acc;
+    }, {});
+
+    connectionsByCampus = (connectionsResponse.data || []).reduce((acc, connection) => {
+      const key = connection.college_id;
+      if (!key) return acc;
+      if (!acc[key]) {
+        acc[key] = { connectedCompanies: 0, pendingRequests: 0 };
+      }
+      if (connection.status === 'accepted') acc[key].connectedCompanies += 1;
+      if (connection.status === 'pending') acc[key].pendingRequests += 1;
+      return acc;
+    }, {});
+  }
+
+  const [summaryCollegesResponse, summaryStudentsResponse, summaryDrivesResponse, summaryConnectionsResponse] = await Promise.all([
+    supabase
+      .from('colleges')
+      .select(`
+        id, user_id,
+        users!inner(status)
+      `),
+    supabase.from('campus_students').select('is_placed'),
+    supabase.from('campus_drives').select('status'),
+    supabase.from('campus_connections').select('college_id, status')
+  ]);
+
+  if (summaryCollegesResponse.error) { sendSupabaseError(res, summaryCollegesResponse.error); return; }
+  if (summaryStudentsResponse.error) { sendSupabaseError(res, summaryStudentsResponse.error); return; }
+  if (summaryDrivesResponse.error) { sendSupabaseError(res, summaryDrivesResponse.error); return; }
+  if (summaryConnectionsResponse.error) { sendSupabaseError(res, summaryConnectionsResponse.error); return; }
+
+  const summaryColleges = summaryCollegesResponse.data || [];
+  const summaryStudents = summaryStudentsResponse.data || [];
+  const summaryDrives = summaryDrivesResponse.data || [];
+  const summaryConnections = summaryConnectionsResponse.data || [];
+
+  const connectedCampusIds = new Set(
+    summaryConnections
+      .filter((connection) => connection.status === 'accepted' && connection.college_id)
+      .map((connection) => connection.college_id)
+  );
+
+  res.send({
+    status: true,
+    campuses: campuses.map((campus) => {
+      const owner = getFirstRelation(campus.users);
+      const studentStats = studentsByCampus[campus.id] || {};
+      const driveStats = drivesByCampus[campus.id] || {};
+      const connectionStats = connectionsByCampus[campus.id] || {};
+      const ownerStatus = String(owner?.status || '').toLowerCase();
+
+      return {
+        id: campus.id,
+        name: campus.name,
+        city: campus.city,
+        state: campus.state,
+        affiliation: campus.affiliation,
+        total_pool: Number(studentStats.totalPool || 0),
+        placed_students: Number(studentStats.placedStudents || 0),
+        connected_companies: Number(connectionStats.connectedCompanies || 0),
+        pending_requests: Number(connectionStats.pendingRequests || 0),
+        active_drives: Number(driveStats.activeDrives || 0),
+        status: ownerStatus && ownerStatus !== 'active'
+          ? 'inactive'
+          : (Number(connectionStats.connectedCompanies || 0) > 0 ? 'active' : (Number(connectionStats.pendingRequests || 0) > 0 ? 'pending' : 'inactive')),
+        created_at: campus.created_at,
+        users: owner ? [owner] : []
+      };
+    }),
+    summary: {
+      totalCampuses: summaryColleges.length,
+      activeCampuses: summaryColleges.filter((campus) => String(getFirstRelation(campus.users)?.status || '').toLowerCase() === 'active').length,
+      connectedCampuses: connectedCampusIds.size,
+      totalTalentPool: summaryStudents.length,
+      placedStudents: summaryStudents.filter((student) => student.is_placed).length,
+      liveDrives: summaryDrives.filter((drive) => isLiveCampusDriveStatus(drive.status)).length
+    },
     total: count || 0,
     page,
     limit
