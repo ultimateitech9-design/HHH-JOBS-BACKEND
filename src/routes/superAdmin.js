@@ -23,6 +23,112 @@ const getFirstRelation = (value) => {
 
 const isLiveCampusDriveStatus = (value = '') => !['completed', 'cancelled', 'closed', 'archived'].includes(String(value || '').toLowerCase());
 
+const SYSTEM_LOG_FETCH_LIMIT = 5000;
+
+const normalizeLogText = (value = '') => String(value || '').trim().toLowerCase();
+
+const serializeLogDetails = (details) => {
+  if (!details) return '-';
+  if (typeof details === 'string') return details;
+
+  try {
+    return JSON.stringify(details);
+  } catch (error) {
+    return String(details);
+  }
+};
+
+const deriveAuditLogLevel = (action = '', details = null) => {
+  const actionKey = normalizeLogText(action);
+  const detailsText = normalizeLogText(serializeLogDetails(details));
+
+  if (
+    actionKey.includes('delete') ||
+    actionKey.includes('ban') ||
+    actionKey.includes('block') ||
+    actionKey.includes('fail') ||
+    detailsText.includes('error') ||
+    detailsText.includes('failed')
+  ) {
+    return 'critical';
+  }
+
+  if (
+    actionKey.includes('update') ||
+    actionKey.includes('approve') ||
+    actionKey.includes('review') ||
+    actionKey.includes('report') ||
+    actionKey.includes('status')
+  ) {
+    return 'warning';
+  }
+
+  return 'info';
+};
+
+const mapSystemLogRow = (row = {}) => ({
+  id: row.id,
+  actorId: row.actor_id || '-',
+  module: row.module || 'system',
+  actor: row.actor_name || 'System',
+  actorRole: row.actor_role || 'system',
+  action: row.action || '-',
+  level: row.level || 'info',
+  createdAt: row.created_at || null,
+  details: serializeLogDetails(row.details),
+  source: 'system'
+});
+
+const mapAuditRowToSystemLog = (row = {}, userLookup = new Map()) => {
+  const actor = userLookup.get(row.user_id) || null;
+
+  return {
+    id: row.id,
+    actorId: row.user_id || '-',
+    module: row.entity_type || 'audit',
+    actor: actor?.name || actor?.email || row.user_id || 'System',
+    actorRole: actor?.role || 'system',
+    action: row.action || 'audit_event',
+    level: deriveAuditLogLevel(row.action, row.details),
+    createdAt: row.created_at || null,
+    details: serializeLogDetails(row.details),
+    source: 'audit'
+  };
+};
+
+const applySystemLogFilters = (logs = [], filters = {}) => {
+  const search = normalizeLogText(filters.search);
+  const level = normalizeLogText(filters.level);
+  const module = normalizeLogText(filters.module);
+  const actorRole = normalizeLogText(filters.actorRole);
+
+  return logs.filter((item) => {
+    const matchesSearch = !search || [
+      item.id,
+      item.actorId,
+      item.module,
+      item.actor,
+      item.actorRole,
+      item.action,
+      item.level,
+      item.details,
+      item.source
+    ].some((value) => normalizeLogText(value).includes(search));
+
+    const matchesLevel = !level || normalizeLogText(item.level) === level;
+    const matchesModule = !module || normalizeLogText(item.module) === module;
+    const matchesActorRole = !actorRole || normalizeLogText(item.actorRole) === actorRole;
+
+    return matchesSearch && matchesLevel && matchesModule && matchesActorRole;
+  });
+};
+
+const sortLogsByTime = (left, right) => {
+  const leftTime = new Date(left.createdAt || 0).getTime();
+  const rightTime = new Date(right.createdAt || 0).getTime();
+  return rightTime - leftTime;
+};
+
 // =============================================
 // Dashboard
 // =============================================
@@ -731,25 +837,89 @@ router.get('/support-tickets', asyncHandler(async (req, res) => {
 // System Logs
 // =============================================
 router.get('/system-logs', asyncHandler(async (req, res) => {
-  const level = String(req.query.level || '').toLowerCase();
-  const module = String(req.query.module || '').toLowerCase();
+  const level = normalizeLogText(req.query.level);
+  const module = normalizeLogText(req.query.module);
+  const actorRole = normalizeLogText(req.query.actorRole);
+  const search = normalizeLogText(req.query.search);
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
-  const offset = (page - 1) * limit;
 
-  let query = supabase
+  let systemQuery = supabase
     .from('system_logs')
-    .select('id, action, module, level, actor_name, actor_role, details, created_at', { count: 'exact' })
+    .select('id, action, module, level, actor_id, actor_name, actor_role, details, created_at')
     .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+    .limit(SYSTEM_LOG_FETCH_LIMIT);
 
-  if (['info', 'warning', 'error', 'critical'].includes(level)) query = query.eq('level', level);
-  if (module) query = query.eq('module', module);
+  if (['info', 'warning', 'error', 'critical'].includes(level)) systemQuery = systemQuery.eq('level', level);
+  if (module) systemQuery = systemQuery.eq('module', module);
 
-  const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  const [systemLogsResponse, auditLogsResponse] = await Promise.all([
+    systemQuery,
+    supabase
+      .from('audit_logs')
+      .select('id, user_id, action, entity_type, entity_id, details, ip_address, created_at')
+      .order('created_at', { ascending: false })
+      .limit(SYSTEM_LOG_FETCH_LIMIT)
+  ]);
 
-  res.send({ status: true, logs: data || [], total: count || 0, page, limit });
+  if (systemLogsResponse.error) { sendSupabaseError(res, systemLogsResponse.error); return; }
+  if (auditLogsResponse.error) { sendSupabaseError(res, auditLogsResponse.error); return; }
+
+  const auditRows = auditLogsResponse.data || [];
+  const userIds = [...new Set(auditRows.map((row) => row.user_id).filter(Boolean))];
+
+  let userLookup = new Map();
+  if (userIds.length) {
+    const { data: users, error: usersError } = await supabase
+      .from('users')
+      .select('id, name, email, role')
+      .in('id', userIds);
+
+    if (usersError) { sendSupabaseError(res, usersError); return; }
+
+    userLookup = new Map((users || []).map((user) => [user.id, user]));
+  }
+
+  const allLogs = [
+    ...(systemLogsResponse.data || []).map(mapSystemLogRow),
+    ...auditRows.map((row) => mapAuditRowToSystemLog(row, userLookup))
+  ].sort(sortLogsByTime);
+
+  const filteredLogs = applySystemLogFilters(allLogs, {
+    search,
+    level,
+    module,
+    actorRole
+  });
+
+  const total = filteredLogs.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const safePage = Math.min(page, totalPages);
+  const offset = (safePage - 1) * limit;
+  const logs = filteredLogs.slice(offset, offset + limit);
+  const summary = {
+    totalEvents: total,
+    criticalEvents: filteredLogs.filter((item) => normalizeLogText(item.level) === 'critical').length,
+    warningEvents: filteredLogs.filter((item) => normalizeLogText(item.level) === 'warning').length,
+    managementActions: filteredLogs.filter((item) => normalizeLogText(item.actorRole) !== 'system').length
+  };
+
+  const actorRoles = [...new Set(allLogs.map((item) => normalizeLogText(item.actorRole)).filter(Boolean))].sort();
+  const modules = [...new Set(allLogs.map((item) => normalizeLogText(item.module)).filter(Boolean))].sort();
+
+  res.send({
+    status: true,
+    logs,
+    summary,
+    actorRoles,
+    modules,
+    pagination: {
+      page: safePage,
+      limit,
+      total,
+      totalPages
+    }
+  });
 }));
 
 // =============================================
