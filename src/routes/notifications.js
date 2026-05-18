@@ -142,6 +142,30 @@ router.patch('/read-all', asyncHandler(async (req, res) => {
   res.send({ status: true });
 }));
 
+router.delete('/', asyncHandler(async (req, res) => {
+  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.body?.userId)
+    ? req.body.userId
+    : req.user.id;
+
+  const { data, error } = await supabase
+    .from('notifications')
+    .delete()
+    .eq('user_id', targetUserId)
+    .select('id, user_id');
+
+  if (error) {
+    sendSupabaseError(res, error);
+    return;
+  }
+
+  const notificationIds = (data || []).map((notification) => notification.id).filter(Boolean);
+  if (notificationIds.length > 0) {
+    pushNotificationEvent(targetUserId, 'notification.bulk_deleted', { notificationIds });
+  }
+
+  res.send({ status: true, notificationIds });
+}));
+
 router.delete('/:id', asyncHandler(async (req, res) => {
   const notificationId = req.params.id;
   const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.body?.userId)
