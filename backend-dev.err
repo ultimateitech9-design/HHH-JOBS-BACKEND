@@ -1,0 +1,20 @@
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.

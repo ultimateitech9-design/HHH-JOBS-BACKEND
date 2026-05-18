@@ -1,15 +1,18 @@
 const express = require('express');
 const { ROLES } = require('../constants');
-const { supabase, countRows, sendSupabaseError } = require('../supabase');
+const { supabase, ensureServerConfig, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
 const { syncCommercialLeadsFromUsers } = require('../services/commercial');
-const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
 
 router.use(requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SALES));
+router.use((req, res, next) => {
+  if (!ensureServerConfig(res)) return;
+  next();
+});
 
 const formatSalesOverview = ({
   totalLeads = 0,
@@ -81,34 +84,55 @@ const buildMonthlySeries = (rows = []) => {
     }));
 };
 
+const buildRevenueTrend = (rows = []) => {
+  const bucket = new Map();
+
+  rows.forEach((row) => {
+    const createdAt = row?.created_at ? new Date(row.created_at) : null;
+    if (!createdAt || Number.isNaN(createdAt.getTime())) return;
+
+    const key = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, '0')}`;
+    const current = bucket.get(key) || {
+      monthDate: new Date(createdAt.getFullYear(), createdAt.getMonth(), 1),
+      revenue: 0,
+      refunds: 0
+    };
+    const amount = Number(row?.amount || 0);
+    const status = String(row?.status || '').toLowerCase();
+
+    if (status === 'paid') current.revenue += amount;
+    if (status === 'refunded') current.refunds += amount;
+    bucket.set(key, current);
+  });
+
+  return Array.from(bucket.values())
+    .sort((a, b) => a.monthDate - b.monthDate)
+    .slice(-6)
+    .map((item) => ({
+      month: item.monthDate.toLocaleString('en-US', { month: 'short' }),
+      value: item.revenue,
+      revenue: item.revenue,
+      refunds: item.refunds
+    }));
+};
+
+const formatLeadCode = (lead = {}) => {
+  const existingCode = String(lead.lead_code || lead.lead_number || '').trim();
+  if (existingCode) return existingCode.slice(0, 11).toUpperCase();
+
+  const source = String(lead.id || '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+  return `LEAD-${(source || '000000').padEnd(6, '0').slice(0, 6)}`;
+};
+
+const formatLeadRow = (lead = {}) => ({
+  ...lead,
+  lead_code: formatLeadCode(lead)
+});
+
 // =============================================
 // Overview
 // =============================================
 router.get('/overview', asyncHandler(async (req, res) => {
-  if (!supabase) {
-    const fallbackOverview = portalStore.sales.overview();
-    const stats = fallbackOverview?.stats || {};
-
-    res.send({
-      status: true,
-      overview: formatSalesOverview({
-        totalLeads: stats.leads || 0,
-        newLeads: stats.leads || 0,
-        convertedLeads: stats.conversions || 0,
-        totalOrders: stats.orders || 0,
-        totalCustomers: portalStore.sales.customers().length,
-        activeCustomers: portalStore.sales.customers().filter((item) => String(item.status || '').toLowerCase() === 'active').length,
-        monthRevenue: stats.revenue || 0,
-        totalRevenue: stats.revenue || 0,
-        salesAgents: portalStore.sales.agents().length,
-        refunds: portalStore.sales.refunds().length,
-        monthlySales: fallbackOverview?.salesTrend || [],
-        revenueTrend: fallbackOverview?.revenueTrend || []
-      })
-    });
-    return;
-  }
-
   const [
     totalLeads,
     newLeads,
@@ -126,22 +150,23 @@ router.get('/overview', asyncHandler(async (req, res) => {
     countRows('sales_customers'),
     countRows('sales_customers', (q) => q.eq('status', 'active')),
     countRows('users', (q) => q.eq('role', ROLES.SALES)),
-    countRows('sales_refunds')
+    countRows('sales_orders', (q) => q.eq('status', 'refunded'))
   ]);
 
   const { data: revenueRows } = await supabase
     .from('sales_orders')
-    .select('amount, created_at')
-    .eq('status', 'paid');
+    .select('amount, status, created_at')
+    .in('status', ['paid', 'refunded']);
 
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
   const monthRevenue = (revenueRows || [])
-    .filter((r) => r.created_at >= monthStart)
+    .filter((r) => String(r.status || '').toLowerCase() === 'paid' && r.created_at >= monthStart)
     .reduce((sum, r) => sum + Number(r.amount || 0), 0);
-  const totalRevenue = (revenueRows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
-  const monthlySales = buildMonthlySeries(revenueRows || []);
-  const revenueTrend = monthlySales.map((item) => ({ month: item.month, value: item.revenue }));
+  const paidRows = (revenueRows || []).filter((r) => String(r.status || '').toLowerCase() === 'paid');
+  const totalRevenue = paidRows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+  const monthlySales = buildMonthlySeries(paidRows);
+  const revenueTrend = buildRevenueTrend(revenueRows || []);
 
   res.send({
     status: true,
@@ -261,8 +286,8 @@ router.get('/products', asyncHandler(async (req, res) => {
     purchaseSummaryBySlug = (purchasesData || []).reduce((acc, purchase) => {
       const slug = purchase.plan_slug;
       const current = acc[slug] || { units_sold: 0, revenue: 0 };
-      current.units_sold += Number(purchase.quantity || 0);
       if (!['failed', 'cancelled'].includes(String(purchase.status || '').toLowerCase())) {
+        current.units_sold += Number(purchase.quantity || 0);
         current.revenue += Number(purchase.total_amount || 0);
       }
       acc[slug] = current;
@@ -282,8 +307,8 @@ router.get('/products', asyncHandler(async (req, res) => {
     rolePurchaseSummaryBySlug = (purchasesData || []).reduce((acc, purchase) => {
       const slug = purchase.role_plan_slug;
       const current = acc[slug] || { units_sold: 0, revenue: 0 };
-      current.units_sold += Number(purchase.quantity || 0);
       if (!['failed', 'cancelled'].includes(String(purchase.status || '').toLowerCase())) {
+        current.units_sold += Number(purchase.quantity || 0);
         current.revenue += Number(purchase.total_amount || 0);
       }
       acc[slug] = current;
@@ -413,7 +438,7 @@ router.get('/leads', asyncHandler(async (req, res) => {
   const { data, error, count } = await query;
   if (error) { sendSupabaseError(res, error); return; }
 
-  res.send({ status: true, leads: data || [], total: count || 0, page, limit });
+  res.send({ status: true, leads: (data || []).map(formatLeadRow), total: count || 0, page, limit });
 }));
 
 router.get('/leads/:id', asyncHandler(async (req, res) => {
@@ -426,7 +451,7 @@ router.get('/leads/:id', asyncHandler(async (req, res) => {
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Lead not found' });
 
-  res.send({ status: true, lead: data });
+  res.send({ status: true, lead: formatLeadRow(data) });
 }));
 
 router.post('/leads', asyncHandler(async (req, res) => {
@@ -452,7 +477,7 @@ router.post('/leads', asyncHandler(async (req, res) => {
 
   if (error) { sendSupabaseError(res, error); return; }
 
-  res.status(201).send({ status: true, lead: data });
+  res.status(201).send({ status: true, lead: formatLeadRow(data) });
 }));
 
 router.patch('/leads/:id', asyncHandler(async (req, res) => {
@@ -492,7 +517,7 @@ router.patch('/leads/:id', asyncHandler(async (req, res) => {
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Lead not found' });
 
-  res.send({ status: true, lead: data });
+  res.send({ status: true, lead: formatLeadRow(data) });
 }));
 
 router.post('/leads/sync-commercial', asyncHandler(async (req, res) => {
@@ -508,7 +533,7 @@ router.post('/leads/sync-commercial', asyncHandler(async (req, res) => {
         : [ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT]
     });
 
-    res.send({ status: true, syncedCount: synced.length, leads: synced });
+    res.send({ status: true, syncedCount: synced.length, leads: synced.map(formatLeadRow) });
   } catch (error) {
     sendSupabaseError(res, error);
   }
@@ -736,19 +761,23 @@ router.get('/reports', asyncHandler(async (req, res) => {
 
   const monthlyRevenue = Object.entries(
     orders
-      .filter((order) => order.status === 'paid' && order.created_at)
+      .filter((order) => ['paid', 'refunded'].includes(String(order.status || '').toLowerCase()) && order.created_at)
       .reduce((acc, order) => {
         const date = new Date(order.created_at);
         const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-        acc[month] = (acc[month] || 0) + Number(order.amount || 0);
+        const status = String(order.status || '').toLowerCase();
+        const current = acc[month] || { revenue: 0, refunds: 0 };
+        if (status === 'paid') current.revenue += Number(order.amount || 0);
+        if (status === 'refunded') current.refunds += Number(order.amount || 0);
+        acc[month] = current;
         return acc;
       }, {})
   )
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([month, revenue]) => ({
+    .map(([month, values]) => ({
       month,
-      revenue,
-      refunds: 0
+      revenue: values.revenue,
+      refunds: values.refunds
     }));
 
   res.send({

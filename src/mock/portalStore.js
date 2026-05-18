@@ -82,57 +82,6 @@ const state = {
       ]
     }
   },
-  sales: {
-    overview: {
-      stats: {
-        revenue: 845000,
-        orders: 164,
-        leads: 94,
-        conversions: 31
-      },
-      salesTrend: [
-        { month: 'Jan', value: 210000 },
-        { month: 'Feb', value: 268000 },
-        { month: 'Mar', value: 367000 }
-      ],
-      revenueTrend: [
-        { month: 'Jan', value: 176000 },
-        { month: 'Feb', value: 241000 },
-        { month: 'Mar', value: 315000 }
-      ]
-    },
-    agents: [
-      { id: 'AG-1', name: 'Aman Sales', region: 'North', dealsClosed: 18, revenue: 210000, status: 'active' }
-    ],
-    products: [
-      { id: 'PRD-1', name: 'Featured Listing Pack', unitsSold: 48, revenue: 192000, status: 'active' }
-    ],
-    orders: [
-      { id: 'ORD-1', customer: 'Metro Build Infra', product: 'Enterprise Hiring Plan', amount: 120000, status: 'paid', createdAt: daysFromNow(-5) }
-    ],
-    leads: [
-      { id: 'LEAD-1', company: 'Future Hire Labs', contact: 'Rohan', stage: 'qualified', source: 'Website', createdAt: daysFromNow(-2) }
-    ],
-    customers: [
-      { id: 'CUS-1', company: 'Metro Build Infra', manager: 'Ritika Sharma', plan: 'Enterprise', status: 'active', spend: 240000 }
-    ],
-    coupons: [
-      { id: 'CPN-1', code: 'HHH10', discount: '10%', status: 'active', redemptions: 14 }
-    ],
-    refunds: [
-      { id: 'SRF-1', orderId: 'ORD-9', company: 'Zenith Careers', amount: 8500, status: 'processed', requestedAt: daysFromNow(-6) }
-    ],
-    reports: {
-      pipeline: [
-        { label: 'Qualified', value: 34 },
-        { label: 'Proposal', value: 16 },
-        { label: 'Won', value: 11 }
-      ],
-      performance: [
-        { label: 'Q1 Revenue', value: 845000, status: 'healthy' }
-      ]
-    }
-  },
   accounts: {
     overview: {
       revenueSummary: { grossRevenue: 612000, collectedRevenue: 548000, outstandingRevenue: 64000, refundAmount: 12000, netRevenue: 426000 },
@@ -357,48 +306,6 @@ const store = {
       ticket.updatedAt = nowIso();
       return clone(reply);
     }
-  },
-  sales: {
-    overview: () => {
-      const legacyStats = state.sales.overview.stats || {};
-      const totalRevenue = Number(legacyStats.totalRevenue || legacyStats.revenue || state.sales.orders.reduce((sum, item) => sum + Number(item.amount || 0), 0));
-      const monthlyRevenue = Number(legacyStats.monthlyRevenue || state.sales.overview.revenueTrend?.at(-1)?.value || 0);
-      const totalOrders = Number(legacyStats.totalOrders || legacyStats.orders || state.sales.orders.length);
-      const openLeads = Number(legacyStats.openLeads || legacyStats.leads || state.sales.leads.filter((item) => !['won', 'converted'].includes(String(item.stage || '').toLowerCase())).length);
-      const convertedLeads = Number(legacyStats.convertedLeads || legacyStats.conversions || state.sales.leads.filter((item) => ['won', 'converted'].includes(String(item.stage || '').toLowerCase())).length);
-      const activeCustomers = Number(legacyStats.activeCustomers || state.sales.customers.filter((item) => item.status === 'active').length);
-      const salesAgents = Number(legacyStats.salesAgents || state.sales.agents.length);
-      const refunds = Number(legacyStats.refunds || state.sales.refunds.length);
-      const averageOrderValue = Number(legacyStats.averageOrderValue || (totalOrders ? totalRevenue / totalOrders : 0));
-
-      return {
-        stats: {
-          totalRevenue,
-          monthlyRevenue,
-          totalOrders,
-          openLeads,
-          convertedLeads,
-          activeCustomers,
-          salesAgents,
-          refunds,
-          averageOrderValue
-        },
-        monthlySales: clone(state.sales.overview.monthlySales || state.sales.overview.salesTrend || []),
-        revenueTrend: clone(state.sales.overview.revenueTrend || []),
-        salesTrend: clone(state.sales.overview.salesTrend || state.sales.overview.monthlySales || [])
-      };
-    },
-    agents: () => clone(state.sales.agents),
-    products: () => clone(state.sales.products),
-    orders: () => clone(state.sales.orders),
-    orderById: (id) => clone(state.sales.orders.find((item) => item.id === id) || null),
-    leads: () => clone(state.sales.leads),
-    leadById: (id) => clone(state.sales.leads.find((item) => item.id === id) || null),
-    customers: () => clone(state.sales.customers),
-    customerById: (id) => clone(state.sales.customers.find((item) => item.id === id) || null),
-    coupons: () => clone(state.sales.coupons),
-    refunds: () => clone(state.sales.refunds),
-    reports: () => clone(state.sales.reports)
   },
   accounts: {
     overview: () => {
