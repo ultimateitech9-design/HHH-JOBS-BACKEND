@@ -11,7 +11,8 @@
     "worker": "node scripts/worker.js",
     "create:super-admin": "node scripts/create-super-admin.js",
     "sync:eimager-user": "node scripts/replay-eimager-sync.js",
-    "import:resume-candidates": "node scripts/resume-bulk-onboard.js"
+    "import:resume-candidates": "node scripts/resume-bulk-onboard.js",
+    "email:seeded-students": "node scripts/send-seeded-student-welcome.js"
   },
   "keywords": [],
   "author": "",
