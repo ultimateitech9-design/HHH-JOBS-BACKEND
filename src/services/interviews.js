@@ -409,7 +409,17 @@ const getInterviewContext = async ({ interviewId, user }) => {
     candidateId: item.candidate_id,
     name: participantsById[item.candidate_id]?.name || 'Candidate',
     email: participantsById[item.candidate_id]?.email || '',
-    status: item.status || 'scheduled'
+    status: item.status || 'scheduled',
+    roomStatus: item.room_status || 'scheduled',
+    joinedAt: item.candidate_joined_at || null,
+    leftAt: item.candidate_left_at || null,
+    isOnline: Boolean(
+      item.candidate_joined_at
+      && (
+        !item.candidate_left_at
+        || new Date(item.candidate_joined_at).getTime() >= new Date(item.candidate_left_at).getTime()
+      )
+    )
   }));
 
   return {
