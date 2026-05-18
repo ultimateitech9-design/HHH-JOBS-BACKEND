@@ -531,6 +531,7 @@ router.get('/:id/signals', asyncHandler(async (req, res) => {
     .select('*')
     .eq('interview_id', context.interview.id)
     .neq('sender_id', req.user.id)
+    .or(`recipient_id.is.null,recipient_id.eq.${req.user.id}`)
     .order('created_at', { ascending: true })
     .limit(100);
 

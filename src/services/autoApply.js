@@ -14,7 +14,7 @@ const AUTO_APPLY_STATUSES = {
   FAILED: 'failed'
 };
 
-const POSITIVE_APPLICATION_STATUSES = new Set(['shortlisted', 'interviewed', 'offered', 'hired']);
+const POSITIVE_APPLICATION_STATUSES = new Set(['shortlisted', 'interview_scheduled', 'interviewed', 'offered', 'hired']);
 const COMPANY_TYPE_AGENCY_PATTERN = /(agency|staffing|recruitment|consultancy|consulting)/i;
 const WEEKDAY_MAP = new Map([
   ['sun', 0],

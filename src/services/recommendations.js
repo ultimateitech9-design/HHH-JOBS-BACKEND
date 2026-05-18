@@ -10,7 +10,7 @@ const STOPWORDS = new Set([
   'jobs', 'team', 'work', 'working', 'candidate', 'company'
 ]);
 
-const POSITIVE_PIPELINE_STATUSES = new Set(['shortlisted', 'interviewed', 'offered', 'hired']);
+const POSITIVE_PIPELINE_STATUSES = new Set(['shortlisted', 'interview_scheduled', 'interviewed', 'offered', 'hired']);
 
 const titleCase = (value = '') =>
   String(value || '')

@@ -346,7 +346,7 @@ router.get('/analytics', asyncHandler(async (req, res) => {
     applications = applicationsResp.data || [];
   }
 
-  const pipeline = { applied: 0, shortlisted: 0, interviewed: 0, offered: 0, rejected: 0, hired: 0 };
+  const pipeline = { applied: 0, shortlisted: 0, interview_scheduled: 0, interviewed: 0, offered: 0, rejected: 0, hired: 0 };
   applications.forEach((item) => {
     if (pipeline[item.status] !== undefined) pipeline[item.status] += 1;
   });
@@ -1075,12 +1075,12 @@ router.post('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
     await supabase
       .from('applications')
       .update({
-        status: 'interviewed',
+        status: 'interview_scheduled',
         hr_id: req.user.id,
         status_updated_at: new Date().toISOString()
       })
       .in('id', applicationIds)
-      .in('status', ['applied', 'shortlisted']);
+      .in('status', ['applied', 'shortlisted', 'interview_scheduled']);
   } else if (driveContext) {
     await supabase
       .from('campus_drive_applications')

@@ -31,7 +31,7 @@ const JOB_APPROVAL_STATUSES = {
   REJECTED: 'rejected'
 };
 
-const APPLICATION_STATUSES = ['applied', 'shortlisted', 'interviewed', 'offered', 'rejected', 'hired'];
+const APPLICATION_STATUSES = ['applied', 'shortlisted', 'interview_scheduled', 'interviewed', 'offered', 'rejected', 'hired'];
 const REPORT_STATUSES = ['open', 'in_review', 'resolved', 'rejected'];
 const REPORT_TARGETS = ['user', 'job', 'application', 'other'];
 const PAYMENT_STATUSES = ['pending', 'paid', 'failed', 'refunded'];
