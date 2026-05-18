@@ -281,18 +281,28 @@ const mapInterviewAudiencePayload = ({
 }) => {
   const canManage = canManageInterview({ interview: participantInterview, user: viewer });
   const isCandidateViewer = participantInterview.candidate_id === viewer.id;
+  const workspaceInterview = participantInterview || interview;
 
   return {
     interview: {
       ...interview,
+      whiteboard_data: workspaceInterview.whiteboard_data || interview.whiteboard_data,
+      code_editor_language: workspaceInterview.code_editor_language || interview.code_editor_language,
+      code_editor_content: workspaceInterview.code_editor_content || interview.code_editor_content,
+      transcript_segments: workspaceInterview.transcript_segments || interview.transcript_segments,
+      transcript_text: workspaceInterview.transcript_text || interview.transcript_text,
+      transcript_updated_at: workspaceInterview.transcript_updated_at || interview.transcript_updated_at,
+      sentiment_summary: workspaceInterview.sentiment_summary || interview.sentiment_summary,
+      sentiment_hints: workspaceInterview.sentiment_hints || interview.sentiment_hints,
+      red_flags: workspaceInterview.red_flags || interview.red_flags,
       participant_interview_id: participantInterview.id,
       room_interview_id: interview.id,
       is_group_room: roomParticipants.length > 1,
       room_participant_count: roomParticipants.length,
-      live_notes: canManage ? interview.live_notes : null,
-      final_notes: canManage ? interview.final_notes : null,
-      rating: canManage ? interview.rating : null,
-      rating_submitted_at: canManage ? interview.rating_submitted_at : null,
+      live_notes: canManage ? workspaceInterview.live_notes : null,
+      final_notes: canManage ? workspaceInterview.final_notes : null,
+      rating: canManage ? workspaceInterview.rating : null,
+      rating_submitted_at: canManage ? workspaceInterview.rating_submitted_at : null,
       recording_url: null
     },
     job: job || null,

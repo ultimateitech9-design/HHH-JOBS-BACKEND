@@ -585,7 +585,8 @@ router.patch('/:id/workspace', asyncHandler(async (req, res) => {
   const context = await getAuthorizedContext(req, res);
   if (!context) return;
 
-  const isManager = canManageInterview({ interview: context.interview, user: req.user });
+  const isManager = canManageInterview({ interview: context.participantInterview || context.interview, user: req.user });
+  const workspaceInterview = context.participantInterview || context.interview;
   const updateDoc = {};
 
   if (req.body?.whiteboardData && typeof req.body.whiteboardData === 'object') {
@@ -607,7 +608,7 @@ router.patch('/:id/workspace', asyncHandler(async (req, res) => {
   const appendedSegments = Array.isArray(req.body?.transcriptAppend) ? req.body.transcriptAppend : [];
   if (appendedSegments.length > 0) {
     const speaker = isManager ? 'hr' : 'candidate';
-    const mergedSegments = mergeTranscriptSegments(context.interview.transcript_segments, appendedSegments, speaker);
+    const mergedSegments = mergeTranscriptSegments(workspaceInterview.transcript_segments, appendedSegments, speaker);
     const transcriptText = mergedSegments.map((segment) => `${segment.speaker}: ${segment.text}`).join('\n');
     const insights = getTranscriptInsights(transcriptText);
 
@@ -628,7 +629,7 @@ router.patch('/:id/workspace', asyncHandler(async (req, res) => {
   const { error } = await supabase
     .from('interview_schedules')
     .update(updateDoc)
-    .eq('id', context.interview.id);
+    .eq('id', workspaceInterview.id);
 
   if (error) {
     sendSupabaseError(res, error);
