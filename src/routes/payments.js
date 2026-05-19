@@ -75,7 +75,16 @@ router.post('/role-subscriptions/verify', requireAuth, requireActiveUser, requir
   res.json({ status: true, subscription });
 }));
 
-router.post('/webhook', express.raw({ type: 'application/json' }), asyncHandler(async (req, res) => {
+const webhookPaths = ['/webhook', '/razorpay/webhook'];
+
+router.get(webhookPaths, (req, res) => {
+  res.json({
+    status: true,
+    message: 'Razorpay webhook endpoint is active. Configure Razorpay to send POST events to this URL.'
+  });
+});
+
+router.post(webhookPaths, express.raw({ type: 'application/json' }), asyncHandler(async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
   const rawBody = req.rawBody
     || (Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body));
