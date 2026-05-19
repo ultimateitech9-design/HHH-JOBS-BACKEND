@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES } = require('../constants');
-const { supabase, ensureServerConfig, countRows, sendSupabaseError } = require('../supabase');
+const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
@@ -9,10 +9,6 @@ const { syncCommercialLeadsFromUsers } = require('../services/commercial');
 const router = express.Router();
 
 router.use(requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SALES));
-router.use((req, res, next) => {
-  if (!ensureServerConfig(res)) return;
-  next();
-});
 
 const formatSalesOverview = ({
   totalLeads = 0,
@@ -27,7 +23,7 @@ const formatSalesOverview = ({
   refunds = 0,
   monthlySales = [],
   revenueTrend = []
-}) => ({
+} = {}) => ({
   totalLeads,
   newLeads,
   convertedLeads,
@@ -133,6 +129,14 @@ const formatLeadRow = (lead = {}) => ({
 // Overview
 // =============================================
 router.get('/overview', asyncHandler(async (req, res) => {
+  if (!supabase) {
+    res.send({
+      status: true,
+      overview: formatSalesOverview()
+    });
+    return;
+  }
+
   const [
     totalLeads,
     newLeads,
