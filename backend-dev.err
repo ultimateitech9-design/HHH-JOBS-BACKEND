@@ -18,3 +18,19 @@ If this is an older HHH Job API instance, rerun `npm run dev` to replace it auto
 If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
 [QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
 [QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+[ExternalJobs Scheduler] Ingestion 2026-05-19T04:17:01.740Z — unexpected error: TypeError: fetch failed
+[ExternalJobs] Verification run failed: TypeError: fetch failed
+[AutoApply Scheduler] Digest 2026-05-19T04:17:01.781Z — error: TypeError: fetch failed
+[ExternalJobs] Adapter netflix failed: TypeError: fetch failed
+[ExternalJobs] Adapter vercel failed: This operation was aborted
+[ExternalJobs] Adapter tines failed: fetch failed
+[ExternalJobs] Adapter merge failed: fetch failed
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
