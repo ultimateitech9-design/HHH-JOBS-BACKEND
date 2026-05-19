@@ -20,6 +20,11 @@ const DEFAULT_TEMPLATES = [
   }
 ];
 
+const STUDENT_DB_VIEW_FEATURE_KEY = 'hr.student_database_view';
+const STUDENT_DB_VIEW_SUBJECT_TYPE = 'student_profile';
+const DEFAULT_TRIAL_STUDENT_DB_VIEW_LIMIT = 25;
+const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing', 'pending']);
+
 const normalizeText = (value = '') => String(value || '').trim();
 const normalizeLowerText = (value = '') => normalizeText(value).toLowerCase();
 const parseMissingStudentProfileColumn = (error) => {
@@ -195,6 +200,102 @@ const resolveOptionalResponse = (response, fallback = []) => {
   if (isOptionalSchemaError(response.error)) return fallback;
   throw response.error;
 };
+const toPositiveIntegerOrNull = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+};
+const isSubscriptionCurrentlyUsable = (subscription = {}) => {
+  const status = normalizeLowerText(subscription.status);
+  if (!ACTIVE_ROLE_SUBSCRIPTION_STATUSES.has(status)) return false;
+  if (!subscription.ends_at) return true;
+  return new Date(subscription.ends_at).getTime() >= Date.now();
+};
+const mergeSubscriptionPlanMeta = (subscription = {}) => ({
+  ...(subscription.role_plans?.meta && typeof subscription.role_plans.meta === 'object' ? subscription.role_plans.meta : {}),
+  ...(subscription.meta && typeof subscription.meta === 'object' ? subscription.meta : {})
+});
+const resolveStudentDbViewLimit = (subscription = {}) => {
+  if (!subscription) return null;
+  const meta = mergeSubscriptionPlanMeta(subscription);
+  const configuredLimit = toPositiveIntegerOrNull(
+    meta.studentDbViewLimit
+      ?? meta.student_db_view_limit
+      ?? meta.studentDatabaseViewLimit
+      ?? meta.student_database_view_limit
+  );
+  if (configuredLimit !== null) return configuredLimit;
+
+  const isTrial = Boolean(meta.isTrial || subscription.trial_ends_at);
+  return isTrial ? DEFAULT_TRIAL_STUDENT_DB_VIEW_LIMIT : null;
+};
+const buildStudentDbQuota = async ({ userId, subscription = null } = {}) => {
+  if (!subscription) {
+    return {
+      studentDbViewLimit: 0,
+      studentDbViewsUsed: 0,
+      studentDbViewsRemaining: 0,
+      studentDbQuotaEnforced: false,
+      studentDbQuotaWarning: ''
+    };
+  }
+
+  const limit = resolveStudentDbViewLimit(subscription);
+  if (limit === null) {
+    return {
+      studentDbViewLimit: null,
+      studentDbViewsUsed: null,
+      studentDbViewsRemaining: null,
+      studentDbQuotaEnforced: false,
+      studentDbQuotaWarning: ''
+    };
+  }
+
+  const countResp = await supabase
+    .from('role_plan_feature_usage')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('feature_key', STUDENT_DB_VIEW_FEATURE_KEY)
+    .eq('subject_type', STUDENT_DB_VIEW_SUBJECT_TYPE);
+
+  if (countResp.error) {
+    if (isOptionalSchemaError(countResp.error)) {
+      return {
+        studentDbViewLimit: limit,
+        studentDbViewsUsed: 0,
+        studentDbViewsRemaining: limit,
+        studentDbQuotaEnforced: false,
+        studentDbQuotaWarning: 'Student database usage tracking migration is not applied yet.'
+      };
+    }
+    throw countResp.error;
+  }
+
+  const used = Number(countResp.count || 0);
+  return {
+    studentDbViewLimit: limit,
+    studentDbViewsUsed: used,
+    studentDbViewsRemaining: Math.max(0, limit - used),
+    studentDbQuotaEnforced: true,
+    studentDbQuotaWarning: ''
+  };
+};
+const getActiveHrRoleSubscription = async ({ userId }) => {
+  const { data, error } = await supabase
+    .from('role_plan_subscriptions')
+    .select('*, role_plans(*)')
+    .eq('user_id', userId)
+    .eq('audience_role', ROLES.HR)
+    .order('created_at', { ascending: false })
+    .limit(5);
+
+  if (error) {
+    if (isOptionalSchemaError(error)) return null;
+    throw error;
+  }
+
+  return (data || []).find(isSubscriptionCurrentlyUsable) || null;
+};
 const fetchRowsByIdsInChunks = async ({
   table,
   select,
@@ -348,7 +449,7 @@ const buildCandidatePresentation = ({
 }) => {
   const { user = {}, profile = {}, crm = {}, education = {} } = candidate;
   const hasAcceptedInterest = crm.interestStatus === 'accepted';
-  const canBrowseFullProfile = Boolean(access.hasPaidAccess);
+  const canBrowseFullProfile = Boolean(access.hasPaidAccess && access.candidateProfileUnlocked !== false);
   const canUnlockContact = Boolean(access.hasPaidAccess && hasAcceptedInterest);
   const visibleSkills = canBrowseFullProfile ? collectSkills(profile) : collectSkills(profile).slice(0, 4);
   const verification = getCandidateVerification(profile);
@@ -405,12 +506,14 @@ const buildCandidatePresentation = ({
       requiresUpgrade: Boolean(access.requiresUpgrade),
       hasPaidAccess: Boolean(access.hasPaidAccess),
       canBrowseFullProfile,
-      canSendInterest: Boolean(access.hasPaidAccess),
+      canSendInterest: Boolean(access.hasPaidAccess && canBrowseFullProfile),
       canViewContact: canUnlockContact,
       canViewResume: canUnlockContact,
       unlockedByInterest: hasAcceptedInterest,
       blurReason: access.hasPaidAccess
-        ? (hasAcceptedInterest ? '' : 'Contact details and resume unlock after the candidate accepts your interest request.')
+        ? (canBrowseFullProfile
+          ? (hasAcceptedInterest ? '' : 'Contact details and resume unlock after the candidate accepts your interest request.')
+          : `Your trial student database limit allows ${access.studentDbViewLimit || DEFAULT_TRIAL_STUDENT_DB_VIEW_LIMIT} unique profile views. Upgrade to continue viewing new profiles.`)
         : 'Upgrade to a paid hiring plan to unlock full candidate profiles and direct outreach.'
     }
   };
@@ -423,7 +526,31 @@ const getHrSourcingAccess = async ({ userId, role }) => {
       requiresUpgrade: false,
       activePlanSlug: 'admin',
       activePlanName: 'Admin Access',
-      latestPaidAt: null
+      latestPaidAt: null,
+      source: 'admin',
+      studentDbViewLimit: null,
+      studentDbViewsUsed: null,
+      studentDbViewsRemaining: null,
+      studentDbQuotaEnforced: false
+    };
+  }
+
+  const activeRoleSubscription = await getActiveHrRoleSubscription({ userId });
+  if (activeRoleSubscription) {
+    const quota = await buildStudentDbQuota({ userId, subscription: activeRoleSubscription });
+    return {
+      hasPaidAccess: true,
+      requiresUpgrade: false,
+      activePlanSlug: activeRoleSubscription.role_plan_slug,
+      activePlanName: activeRoleSubscription.role_plans?.name || activeRoleSubscription.role_plan_slug,
+      latestPaidAt: activeRoleSubscription.activated_at || activeRoleSubscription.created_at || null,
+      source: 'role_subscription',
+      subscriptionId: activeRoleSubscription.id,
+      isTrial: Boolean(activeRoleSubscription.meta?.isTrial || activeRoleSubscription.trial_ends_at),
+      trialEndsAt: activeRoleSubscription.trial_ends_at || null,
+      autopayEnabled: Boolean(activeRoleSubscription.autopay_enabled),
+      autopayStatus: activeRoleSubscription.autopay_status || 'not_configured',
+      ...quota
     };
   }
 
@@ -443,7 +570,12 @@ const getHrSourcingAccess = async ({ userId, role }) => {
       requiresUpgrade: true,
       activePlanSlug: 'free',
       activePlanName: 'Free',
-      latestPaidAt: null
+      latestPaidAt: null,
+      source: 'free',
+      studentDbViewLimit: 0,
+      studentDbViewsUsed: 0,
+      studentDbViewsRemaining: 0,
+      studentDbQuotaEnforced: false
     };
   }
 
@@ -458,7 +590,12 @@ const getHrSourcingAccess = async ({ userId, role }) => {
     requiresUpgrade: false,
     activePlanSlug: purchase.plan_slug,
     activePlanName: plan?.name || purchase.plan_slug,
-    latestPaidAt: purchase.paid_at || purchase.created_at || null
+    latestPaidAt: purchase.paid_at || purchase.created_at || null,
+    source: 'job_plan_purchase',
+    studentDbViewLimit: null,
+    studentDbViewsUsed: null,
+    studentDbViewsRemaining: null,
+    studentDbQuotaEnforced: false
   };
 };
 
@@ -554,6 +691,139 @@ const resolveTemplateForInterest = async ({ hrUserId, templateId }) => {
   return data || null;
 };
 
+const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consume = true } = {}) => {
+  const candidateIds = [...new Set((Array.isArray(candidates) ? candidates : [])
+    .map((candidate) => candidate?.user?.id)
+    .filter(Boolean))];
+
+  if (!access?.hasPaidAccess) {
+    return {
+      access,
+      unlockedIds: new Set(),
+      lockedIds: new Set(candidateIds)
+    };
+  }
+
+  if (!Number.isFinite(access.studentDbViewLimit)) {
+    return {
+      access,
+      unlockedIds: new Set(candidateIds),
+      lockedIds: new Set()
+    };
+  }
+
+  if (candidateIds.length === 0) {
+    return {
+      access,
+      unlockedIds: new Set(),
+      lockedIds: new Set()
+    };
+  }
+
+  const usageResp = await supabase
+    .from('role_plan_feature_usage')
+    .select('subject_id')
+    .eq('user_id', hrUser.id)
+    .eq('feature_key', STUDENT_DB_VIEW_FEATURE_KEY)
+    .eq('subject_type', STUDENT_DB_VIEW_SUBJECT_TYPE)
+    .in('subject_id', candidateIds);
+
+  if (usageResp.error) {
+    if (!isOptionalSchemaError(usageResp.error)) throw usageResp.error;
+    const unlockedIds = new Set(candidateIds.slice(0, Math.max(0, access.studentDbViewLimit || 0)));
+    return {
+      access: {
+        ...access,
+        studentDbQuotaEnforced: false,
+        studentDbQuotaWarning: 'Student database usage tracking migration is not applied yet.'
+      },
+      unlockedIds,
+      lockedIds: new Set(candidateIds.filter((id) => !unlockedIds.has(id)))
+    };
+  }
+
+  const alreadyUnlockedIds = new Set((usageResp.data || []).map((row) => row.subject_id).filter(Boolean));
+  let remainingForNewProfiles = Math.max(0, Number(access.studentDbViewsRemaining || 0));
+  const newlyUnlockedIds = [];
+  const lockedIds = new Set();
+
+  candidateIds.forEach((candidateId) => {
+    if (alreadyUnlockedIds.has(candidateId)) return;
+    if (remainingForNewProfiles > 0) {
+      newlyUnlockedIds.push(candidateId);
+      remainingForNewProfiles -= 1;
+      return;
+    }
+    lockedIds.add(candidateId);
+  });
+
+  if (consume && newlyUnlockedIds.length > 0) {
+    const nowIso = new Date().toISOString();
+    const rows = newlyUnlockedIds.map((candidateId) => ({
+      user_id: hrUser.id,
+      audience_role: ROLES.HR,
+      subscription_id: access.subscriptionId || null,
+      feature_key: STUDENT_DB_VIEW_FEATURE_KEY,
+      subject_type: STUDENT_DB_VIEW_SUBJECT_TYPE,
+      subject_id: candidateId,
+      quantity: 1,
+      meta: {
+        activePlanSlug: access.activePlanSlug || null,
+        consumedBy: 'candidate_search',
+        consumedAt: nowIso
+      }
+    }));
+
+    const insertResp = await supabase
+      .from('role_plan_feature_usage')
+      .upsert(rows, {
+        onConflict: 'user_id,feature_key,subject_type,subject_id',
+        ignoreDuplicates: true
+      });
+
+    if (insertResp.error && !isOptionalSchemaError(insertResp.error)) {
+      throw insertResp.error;
+    }
+  }
+
+  const unlockedIds = new Set([...alreadyUnlockedIds, ...newlyUnlockedIds]);
+  const usedAfter = Number(access.studentDbViewsUsed || 0) + newlyUnlockedIds.length;
+  const remainingAfter = Math.max(0, Number(access.studentDbViewLimit || 0) - usedAfter);
+
+  return {
+    access: {
+      ...access,
+      studentDbViewsUsed: usedAfter,
+      studentDbViewsRemaining: remainingAfter,
+      studentDbQuotaEnforced: true
+    },
+    unlockedIds,
+    lockedIds
+  };
+};
+
+const ensureHrStudentDbCandidateUnlocked = async ({ hrUser, studentId } = {}) => {
+  const access = await getHrSourcingAccess({ userId: hrUser.id, role: hrUser.role });
+  if (!access.hasPaidAccess) {
+    return { allowed: false, access, reason: 'Upgrade to a paid hiring plan to send sourcing interest requests.' };
+  }
+
+  const quota = await applyStudentDbViewQuota({
+    hrUser,
+    access,
+    candidates: [{ user: { id: studentId } }],
+    consume: true
+  });
+
+  return {
+    allowed: quota.unlockedIds.has(studentId),
+    access: quota.access,
+    reason: quota.unlockedIds.has(studentId)
+      ? ''
+      : `Your ${quota.access.studentDbViewLimit || DEFAULT_TRIAL_STUDENT_DB_VIEW_LIMIT}-profile trial student database limit is exhausted. Upgrade to continue outreach.`
+  };
+};
+
 const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, limit = 24 }) => {
   const access = await getHrSourcingAccess({ userId: hrUser.id, role: hrUser.role });
   const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
@@ -627,23 +897,40 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
       }
     }))
     .filter((candidate) => matchesCandidateFilters({ candidate, filters }))
-    .sort((left, right) => scoreCandidate({ candidate: right, filters }) - scoreCandidate({ candidate: left, filters }))
-    .map((candidate) => buildCandidatePresentation({ candidate, access }));
+    .sort((left, right) => scoreCandidate({ candidate: right, filters }) - scoreCandidate({ candidate: left, filters }));
 
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const safePage = Math.min(currentPage, totalPages);
   const startIndex = (safePage - 1) * pageSize;
-  const pagedCandidates = filtered.slice(startIndex, startIndex + pageSize);
+  const pagedRawCandidates = filtered.slice(startIndex, startIndex + pageSize);
+  const quota = await applyStudentDbViewQuota({
+    hrUser,
+    access,
+    candidates: pagedRawCandidates,
+    consume: true
+  });
+  const pagedCandidates = pagedRawCandidates.map((candidate) => buildCandidatePresentation({
+    candidate,
+    access: {
+      ...quota.access,
+      candidateProfileUnlocked: quota.unlockedIds.has(candidate.user.id)
+    }
+  }));
 
   return {
-    access,
+    access: quota.access,
     summary: {
       total,
-      blurred: access.hasPaidAccess ? 0 : total,
+      blurred: access.hasPaidAccess
+        ? pagedCandidates.filter((item) => item.access?.requiresUpgrade || !item.access?.canBrowseFullProfile).length
+        : total,
       connected: filtered.filter((item) => item.crm.interestStatus === 'accepted').length,
-      availableNow: filtered.filter((item) => item.profile.availableToHire).length,
-      verified: filtered.filter((item) => item.verification?.isVerified).length
+      availableNow: filtered.filter((item) => item.profile.available_to_hire).length,
+      verified: filtered.filter((item) => getCandidateVerification(item.profile).isVerified).length,
+      studentDbViewsUsed: quota.access.studentDbViewsUsed,
+      studentDbViewsRemaining: quota.access.studentDbViewsRemaining,
+      studentDbViewLimit: quota.access.studentDbViewLimit
     },
     pagination: {
       page: safePage,
@@ -815,6 +1102,7 @@ module.exports = {
   upsertHrMessageTemplate,
   deleteHrMessageTemplate,
   resolveTemplateForInterest,
+  ensureHrStudentDbCandidateUnlocked,
   searchDiscoverableCandidates,
   listHrCandidateInterests,
   listHrShortlistedCandidates

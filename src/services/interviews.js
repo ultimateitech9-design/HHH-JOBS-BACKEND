@@ -413,6 +413,15 @@ const getInterviewContext = async ({ interviewId, user }) => {
     roomStatus: item.room_status || 'scheduled',
     joinedAt: item.candidate_joined_at || null,
     leftAt: item.candidate_left_at || null,
+    hrJoinedAt: item.hr_joined_at || null,
+    hrLeftAt: item.hr_left_at || null,
+    isHrOnline: Boolean(
+      item.hr_joined_at
+      && (
+        !item.hr_left_at
+        || new Date(item.hr_joined_at).getTime() >= new Date(item.hr_left_at).getTime()
+      )
+    ),
     isOnline: Boolean(
       item.candidate_joined_at
       && (

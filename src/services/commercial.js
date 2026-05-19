@@ -14,7 +14,7 @@ const {
 } = require('./razorpay');
 
 const SUPPORTED_AUDIENCE_ROLES = new Set([ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT]);
-const ACTIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'pending']);
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing', 'pending']);
 const DEFAULT_ROLE_TRIAL_PLAN_SLUGS = {
   [ROLES.HR]: 'hr_starter',
   [ROLES.STUDENT]: 'student_plus',
@@ -983,9 +983,14 @@ const createRolePlanAutopaySession = async ({
     throw error;
   }
   if (!isRazorpayConfigured()) {
-    const error = new Error('Razorpay auto-pay is not configured on the backend.');
-    error.statusCode = 500;
-    throw error;
+    return createManualRolePlanCheckoutFallback({
+      user,
+      audienceRole: normalizedAudienceRole,
+      planSlug,
+      quantity,
+      couponCode,
+      fallbackReason: 'Razorpay auto-pay is not configured on the backend yet.'
+    });
   }
 
   const readiness = await getRolePlanAutopayReadiness({ audienceRole: normalizedAudienceRole });

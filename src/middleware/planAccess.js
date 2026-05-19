@@ -4,48 +4,51 @@ const { supabase } = require('../supabase');
 const PLAN_TIERS = {
   free: 0,
   hr_starter: 1,
+  hr_growth: 2,
   hr_professional: 2,
   hr_enterprise: 3,
   student_basic: 0,
   student_plus: 1,
+  student_pro: 2,
   student_premium: 2,
   campus_basic: 1,
+  campus_growth: 2,
   campus_professional: 2,
   campus_enterprise: 3
 };
 
 const FEATURE_PLAN_REQUIREMENTS = {
   // HR Features
-  'hr.candidate_search': { minTier: 1, plans: ['hr_starter', 'hr_professional', 'hr_enterprise'] },
-  'hr.candidate_interest': { minTier: 1, plans: ['hr_starter', 'hr_professional', 'hr_enterprise'] },
-  'hr.candidate_bulk_interest': { minTier: 2, plans: ['hr_professional', 'hr_enterprise'] },
-  'hr.candidate_resume_view': { minTier: 1, plans: ['hr_starter', 'hr_professional', 'hr_enterprise'] },
-  'hr.campus_drives': { minTier: 2, plans: ['hr_professional', 'hr_enterprise'] },
-  'hr.ats_full': { minTier: 2, plans: ['hr_professional', 'hr_enterprise'] },
-  'hr.analytics_advanced': { minTier: 2, plans: ['hr_professional', 'hr_enterprise'] },
-  'hr.job_post_hot_vacancy': { minTier: 2, plans: ['hr_professional', 'hr_enterprise'] },
-  'hr.job_post_classified': { minTier: 1, plans: ['hr_starter', 'hr_professional', 'hr_enterprise'] },
-  'hr.shortlist_unlimited': { minTier: 2, plans: ['hr_professional', 'hr_enterprise'] },
-  'hr.message_templates': { minTier: 1, plans: ['hr_starter', 'hr_professional', 'hr_enterprise'] },
-  'hr.interview_scheduling': { minTier: 1, plans: ['hr_starter', 'hr_professional', 'hr_enterprise'] },
+  'hr.candidate_search': { minTier: 1, plans: ['hr_starter', 'hr_growth', 'hr_enterprise'] },
+  'hr.candidate_interest': { minTier: 1, plans: ['hr_starter', 'hr_growth', 'hr_enterprise'] },
+  'hr.candidate_bulk_interest': { minTier: 2, plans: ['hr_growth', 'hr_enterprise'] },
+  'hr.candidate_resume_view': { minTier: 1, plans: ['hr_starter', 'hr_growth', 'hr_enterprise'] },
+  'hr.campus_drives': { minTier: 2, plans: ['hr_growth', 'hr_enterprise'] },
+  'hr.ats_full': { minTier: 2, plans: ['hr_growth', 'hr_enterprise'] },
+  'hr.analytics_advanced': { minTier: 2, plans: ['hr_growth', 'hr_enterprise'] },
+  'hr.job_post_hot_vacancy': { minTier: 2, plans: ['hr_growth', 'hr_enterprise'] },
+  'hr.job_post_classified': { minTier: 1, plans: ['hr_starter', 'hr_growth', 'hr_enterprise'] },
+  'hr.shortlist_unlimited': { minTier: 2, plans: ['hr_growth', 'hr_enterprise'] },
+  'hr.message_templates': { minTier: 1, plans: ['hr_starter', 'hr_growth', 'hr_enterprise'] },
+  'hr.interview_scheduling': { minTier: 1, plans: ['hr_starter', 'hr_growth', 'hr_enterprise'] },
 
   // Student Features
-  'student.auto_apply': { minTier: 1, plans: ['student_plus', 'student_premium'] },
-  'student.resume_builder': { minTier: 1, plans: ['student_plus', 'student_premium'] },
-  'student.mock_interview': { minTier: 1, plans: ['student_plus', 'student_premium'] },
-  'student.skill_assessments': { minTier: 1, plans: ['student_plus', 'student_premium'] },
-  'student.salary_insights': { minTier: 0, plans: ['student_basic', 'student_plus', 'student_premium'] },
-  'student.video_resume': { minTier: 2, plans: ['student_premium'] },
-  'student.priority_application': { minTier: 2, plans: ['student_premium'] },
-  'student.ai_suggestions': { minTier: 1, plans: ['student_plus', 'student_premium'] },
-  'student.external_jobs': { minTier: 1, plans: ['student_plus', 'student_premium'] },
+  'student.auto_apply': { minTier: 1, plans: ['student_plus', 'student_pro'] },
+  'student.resume_builder': { minTier: 1, plans: ['student_plus', 'student_pro'] },
+  'student.mock_interview': { minTier: 1, plans: ['student_plus', 'student_pro'] },
+  'student.skill_assessments': { minTier: 1, plans: ['student_plus', 'student_pro'] },
+  'student.salary_insights': { minTier: 0, plans: ['student_plus', 'student_pro'] },
+  'student.video_resume': { minTier: 2, plans: ['student_pro'] },
+  'student.priority_application': { minTier: 2, plans: ['student_pro'] },
+  'student.ai_suggestions': { minTier: 1, plans: ['student_plus', 'student_pro'] },
+  'student.external_jobs': { minTier: 1, plans: ['student_plus', 'student_pro'] },
 
   // Campus Features
-  'campus.drive_creation': { minTier: 1, plans: ['campus_basic', 'campus_professional', 'campus_enterprise'] },
-  'campus.company_connections': { minTier: 1, plans: ['campus_basic', 'campus_professional', 'campus_enterprise'] },
-  'campus.bulk_student_upload': { minTier: 2, plans: ['campus_professional', 'campus_enterprise'] },
-  'campus.analytics_advanced': { minTier: 2, plans: ['campus_professional', 'campus_enterprise'] },
-  'campus.reports_export': { minTier: 2, plans: ['campus_professional', 'campus_enterprise'] },
+  'campus.drive_creation': { minTier: 1, plans: ['campus_basic', 'campus_growth', 'campus_enterprise'] },
+  'campus.company_connections': { minTier: 1, plans: ['campus_basic', 'campus_growth', 'campus_enterprise'] },
+  'campus.bulk_student_upload': { minTier: 2, plans: ['campus_growth', 'campus_enterprise'] },
+  'campus.analytics_advanced': { minTier: 2, plans: ['campus_growth', 'campus_enterprise'] },
+  'campus.reports_export': { minTier: 2, plans: ['campus_growth', 'campus_enterprise'] },
   'campus.unlimited_drives': { minTier: 3, plans: ['campus_enterprise'] }
 };
 
@@ -55,7 +58,7 @@ const getUserActiveSubscription = async (userId, audienceRole) => {
     .select('*, role_plans(*)')
     .eq('user_id', userId)
     .eq('audience_role', audienceRole)
-    .in('status', ['active', 'trialing'])
+    .in('status', ['active', 'trialing', 'pending'])
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();

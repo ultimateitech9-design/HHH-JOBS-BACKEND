@@ -33,6 +33,8 @@ const upload = multer({
 const router = express.Router();
 
 const CODE_EXECUTION_TIMEOUT_MS = 15000;
+const DEFAULT_INTERVIEW_SIGNAL_FETCH_LIMIT = 250;
+const MAX_INTERVIEW_SIGNAL_FETCH_LIMIT = 1000;
 const LOCAL_CODE_RUNNER_LANGUAGE_ALIASES = {
   javascript: 'javascript',
   js: 'javascript',
@@ -437,18 +439,25 @@ router.post('/:id/join', asyncHandler(async (req, res) => {
 
   const now = new Date().toISOString();
   const isManager = canManageInterview({ interview: context.participantInterview || context.interview, user: req.user });
+  const roomInterviewIds = (context.roomInterviews || []).map((item) => item.id).filter(Boolean);
   const updateDoc = isManager
-    ? { hr_joined_at: now }
-    : { candidate_joined_at: now };
+    ? { hr_joined_at: now, hr_left_at: null }
+    : { candidate_joined_at: now, candidate_left_at: null };
 
-  const nextRoomStatus = context.interview.hr_joined_at || context.interview.candidate_joined_at
+  const roomAlreadyHadSomeoneJoined = (context.roomInterviews || []).some((item) =>
+    item.hr_joined_at || item.candidate_joined_at
+  );
+  const nextRoomStatus = roomAlreadyHadSomeoneJoined
     ? 'live'
     : 'ready';
 
-  const { error } = await supabase
+  const updateQuery = supabase
     .from('interview_schedules')
-    .update(updateDoc)
-    .eq('id', isManager ? context.interview.id : context.participantInterview.id);
+    .update(updateDoc);
+
+  const { error } = isManager
+    ? await updateQuery.in('id', roomInterviewIds.length > 0 ? roomInterviewIds : [context.interview.id])
+    : await updateQuery.eq('id', context.participantInterview.id);
 
   if (error) {
     sendSupabaseError(res, error);
@@ -470,14 +479,18 @@ router.post('/:id/leave', asyncHandler(async (req, res) => {
 
   const now = new Date().toISOString();
   const isManager = canManageInterview({ interview: context.participantInterview || context.interview, user: req.user });
+  const roomInterviewIds = (context.roomInterviews || []).map((item) => item.id).filter(Boolean);
   const updateDoc = isManager
     ? { hr_left_at: now }
     : { candidate_left_at: now };
 
-  const { error } = await supabase
+  const updateQuery = supabase
     .from('interview_schedules')
-    .update(updateDoc)
-    .eq('id', isManager ? context.interview.id : context.participantInterview.id);
+    .update(updateDoc);
+
+  const { error } = isManager
+    ? await updateQuery.in('id', roomInterviewIds.length > 0 ? roomInterviewIds : [context.interview.id])
+    : await updateQuery.eq('id', context.participantInterview.id);
 
   if (error) {
     sendSupabaseError(res, error);
@@ -525,6 +538,11 @@ router.post('/:id/consent', asyncHandler(async (req, res) => {
 router.get('/:id/signals', asyncHandler(async (req, res) => {
   const context = await getAuthorizedContext(req, res);
   if (!context) return;
+  const requestedLimit = Number.parseInt(req.query.limit, 10);
+  const signalLimit = Math.min(
+    MAX_INTERVIEW_SIGNAL_FETCH_LIMIT,
+    Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : DEFAULT_INTERVIEW_SIGNAL_FETCH_LIMIT)
+  );
 
   let query = supabase
     .from('interview_signals')
@@ -533,7 +551,7 @@ router.get('/:id/signals', asyncHandler(async (req, res) => {
     .neq('sender_id', req.user.id)
     .or(`recipient_id.is.null,recipient_id.eq.${req.user.id}`)
     .order('created_at', { ascending: true })
-    .limit(100);
+    .limit(signalLimit);
 
   if (isValidDateString(req.query.since)) {
     query = query.gt('created_at', new Date(req.query.since).toISOString());

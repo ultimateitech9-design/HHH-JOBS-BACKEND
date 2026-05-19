@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('node:crypto');
 const config = require('../config');
 const { ROLES, USER_STATUSES, JOB_STATUSES, APPLICATION_STATUSES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
@@ -12,6 +13,7 @@ const { createNotification } = require('../services/notifications');
 const {
   buildSystemTemplateMessage,
   deleteHrMessageTemplate,
+  ensureHrStudentDbCandidateUnlocked,
   getHrSourcingAccess,
   listHrCandidateInterests,
   listHrMessageTemplates,
@@ -36,9 +38,38 @@ router.use(requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN, RO
 
 const getInterviewRoomHostId = (interview = {}) => interview.shared_room_host_interview_id || interview.id;
 const uniqueValidUuids = (values = []) => [...new Set((Array.isArray(values) ? values : []).filter((value) => isValidUuid(value)))];
-const MAX_INTERVIEW_ROOM_PARTICIPANTS = 25;
+const P2P_INTERVIEW_ROOM_PARTICIPANTS = 25;
+const MAX_INTERVIEW_ROOM_PARTICIPANTS = 500;
 const DEFAULT_CAMPUS_APPLICANTS_PAGE_SIZE = 25;
 const MAX_CAMPUS_APPLICANTS_PAGE_SIZE = 100;
+const DEFAULT_EXTERNAL_MEETING_BASE_URL = 'https://meet.jit.si';
+
+const toMeetingSlug = (value = '') =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 54);
+
+const normalizeHttpUrl = (value = '') => {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    return parsed.href;
+  } catch (error) {
+    return '';
+  }
+};
+
+const buildExternalInterviewMeetingLink = ({ title = 'interview', scheduledAt = '' } = {}) => {
+  const baseUrl = normalizeHttpUrl(process.env.INTERVIEW_EXTERNAL_MEETING_BASE_URL || DEFAULT_EXTERNAL_MEETING_BASE_URL)
+    || DEFAULT_EXTERNAL_MEETING_BASE_URL;
+  const randomSuffix = crypto.randomUUID().replace(/-/g, '').slice(0, 10);
+  const datePart = scheduledAt ? new Date(scheduledAt).toISOString().slice(0, 10).replace(/-/g, '') : '';
+  const roomSlug = [toMeetingSlug(title) || 'hhh-interview', datePart, randomSuffix].filter(Boolean).join('-');
+  return `${baseUrl.replace(/\/+$/, '')}/${roomSlug}`;
+};
 
 router.get('/profile', asyncHandler(async (req, res) => {
   const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query.userId)
@@ -406,9 +437,14 @@ router.post('/candidates/:studentId/interest', requireApprovedHr, asyncHandler(a
   const { studentId } = req.params;
   if (!isValidUuid(studentId)) return res.status(400).send({ status: false, message: 'Invalid studentId' });
 
-  const access = await getHrSourcingAccess({ userId: req.user.id, role: req.user.role });
-  if (!access.hasPaidAccess) {
-    return res.status(402).send({ status: false, message: 'Upgrade to a paid hiring plan to send sourcing interest requests.' });
+  const unlock = await ensureHrStudentDbCandidateUnlocked({ hrUser: req.user, studentId });
+  if (!unlock.allowed) {
+    return res.status(402).send({
+      status: false,
+      code: 'STUDENT_DB_LIMIT_REACHED',
+      message: unlock.reason || 'Upgrade to a paid hiring plan to send sourcing interest requests.',
+      access: unlock.access
+    });
   }
 
   const templateId = String(req.body?.templateId || '').trim() || null;
@@ -804,7 +840,7 @@ router.post('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
   ]);
   const scheduledAt = req.body?.scheduledAt;
   const mode = normalizeInterviewMode(req.body?.mode);
-  const meetingLink = String(req.body?.meetingLink || '').trim() || null;
+  const requestedMeetingLink = normalizeHttpUrl(req.body?.meetingLink || '');
   const location = String(req.body?.location || '').trim() || null;
   const note = String(req.body?.note || '').trim() || null;
   const title = String(req.body?.title || '').trim();
@@ -826,7 +862,7 @@ router.post('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
   if (participantCount > MAX_INTERVIEW_ROOM_PARTICIPANTS) {
     res.status(400).send({
       status: false,
-      message: `A single interview room can include up to ${MAX_INTERVIEW_ROOM_PARTICIPANTS} participants. Filter the list and schedule the remaining students in batches.`
+      message: `A large interview event can include up to ${MAX_INTERVIEW_ROOM_PARTICIPANTS} participants. Split the remaining students into another event.`
     });
     return;
   }
@@ -977,13 +1013,17 @@ router.post('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
   const scheduledStart = new Date(scheduledAt);
   const scheduledEndAt = new Date(scheduledStart.getTime() + (durationMinutes * 60 * 1000)).toISOString();
   const interviewTitle = title || `${schedulingTitleBase} ${roundLabel}`;
+  const shouldUseExternalMeeting = mode === 'virtual' && participantCount > P2P_INTERVIEW_ROOM_PARTICIPANTS;
+  const meetingLink = requestedMeetingLink || (shouldUseExternalMeeting
+    ? buildExternalInterviewMeetingLink({ title: interviewTitle, scheduledAt: scheduledStart.toISOString() })
+    : null);
   const calendarEventUrl = calendarProvider === 'google'
     ? buildCalendarEventUrl({
       title: interviewTitle,
       startAt: scheduledStart.toISOString(),
       endAt: scheduledEndAt,
-      details: note || `Join the in-app interview room for ${schedulingTitleBase}.`,
-      location: mode === 'virtual' ? 'HHH Jobs Interview Room' : (location || 'HHH Jobs')
+      details: note || (meetingLink ? `Join the interview room: ${meetingLink}` : `Join the in-app interview room for ${schedulingTitleBase}.`),
+      location: mode === 'virtual' ? (meetingLink || 'HHH Jobs Interview Room') : (location || 'HHH Jobs')
     })
     : null;
 
@@ -1139,7 +1179,7 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
     );
   }
   if (scheduledAt) updateDoc.scheduled_at = new Date(scheduledAt).toISOString();
-  if (req.body?.meetingLink !== undefined) updateDoc.meeting_link = req.body.meetingLink;
+  if (req.body?.meetingLink !== undefined) updateDoc.meeting_link = normalizeHttpUrl(req.body.meetingLink) || null;
   if (req.body?.location !== undefined) updateDoc.location = req.body.location;
   if (req.body?.note !== undefined) updateDoc.note = req.body.note;
   if (req.body?.mode !== undefined) updateDoc.mode = normalizeInterviewMode(req.body.mode);
@@ -1183,9 +1223,11 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
       title: updateDoc.title || existing.title || `${existing.round_label || 'Interview'} Session`,
       startAt: nextScheduledAt,
       endAt: updateDoc.scheduled_end_at,
-      details: updateDoc.note || existing.note || `Join the HHH Jobs interview room for ${existing.round_label || 'your interview'}.`,
+      details: updateDoc.note || existing.note || ((updateDoc.meeting_link || existing.meeting_link)
+        ? `Join the interview room: ${updateDoc.meeting_link || existing.meeting_link}`
+        : `Join the HHH Jobs interview room for ${existing.round_label || 'your interview'}.`),
       location: (updateDoc.mode || existing.mode || 'virtual') === 'virtual'
-        ? 'HHH Jobs Interview Room'
+        ? (updateDoc.meeting_link || existing.meeting_link || 'HHH Jobs Interview Room')
         : (updateDoc.location || existing.location || 'HHH Jobs')
     })
     : null;
