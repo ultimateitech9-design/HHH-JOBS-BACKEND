@@ -7,10 +7,10 @@ const PLAN_TIERS = {
   hr_growth: 2,
   hr_professional: 2,
   hr_enterprise: 3,
-  student_basic: 0,
-  student_plus: 1,
-  student_pro: 2,
-  student_premium: 2,
+  student_basic: 1,
+  student_plus: 2,
+  student_pro: 3,
+  student_premium: 3,
   campus_basic: 1,
   campus_growth: 2,
   campus_professional: 2,
@@ -33,15 +33,15 @@ const FEATURE_PLAN_REQUIREMENTS = {
   'hr.interview_scheduling': { minTier: 1, plans: ['hr_starter', 'hr_growth', 'hr_enterprise'] },
 
   // Student Features
-  'student.auto_apply': { minTier: 1, plans: ['student_plus', 'student_pro'] },
-  'student.resume_builder': { minTier: 1, plans: ['student_plus', 'student_pro'] },
-  'student.mock_interview': { minTier: 1, plans: ['student_plus', 'student_pro'] },
-  'student.skill_assessments': { minTier: 1, plans: ['student_plus', 'student_pro'] },
-  'student.salary_insights': { minTier: 0, plans: ['student_plus', 'student_pro'] },
-  'student.video_resume': { minTier: 2, plans: ['student_pro'] },
-  'student.priority_application': { minTier: 2, plans: ['student_pro'] },
-  'student.ai_suggestions': { minTier: 1, plans: ['student_plus', 'student_pro'] },
-  'student.external_jobs': { minTier: 1, plans: ['student_plus', 'student_pro'] },
+  'student.auto_apply': { minTier: 1, plans: ['student_basic', 'student_plus', 'student_pro'] },
+  'student.resume_builder': { minTier: 1, plans: ['student_basic', 'student_plus', 'student_pro'] },
+  'student.mock_interview': { minTier: 1, plans: ['student_basic', 'student_plus', 'student_pro'] },
+  'student.skill_assessments': { minTier: 1, plans: ['student_basic', 'student_plus', 'student_pro'] },
+  'student.salary_insights': { minTier: 0, plans: ['student_basic', 'student_plus', 'student_pro'] },
+  'student.video_resume': { minTier: 2, plans: ['student_plus', 'student_pro'] },
+  'student.priority_application': { minTier: 2, plans: ['student_plus', 'student_pro'] },
+  'student.ai_suggestions': { minTier: 1, plans: ['student_basic', 'student_plus', 'student_pro'] },
+  'student.external_jobs': { minTier: 1, plans: ['student_basic', 'student_plus', 'student_pro'] },
 
   // Campus Features
   'campus.drive_creation': { minTier: 1, plans: ['campus_basic', 'campus_growth', 'campus_enterprise'] },
@@ -58,7 +58,7 @@ const getUserActiveSubscription = async (userId, audienceRole) => {
     .select('*, role_plans(*)')
     .eq('user_id', userId)
     .eq('audience_role', audienceRole)
-    .in('status', ['active', 'trialing', 'pending'])
+    .in('status', ['active', 'trialing'])
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();

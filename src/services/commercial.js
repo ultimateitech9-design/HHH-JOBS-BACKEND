@@ -14,10 +14,10 @@ const {
 } = require('./razorpay');
 
 const SUPPORTED_AUDIENCE_ROLES = new Set([ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT]);
-const ACTIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing', 'pending']);
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
 const DEFAULT_ROLE_TRIAL_PLAN_SLUGS = {
   [ROLES.HR]: 'hr_starter',
-  [ROLES.STUDENT]: 'student_plus',
+  [ROLES.STUDENT]: 'student_basic',
   [ROLES.CAMPUS_CONNECT]: 'campus_basic'
 };
 const AUTOPAY_STATUSES = {
@@ -969,6 +969,299 @@ const createOrReuseRazorpayPlanForRolePlan = async (plan = {}) => {
   return razorpayPlan.id;
 };
 
+const isSubscriptionStillUsable = (subscription = null) => {
+  if (!subscription) return false;
+  const status = normalizeLower(subscription.status);
+  if (!ACTIVE_SUBSCRIPTION_STATUSES.has(status)) return false;
+  if (!subscription.ends_at) return true;
+  return new Date(subscription.ends_at).getTime() >= Date.now();
+};
+
+const createPendingAutopayTrialSubscription = async ({
+  user,
+  audienceRole = '',
+  plan,
+  quote
+} = {}) => {
+  const nowIso = new Date().toISOString();
+  const trialDays = Math.max(1, parseInt(plan.trialDays || plan.durationDays || 30, 10) || 30);
+  const trialEndsAt = addDays(nowIso, trialDays);
+  const renewalQuantity = Math.max(1, parseInt(quote.quantity || 1, 10) || 1);
+
+  const subscriptionPayload = {
+    user_id: user.id,
+    audience_role: audienceRole,
+    role_plan_slug: plan.slug,
+    source_purchase_id: null,
+    status: 'pending',
+    amount: quote.totalAmount,
+    currency: quote.currency,
+    billing_cycle: plan.billingCycle,
+    starts_at: nowIso,
+    ends_at: trialEndsAt,
+    activated_at: null,
+    trial_ends_at: trialEndsAt,
+    coupon_code: quote.coupon?.code || null,
+    coupon_snapshot: quote.coupon || {},
+    sales_owner_id: null,
+    provider: null,
+    provider_subscription_id: null,
+    provider_customer_id: null,
+    autopay_enabled: false,
+    autopay_status: AUTOPAY_STATUSES.NOT_CONFIGURED,
+    last_renewed_at: null,
+    meta: {
+      isTrial: true,
+      trialDays,
+      pendingAutopaySetup: true,
+      trialRequiresAutopay: true,
+      renewalRolePlanSlug: plan.slug,
+      renewalQuantity,
+      renewalCouponCode: quote.coupon?.code || '',
+      renewalAmount: quote.totalAmount,
+      includedJobCredits: plan.includedJobCredits,
+      includedJobPlanSlug: plan.includedJobPlanSlug || null,
+      businessRule: 'autopay_required_before_trial'
+    }
+  };
+
+  const { data: subscription, error } = await supabase
+    .from('role_plan_subscriptions')
+    .insert(subscriptionPayload)
+    .select('*')
+    .single();
+
+  if (error) throw error;
+  return subscription;
+};
+
+const updatePendingAutopayTrialSubscription = async ({
+  subscription,
+  plan,
+  quote
+} = {}) => {
+  const nowIso = new Date().toISOString();
+  const trialDays = Math.max(1, parseInt(plan.trialDays || plan.durationDays || 30, 10) || 30);
+  const trialEndsAt = addDays(nowIso, trialDays);
+  const renewalQuantity = Math.max(1, parseInt(quote.quantity || 1, 10) || 1);
+  const nextMeta = mergeMeta(subscription.meta, {
+    isTrial: true,
+    trialDays,
+    pendingAutopaySetup: true,
+    trialRequiresAutopay: true,
+    renewalRolePlanSlug: plan.slug,
+    renewalQuantity,
+    renewalCouponCode: quote.coupon?.code || '',
+    renewalAmount: quote.totalAmount,
+    includedJobCredits: plan.includedJobCredits,
+    includedJobPlanSlug: plan.includedJobPlanSlug || null,
+    businessRule: 'autopay_required_before_trial'
+  });
+
+  const { data: updated, error } = await supabase
+    .from('role_plan_subscriptions')
+    .update({
+      role_plan_slug: plan.slug,
+      status: 'pending',
+      amount: quote.totalAmount,
+      currency: quote.currency,
+      billing_cycle: plan.billingCycle,
+      starts_at: nowIso,
+      ends_at: trialEndsAt,
+      trial_ends_at: trialEndsAt,
+      coupon_code: quote.coupon?.code || null,
+      coupon_snapshot: quote.coupon || {},
+      provider: null,
+      provider_subscription_id: null,
+      provider_customer_id: null,
+      autopay_enabled: false,
+      autopay_status: AUTOPAY_STATUSES.NOT_CONFIGURED,
+      meta: nextMeta
+    })
+    .eq('id', subscription.id)
+    .select('*')
+    .single();
+
+  if (error) throw error;
+  return updated;
+};
+
+const activateAutopayTrialSubscription = async ({
+  subscription,
+  userId,
+  audienceRole = '',
+  razorpaySubscriptionId,
+  razorpayPaymentId,
+  razorpaySignature,
+  remoteSubscription
+} = {}) => {
+  const existingMeta = subscription.meta || {};
+  const planSlug = normalizeLower(existingMeta.renewalRolePlanSlug || subscription.role_plan_slug);
+  const plan = await getRolePlanOrThrow(planSlug, {
+    audienceRole,
+    includeInactive: true
+  });
+  const renewalQuantity = Math.max(1, parseInt(existingMeta.renewalQuantity || 1, 10) || 1);
+  const quote = await quoteRolePlan({
+    planSlug: plan.slug,
+    audienceRole,
+    quantity: renewalQuantity,
+    couponCode: existingMeta.renewalCouponCode || subscription.coupon_code || ''
+  });
+  const nowIso = new Date().toISOString();
+  const trialDays = Math.max(1, parseInt(existingMeta.trialDays || plan.trialDays || plan.durationDays || 30, 10) || 30);
+  const trialEndsAt = addDays(nowIso, trialDays);
+  const trialReferenceId = `trial_autopay_${subscription.id}`;
+
+  let purchase = null;
+  const { data: existingPurchase, error: existingPurchaseError } = await supabase
+    .from('role_plan_purchases')
+    .select('*')
+    .eq('reference_id', trialReferenceId)
+    .maybeSingle();
+  if (existingPurchaseError) throw existingPurchaseError;
+
+  if (existingPurchase) {
+    purchase = existingPurchase;
+  } else {
+    const purchasePayload = {
+      user_id: userId,
+      audience_role: audienceRole,
+      role_plan_slug: plan.slug,
+      quantity: renewalQuantity,
+      unit_price: quote.unitPrice,
+      currency: quote.currency,
+      subtotal: quote.subtotal,
+      taxable_amount: 0,
+      discount_amount: quote.subtotal,
+      gst_amount: 0,
+      total_amount: 0,
+      status: PURCHASE_STATUSES.PAID,
+      provider: 'razorpay_trial_autopay',
+      reference_id: trialReferenceId,
+      note: `Auto-pay authorised before ${trialDays}-day free trial`,
+      coupon_code: quote.coupon?.code || null,
+      coupon_snapshot: quote.coupon || {},
+      sales_owner_id: subscription.sales_owner_id || null,
+      paid_at: nowIso,
+      meta: {
+        isTrial: true,
+        trialDays,
+        businessRule: 'autopay_required_before_trial',
+        providerSubscriptionId: razorpaySubscriptionId,
+        razorpayPaymentId,
+        renewalAmount: quote.totalAmount
+      }
+    };
+
+    const { data: insertedPurchase, error: purchaseError } = await supabase
+      .from('role_plan_purchases')
+      .insert(purchasePayload)
+      .select('*')
+      .single();
+    if (purchaseError) throw purchaseError;
+    purchase = insertedPurchase;
+  }
+
+  const nextMeta = mergeMeta(existingMeta, {
+    isTrial: true,
+    trialDays,
+    pendingAutopaySetup: false,
+    trialRequiresAutopay: true,
+    renewalRolePlanSlug: plan.slug,
+    renewalQuantity,
+    renewalCouponCode: quote.coupon?.code || '',
+    renewalAmount: quote.totalAmount,
+    razorpayPaymentId,
+    razorpaySignature,
+    razorpayCustomerId: remoteSubscription.customer_id || null,
+    razorpaySubscriptionStatus: remoteSubscription.status,
+    autopayAuthenticatedAt: nowIso
+  });
+
+  const { data: updatedSubscription, error: updateError } = await supabase
+    .from('role_plan_subscriptions')
+    .update({
+      role_plan_slug: plan.slug,
+      source_purchase_id: purchase.id,
+      status: 'active',
+      amount: quote.totalAmount,
+      currency: quote.currency,
+      billing_cycle: plan.billingCycle,
+      starts_at: nowIso,
+      ends_at: trialEndsAt,
+      activated_at: subscription.activated_at || nowIso,
+      trial_ends_at: trialEndsAt,
+      coupon_code: quote.coupon?.code || null,
+      coupon_snapshot: quote.coupon || {},
+      provider: 'razorpay',
+      provider_subscription_id: razorpaySubscriptionId,
+      provider_customer_id: remoteSubscription.customer_id || null,
+      autopay_enabled: true,
+      autopay_status: normalizeLower(remoteSubscription.status) || AUTOPAY_STATUSES.AUTHENTICATED,
+      last_renewed_at: nowIso,
+      meta: nextMeta
+    })
+    .eq('id', subscription.id)
+    .select('*')
+    .single();
+
+  if (updateError) throw updateError;
+
+  const currentUser = (await supabase
+    .from('users')
+    .select('id, name, email, mobile, role')
+    .eq('id', userId)
+    .maybeSingle()).data;
+
+  await upsertCommercialLeadForUser({
+    userId,
+    role: audienceRole,
+    name: currentUser?.name,
+    email: currentUser?.email,
+    mobile: currentUser?.mobile
+  });
+
+  await Promise.all([
+    createAccountsSubscription({
+      userId,
+      role: audienceRole,
+      plan,
+      amount: 0,
+      startsAt: nowIso,
+      endsAt: trialEndsAt
+    }),
+    syncSalesCustomer({
+      userId,
+      role: audienceRole,
+      plan,
+      subscriptionId: updatedSubscription.id,
+      amount: 0,
+      salesOwnerId: subscription.sales_owner_id || null
+    })
+  ]);
+
+  await grantHrCreditsForRolePlan({
+    purchase,
+    plan,
+    expiresAt: trialEndsAt,
+    source: 'trial_role_plan'
+  });
+
+  await updateLeadForCommercialEvent({
+    userId,
+    role: audienceRole,
+    status: 'converted',
+    onboardingStatus: 'active',
+    planSlug: plan.slug,
+    couponCode: quote.coupon?.code || '',
+    purchaseId: purchase.id,
+    subscriptionId: updatedSubscription.id
+  });
+
+  return updatedSubscription;
+};
+
 const createRolePlanAutopaySession = async ({
   user,
   audienceRole = '',
@@ -1015,23 +1308,27 @@ const createRolePlanAutopaySession = async ({
     audienceRole: normalizedAudienceRole,
     includeInactive: false
   });
-  const currentSubscription = await ensureRolePlanTrialSubscription({
-    userId: user.id,
-    audienceRole: normalizedAudienceRole,
-    user
-  }) || await getCurrentRolePlanSubscription({
+  let currentSubscription = await getCurrentRolePlanSubscription({
     userId: user.id,
     audienceRole: normalizedAudienceRole
   });
 
+  if (currentSubscription && !isSubscriptionStillUsable(currentSubscription) && normalizeLower(currentSubscription.status) !== 'pending') {
+    currentSubscription = null;
+  }
+
   if (!currentSubscription) {
-    return createManualRolePlanCheckoutFallback({
+    currentSubscription = await createPendingAutopayTrialSubscription({
       user,
       audienceRole: normalizedAudienceRole,
-      planSlug,
-      quantity,
-      couponCode,
-      fallbackReason: 'We could not prepare the free trial automatically for this account, so we created a manual plan request instead.'
+      plan,
+      quote
+    });
+  } else if (normalizeLower(currentSubscription.status) === 'pending') {
+    currentSubscription = await updatePendingAutopayTrialSubscription({
+      subscription: currentSubscription,
+      plan,
+      quote
     });
   }
 
@@ -1098,7 +1395,7 @@ const createRolePlanAutopaySession = async ({
       billing_cycle: plan.billingCycle,
       provider: 'razorpay',
       provider_subscription_id: subscriptionSetup.id,
-      autopay_enabled: true,
+      autopay_enabled: false,
       autopay_status: normalizeLower(subscriptionSetup.status) || AUTOPAY_STATUSES.CREATED,
       meta: nextMeta
     })
@@ -1172,6 +1469,21 @@ const confirmRolePlanAutopayPayment = async ({
     const error = new Error('Local role subscription not found for auto-pay verification.');
     error.statusCode = 404;
     throw error;
+  }
+
+  if (
+    normalizeLower(existingSubscription.status) === 'pending'
+    || existingSubscription.meta?.pendingAutopaySetup
+  ) {
+    return activateAutopayTrialSubscription({
+      subscription: existingSubscription,
+      userId,
+      audienceRole: normalizedAudienceRole,
+      razorpaySubscriptionId,
+      razorpayPaymentId,
+      razorpaySignature,
+      remoteSubscription
+    });
   }
 
   const nextMeta = mergeMeta(existingSubscription.meta, {
@@ -1748,10 +2060,6 @@ const syncCommercialLeadsFromUsers = async ({ roles = [ROLES.HR, ROLES.CAMPUS_CO
 
 const listRolePlanSubscriptions = async ({ userId = null, status = '', audienceRole = '' } = {}) => {
   const normalizedAudienceRole = normalizeAudienceRole(audienceRole);
-  if (isValidUuid(userId) && normalizedAudienceRole) {
-    await ensureRolePlanTrialSubscription({ userId, audienceRole: normalizedAudienceRole });
-  }
-
   let query = supabase
     .from('role_plan_subscriptions')
     .select('*')
@@ -1771,9 +2079,6 @@ const getCurrentRolePlanSubscription = async ({ userId, audienceRole = '' } = {}
   if (!isValidUuid(userId)) return null;
 
   const normalizedAudienceRole = normalizeAudienceRole(audienceRole);
-  if (normalizedAudienceRole) {
-    await ensureRolePlanTrialSubscription({ userId, audienceRole: normalizedAudienceRole });
-  }
   let query = supabase
     .from('role_plan_subscriptions')
     .select('*')

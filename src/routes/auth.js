@@ -32,7 +32,7 @@ const {
 } = require('../services/accountRoles');
 const { backfillCampusDriveNotificationsForStudent } = require('../services/campusDrives');
 const { enqueueWelcomeEmail } = require('../services/sideEffectQueue');
-const { upsertCommercialLeadForUser, ensureRolePlanTrialSubscription } = require('../services/commercial');
+const { upsertCommercialLeadForUser } = require('../services/commercial');
 const {
   isEmployeeProfileRole,
   getProfileRoleKey,
@@ -269,14 +269,8 @@ const queueCommercialLeadSyncForUser = (user = {}) => {
 };
 const queueRolePlanTrialProvisionForUser = (user = {}) => {
   if (![ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT].includes(String(user?.role || '').trim().toLowerCase())) return;
-
-  runAsyncSideEffect('role-plan-trial-provision', async () => {
-    await ensureRolePlanTrialSubscription({
-      userId: user.id,
-      audienceRole: user.role,
-      user
-    });
-  });
+  // Trials are now created only after Razorpay auto-pay authorisation.
+  // Keep this hook as a no-op so signup remains compatible with older call sites.
 };
 
 const loadEimagerSyncProfile = async ({ user = {}, fallbackProfile = null, reqBody = null }) => {

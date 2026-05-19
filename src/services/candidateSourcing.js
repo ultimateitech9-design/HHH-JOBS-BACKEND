@@ -23,7 +23,7 @@ const DEFAULT_TEMPLATES = [
 const STUDENT_DB_VIEW_FEATURE_KEY = 'hr.student_database_view';
 const STUDENT_DB_VIEW_SUBJECT_TYPE = 'student_profile';
 const DEFAULT_TRIAL_STUDENT_DB_VIEW_LIMIT = 25;
-const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing', 'pending']);
+const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
 
 const normalizeText = (value = '') => String(value || '').trim();
 const normalizeLowerText = (value = '') => normalizeText(value).toLowerCase();
