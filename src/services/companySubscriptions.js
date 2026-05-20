@@ -2,8 +2,12 @@ const { supabase } = require('../supabase');
 const { normalizeCompanyKey, toCompanySlug } = require('./companyDirectory');
 const { pushNotificationEvent } = require('./notificationStream');
 
+const { ROLES } = require('../constants');
+
 const STUDENT_JOB_LINK = (jobId) => `/portal/student/jobs/${jobId}`;
+const RETIRED_JOB_LINK = (jobId) => `/portal/retired/jobs/${jobId}`;
 const CAMPUS_COMPANY_JOBS_LINK = '/portal/campus-connect/connections';
+const HR_JOBS_LINK = '/portal/hr/jobs';
 
 const toText = (value = '') => String(value || '').trim();
 
@@ -18,6 +22,7 @@ const isStorageUnavailableError = (error = {}) => {
     .toLowerCase();
 
   return (
+    message.includes('company_subscriptions') ||
     message.includes('student_company_subscriptions') ||
     message.includes('campus_connections') ||
     message.includes('colleges') ||
@@ -33,8 +38,17 @@ const normalizeSubscription = (row = null) => ({
   companyKey: row?.company_key || '',
   companyName: row?.company_name || '',
   companySlug: row?.company_slug || '',
+  subscriberRole: row?.subscriber_role || '',
   updatedAt: row?.updated_at || row?.created_at || null
 });
+
+const getJobNotificationLink = ({ jobId, subscriberRole, companyName, companySlug }) => {
+  if (subscriberRole === ROLES.STUDENT) return STUDENT_JOB_LINK(jobId);
+  if (subscriberRole === ROLES.RETIRED_EMPLOYEE) return RETIRED_JOB_LINK(jobId);
+  if (subscriberRole === ROLES.CAMPUS_CONNECT) return CAMPUS_COMPANY_JOBS_LINK;
+  if (subscriberRole === ROLES.HR) return HR_JOBS_LINK;
+  return `/companies/${toText(companySlug) || toCompanySlug(companyName)}`;
+};
 
 const insertNotifications = async ({ rows, supabaseClient = supabase } = {}) => {
   const payload = Array.isArray(rows) ? rows.filter((row) => row?.user_id && row.title && row.message) : [];
@@ -56,21 +70,22 @@ const insertNotifications = async ({ rows, supabaseClient = supabase } = {}) => 
 
 const getCompanySubscriptionStatus = async ({
   userId,
+  userRole = '',
   companyName = '',
   companySlug = '',
   supabaseClient = supabase
 } = {}) => {
-  const studentUserId = toText(userId);
+  const subscriberUserId = toText(userId);
   const companyKey = buildCompanySubscriptionKey({ companyName, companySlug });
 
-  if (!studentUserId || !companyKey) {
+  if (!subscriberUserId || !companyKey) {
     return normalizeSubscription(null);
   }
 
   const { data, error } = await supabaseClient
-    .from('student_company_subscriptions')
+    .from('company_subscriptions')
     .select('*')
-    .eq('student_user_id', studentUserId)
+    .eq('subscriber_user_id', subscriberUserId)
     .eq('company_key', companyKey)
     .maybeSingle();
 
@@ -86,18 +101,20 @@ const getCompanySubscriptionStatus = async ({
 
 const setCompanySubscription = async ({
   userId,
+  userRole = '',
   companyName = '',
   companySlug = '',
   subscribed = true,
   supabaseClient = supabase
 } = {}) => {
-  const studentUserId = toText(userId);
+  const subscriberUserId = toText(userId);
+  const subscriberRole = toText(userRole);
   const displayName = toText(companyName);
   const normalizedSlug = toText(companySlug) || toCompanySlug(displayName);
   const companyKey = buildCompanySubscriptionKey({ companyName: displayName, companySlug: normalizedSlug });
 
-  if (!studentUserId || !companyKey || (!displayName && subscribed)) {
-    const missing = !studentUserId ? 'userId' : 'companyName';
+  if (!subscriberUserId || !companyKey || (!displayName && subscribed)) {
+    const missing = !subscriberUserId ? 'userId' : 'companyName';
     const error = new Error(`${missing} is required`);
     error.statusCode = 400;
     throw error;
@@ -105,9 +122,9 @@ const setCompanySubscription = async ({
 
   if (!subscribed) {
     const { data, error } = await supabaseClient
-      .from('student_company_subscriptions')
+      .from('company_subscriptions')
       .update({ is_active: false })
-      .eq('student_user_id', studentUserId)
+      .eq('subscriber_user_id', subscriberUserId)
       .eq('company_key', companyKey)
       .select('*')
       .maybeSingle();
@@ -123,7 +140,8 @@ const setCompanySubscription = async ({
   }
 
   const payload = {
-    student_user_id: studentUserId,
+    subscriber_user_id: subscriberUserId,
+    subscriber_role: subscriberRole || null,
     company_key: companyKey,
     company_name: displayName,
     company_slug: normalizedSlug || toCompanySlug(displayName),
@@ -131,8 +149,8 @@ const setCompanySubscription = async ({
   };
 
   const { data, error } = await supabaseClient
-    .from('student_company_subscriptions')
-    .upsert(payload, { onConflict: 'student_user_id,company_key' })
+    .from('company_subscriptions')
+    .upsert(payload, { onConflict: 'subscriber_user_id,company_key' })
     .select('*')
     .single();
 
@@ -158,8 +176,8 @@ const notifyCompanySubscribersForJob = async ({
   }
 
   const { data: subscriptions, error } = await supabaseClient
-    .from('student_company_subscriptions')
-    .select('student_user_id, company_name')
+    .from('company_subscriptions')
+    .select('subscriber_user_id, subscriber_role, company_name, company_slug')
     .eq('company_key', companyKey)
     .eq('is_active', true);
 
@@ -170,21 +188,34 @@ const notifyCompanySubscribersForJob = async ({
     throw error;
   }
 
-  const studentUserIds = [...new Set((subscriptions || []).map((row) => row.student_user_id).filter(Boolean))];
-  if (studentUserIds.length === 0) {
+  const subscriptionsByUser = new Map();
+  (subscriptions || []).forEach((row) => {
+    if (row.subscriber_user_id && !subscriptionsByUser.has(row.subscriber_user_id)) {
+      subscriptionsByUser.set(row.subscriber_user_id, row);
+    }
+  });
+
+  if (subscriptionsByUser.size === 0) {
     return { skipped: false, notificationsSent: 0 };
   }
 
-  const rows = studentUserIds.map((userId) => ({
-    user_id: userId,
+  const companySlug = toCompanySlug(companyName);
+  const rows = Array.from(subscriptionsByUser.values()).map((subscription) => ({
+    user_id: subscription.subscriber_user_id,
     type: 'company_job_posted',
     title: `${companyName || 'A subscribed company'} posted a new job`,
     message: `${job.job_title || 'A new role'} is now open. Apply before it closes.`,
-    link: STUDENT_JOB_LINK(job.id),
+    link: getJobNotificationLink({
+      jobId: job.id,
+      subscriberRole: subscription.subscriber_role,
+      companyName,
+      companySlug: subscription.company_slug || companySlug
+    }),
     meta: {
       jobId: job.id,
       companyName,
-      companyKey
+      companyKey,
+      subscriberRole: subscription.subscriber_role || null
     }
   }));
 

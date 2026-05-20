@@ -2,9 +2,16 @@ const express = require('express');
 
 const { supabase, sendSupabaseError } = require('../supabase');
 const { asyncHandler } = require('../utils/helpers');
-const { JOB_STATUSES } = require('../constants');
+const { JOB_STATUSES, ROLES } = require('../constants');
+const { requireAuth } = require('../middleware/auth');
+const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { mapJobFromRow } = require('../utils/mappers');
 const { buildCompanyBrandIndex, buildDomainLogoUrl, resolveCompanyBrand } = require('../services/companyBranding');
+const {
+  getCompanySubscriptionStatus,
+  isStorageUnavailableError,
+  setCompanySubscription
+} = require('../services/companySubscriptions');
 const {
   buildCompanyDirectory,
   buildCompanyDirectorySummary,
@@ -12,6 +19,19 @@ const {
 } = require('../services/companyDirectory');
 
 const router = express.Router();
+
+const companySubscriptionAuth = [
+  requireAuth,
+  requireActiveUser,
+  requireRole(
+    ROLES.STUDENT,
+    ROLES.RETIRED_EMPLOYEE,
+    ROLES.HR,
+    ROLES.CAMPUS_CONNECT,
+    ROLES.ADMIN,
+    ROLES.SUPER_ADMIN
+  )
+];
 
 const getDirectorySourceData = async (nowIso) => {
   const [sponsorsResp, profilesResp, portalJobsResp, externalJobsResp] = await Promise.all([
@@ -264,6 +284,49 @@ router.get('/sponsors', asyncHandler(async (req, res) => {
       totalOpenRoles: sponsoredCompanies.reduce((sum, company) => sum + Number(company.totalJobs || 0), 0)
     }
   });
+}));
+
+router.get('/:companySlug/subscription', companySubscriptionAuth, asyncHandler(async (req, res) => {
+  try {
+    const subscription = await getCompanySubscriptionStatus({
+      userId: req.user.id,
+      userRole: req.user.role,
+      companyName: req.query?.companyName,
+      companySlug: req.params.companySlug
+    });
+
+    res.send({ status: true, subscription });
+  } catch (error) {
+    if (isStorageUnavailableError(error)) {
+      res.status(503).send({ status: false, message: 'Company subscriptions are not ready yet' });
+      return;
+    }
+    throw error;
+  }
+}));
+
+router.put('/:companySlug/subscription', companySubscriptionAuth, asyncHandler(async (req, res) => {
+  try {
+    const subscription = await setCompanySubscription({
+      userId: req.user.id,
+      userRole: req.user.role,
+      companyName: req.body?.companyName,
+      companySlug: req.params.companySlug,
+      subscribed: req.body?.subscribed !== false
+    });
+
+    res.send({ status: true, subscription });
+  } catch (error) {
+    if (error.statusCode === 400) {
+      res.status(400).send({ status: false, message: error.message });
+      return;
+    }
+    if (isStorageUnavailableError(error)) {
+      res.status(503).send({ status: false, message: 'Company subscriptions are not ready yet' });
+      return;
+    }
+    throw error;
+  }
 }));
 
 router.get('/:companySlug', asyncHandler(async (req, res) => {

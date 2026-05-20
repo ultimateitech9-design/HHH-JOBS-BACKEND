@@ -39,7 +39,7 @@ const createNotificationFanoutClient = ({ subscriptions = [], connections = [], 
     state,
     client: {
       from(table) {
-        if (table === 'student_company_subscriptions') {
+        if (table === 'company_subscriptions') {
           return {
             select() {
               return createQuery(state.subscriptions);
@@ -91,14 +91,15 @@ test('buildCompanySubscriptionKey normalizes company names and slugs consistentl
   assert.equal(buildCompanySubscriptionKey({ companySlug: 'acme-sons-pvt-ltd' }), 'acme sons pvt ltd');
 });
 
-test('notifyCompanySubscribersForJob sends one notification per subscribed student', async () => {
+test('notifyCompanySubscribersForJob sends one notification per subscribed portal user', async () => {
   const { client, state } = createNotificationFanoutClient({
     subscriptions: [
-      { student_user_id: 'student-1', company_key: 'acme labs', is_active: true },
-      { student_user_id: 'student-1', company_key: 'acme labs', is_active: true },
-      { student_user_id: 'student-2', company_key: 'acme labs', is_active: true },
-      { student_user_id: 'student-3', company_key: 'other co', is_active: true },
-      { student_user_id: 'student-4', company_key: 'acme labs', is_active: false }
+      { subscriber_user_id: 'student-1', subscriber_role: 'student', company_key: 'acme labs', is_active: true },
+      { subscriber_user_id: 'student-1', subscriber_role: 'student', company_key: 'acme labs', is_active: true },
+      { subscriber_user_id: 'hr-1', subscriber_role: 'hr', company_key: 'acme labs', is_active: true },
+      { subscriber_user_id: 'campus-1', subscriber_role: 'campus_connect', company_key: 'acme labs', is_active: true },
+      { subscriber_user_id: 'student-3', subscriber_role: 'student', company_key: 'other co', is_active: true },
+      { subscriber_user_id: 'student-4', subscriber_role: 'student', company_key: 'acme labs', is_active: false }
     ]
   });
 
@@ -111,10 +112,12 @@ test('notifyCompanySubscribersForJob sends one notification per subscribed stude
     supabaseClient: client
   });
 
-  assert.deepEqual(summary, { skipped: false, notificationsSent: 2 });
-  assert.deepEqual(state.notifications.map((item) => item.user_id).sort(), ['student-1', 'student-2']);
+  assert.deepEqual(summary, { skipped: false, notificationsSent: 3 });
+  assert.deepEqual(state.notifications.map((item) => item.user_id).sort(), ['campus-1', 'hr-1', 'student-1']);
   assert.equal(state.notifications[0].type, 'company_job_posted');
   assert.equal(state.notifications[0].link, '/portal/student/jobs/job-1');
+  assert.equal(state.notifications.find((item) => item.user_id === 'hr-1').link, '/portal/hr/jobs');
+  assert.equal(state.notifications.find((item) => item.user_id === 'campus-1').link, '/portal/campus-connect/connections');
 });
 
 test('notifyConnectedCampusesForJob notifies accepted campus connections', async () => {
