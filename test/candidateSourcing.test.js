@@ -87,7 +87,7 @@ test('matchesCandidateFilters supports campus, location, availability, and cgpa 
   }), false);
 });
 
-test('buildCandidatePresentation blurs profiles on free access and unlocks contact after acceptance', () => {
+test('buildCandidatePresentation shows browseable profiles and unlocks contact after acceptance', () => {
   const baseCandidate = {
     user: {
       id: 'student-1',
@@ -124,15 +124,16 @@ test('buildCandidatePresentation blurs profiles on free access and unlocks conta
     }
   };
 
-  const blurred = buildCandidatePresentation({
+  const browseable = buildCandidatePresentation({
     candidate: baseCandidate,
-    access: { hasPaidAccess: false, requiresUpgrade: true }
+    access: { hasPaidAccess: true, requiresUpgrade: false }
   });
 
-  assert.equal(blurred.access.canBrowseFullProfile, false);
-  assert.equal(blurred.access.canViewResume, false);
-  assert.equal(blurred.user.email, null);
-  assert.match(blurred.user.name, /\*/);
+  assert.equal(browseable.access.canBrowseFullProfile, true);
+  assert.equal(browseable.access.canSendInterest, true);
+  assert.equal(browseable.access.canViewResume, false);
+  assert.equal(browseable.user.email, 'ai***@example.com');
+  assert.equal(browseable.user.name, 'Aisha Khan');
 
   const unlocked = buildCandidatePresentation({
     candidate: {

@@ -566,15 +566,15 @@ const getHrSourcingAccess = async ({ userId, role }) => {
   const purchase = (purchases || []).find((item) => normalizeLowerText(item.plan_slug) !== 'free') || null;
   if (!purchase) {
     return {
-      hasPaidAccess: false,
-      requiresUpgrade: true,
+      hasPaidAccess: true,
+      requiresUpgrade: false,
       activePlanSlug: 'free',
-      activePlanName: 'Free',
+      activePlanName: 'Free Candidate Access',
       latestPaidAt: null,
-      source: 'free',
-      studentDbViewLimit: 0,
-      studentDbViewsUsed: 0,
-      studentDbViewsRemaining: 0,
+      source: 'free_candidate_access',
+      studentDbViewLimit: null,
+      studentDbViewsUsed: null,
+      studentDbViewsRemaining: null,
       studentDbQuotaEnforced: false
     };
   }
