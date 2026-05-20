@@ -1,4 +1,5 @@
 const { supabase } = require('../supabase');
+const { normalizeCompanyKey } = require('./companyDirectory');
 const { createNotification } = require('./notifications');
 const { notifyUser } = require('./notificationOrchestrator');
 
@@ -140,6 +141,93 @@ const loadEligibleCampusStudents = async ({ collegeId, drive }) => {
   if (error) throw error;
 
   return (students || []).filter((student) => isStudentEligibleForDrive(student, drive));
+};
+
+const isMissingCampusSyncTable = (error = {}) => {
+  const message = String(error.message || error.details || '').toLowerCase();
+  return message.includes('campus_connections') || message.includes('campus_drives');
+};
+
+const syncHrCompanyProfileToCampus = async ({
+  userId,
+  previousCompanyName = '',
+  nextCompanyName = '',
+  supabaseClient = supabase
+} = {}) => {
+  const normalizedUserId = String(userId || '').trim();
+  const previousName = String(previousCompanyName || '').trim();
+  const nextName = String(nextCompanyName || '').trim();
+
+  if (!normalizedUserId || !nextName) {
+    return {
+      skipped: true,
+      reason: !normalizedUserId ? 'missing_user_id' : 'missing_company_name',
+      connectionsUpdated: 0,
+      drivesUpdated: 0
+    };
+  }
+
+  const connectionsResponse = await supabaseClient
+    .from('campus_connections')
+    .select('id, college_id, company_name')
+    .eq('company_user_id', normalizedUserId);
+
+  if (connectionsResponse.error) {
+    if (isMissingCampusSyncTable(connectionsResponse.error)) {
+      return { skipped: true, reason: 'campus_tables_unavailable', connectionsUpdated: 0, drivesUpdated: 0 };
+    }
+    throw connectionsResponse.error;
+  }
+
+  const connections = connectionsResponse.data || [];
+  const collegeIds = [...new Set(connections.map((connection) => connection.college_id).filter(Boolean))];
+
+  let connectionsUpdated = 0;
+  if (connections.length > 0 && connections.some((connection) => String(connection.company_name || '').trim() !== nextName)) {
+    const connectionUpdateResponse = await supabaseClient
+      .from('campus_connections')
+      .update({ company_name: nextName })
+      .eq('company_user_id', normalizedUserId)
+      .select('id');
+
+    if (connectionUpdateResponse.error) {
+      if (isMissingCampusSyncTable(connectionUpdateResponse.error)) {
+        return { skipped: true, reason: 'campus_tables_unavailable', connectionsUpdated: 0, drivesUpdated: 0 };
+      }
+      throw connectionUpdateResponse.error;
+    }
+
+    connectionsUpdated = (connectionUpdateResponse.data || []).length;
+  }
+
+  const companyNameChanged = normalizeCompanyKey(previousName) !== normalizeCompanyKey(nextName);
+  if (!companyNameChanged || !previousName || collegeIds.length === 0) {
+    return {
+      skipped: false,
+      connectionsUpdated,
+      drivesUpdated: 0
+    };
+  }
+
+  const drivesUpdateResponse = await supabaseClient
+    .from('campus_drives')
+    .update({ company_name: nextName })
+    .in('college_id', collegeIds)
+    .ilike('company_name', previousName)
+    .select('id');
+
+  if (drivesUpdateResponse.error) {
+    if (isMissingCampusSyncTable(drivesUpdateResponse.error)) {
+      return { skipped: true, reason: 'campus_tables_unavailable', connectionsUpdated, drivesUpdated: 0 };
+    }
+    throw drivesUpdateResponse.error;
+  }
+
+  return {
+    skipped: false,
+    connectionsUpdated,
+    drivesUpdated: (drivesUpdateResponse.data || []).length
+  };
 };
 
 const countEligibleCampusStudentsForDrive = async ({ collegeId, drive }) => {
@@ -292,5 +380,6 @@ module.exports = {
   countEligibleCampusStudentsForDrive,
   isCampusDriveUpcoming,
   isStudentEligibleForDrive,
-  publishCampusDriveNotifications
+  publishCampusDriveNotifications,
+  syncHrCompanyProfileToCampus
 };

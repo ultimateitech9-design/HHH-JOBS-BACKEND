@@ -31,6 +31,7 @@ const {
   getInterviewScheduleCapabilities
 } = require('../services/interviews');
 const { attachPlanAccess, requirePlanFeature } = require('../middleware/planAccess');
+const { syncHrCompanyProfileToCampus } = require('../services/campusDrives');
 
 const router = express.Router();
 
@@ -110,6 +111,17 @@ router.put('/profile', asyncHandler(async (req, res) => {
     ? req.body.userId
     : req.user.id;
 
+  const previousProfileResponse = await supabase
+    .from('hr_profiles')
+    .select('company_name')
+    .eq('user_id', targetUserId)
+    .maybeSingle();
+
+  if (previousProfileResponse.error) {
+    sendSupabaseError(res, previousProfileResponse.error);
+    return;
+  }
+
   const payload = {
     user_id: targetUserId,
     company_name: req.body?.companyName,
@@ -134,7 +146,13 @@ router.put('/profile', asyncHandler(async (req, res) => {
     return;
   }
 
-  res.send({ status: true, profile: data });
+  const campusSync = await syncHrCompanyProfileToCampus({
+    userId: targetUserId,
+    previousCompanyName: previousProfileResponse.data?.company_name || '',
+    nextCompanyName: data.company_name || ''
+  });
+
+  res.send({ status: true, profile: data, campusSync });
 }));
 
 router.post('/jobs', requireApprovedHr, asyncHandler(createHrJob));
