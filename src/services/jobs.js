@@ -3,6 +3,7 @@ const { JOB_STATUSES, JOB_APPROVAL_STATUSES, ROLES } = require('../constants');
 const { normalizeEmail, stripUndefined, toArray } = require('../utils/helpers');
 const { mapJobFromRow } = require('../utils/mappers');
 const { notifyUsersByRoles } = require('./notifications');
+const { notifyCompanySubscribersForJob } = require('./companySubscriptions');
 const { inspectJobPostingContent } = require('./jobModeration');
 const { enqueueJobPostedSideEffects } = require('./sideEffectQueue');
 const {
@@ -130,6 +131,19 @@ const validateNewJobPayload = (payload) => {
 
 const normalizeLogoInput = (value = '') => String(value || '').trim();
 
+const getHrProfileCompanyForUser = async (userId) => {
+  if (!supabase || !userId) return '';
+
+  const { data, error } = await supabase
+    .from('hr_profiles')
+    .select('company_name')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return String(data?.company_name || '').trim();
+};
+
 const getHrProfileLogoForUser = async (userId, companyName) => {
   if (!supabase || !userId) return '';
 
@@ -240,6 +254,22 @@ const applyJobFilters = (query, filters = {}) => {
 
 const createHrJob = async (req, res) => {
   const payload = buildJobPayload(req.body || {});
+  try {
+    const profileCompanyName = req.user.role === ROLES.HR
+      ? await getHrProfileCompanyForUser(req.user.id)
+      : '';
+    if (profileCompanyName) {
+      payload.company_name = profileCompanyName;
+    }
+  } catch (error) {
+    if (error?.code) {
+      sendSupabaseError(res, error);
+      return;
+    }
+    res.status(error.statusCode || 500).send({ status: false, message: error.message || 'Unable to load HR company profile' });
+    return;
+  }
+
   const missing = validateNewJobPayload(payload);
   const manualValidationErrors = validateManualJobPostingRules(payload);
 
@@ -351,6 +381,10 @@ const createHrJob = async (req, res) => {
     }
 
     if (data.status === JOB_STATUSES.OPEN && data.approval_status === JOB_APPROVAL_STATUSES.APPROVED) {
+      await notifyCompanySubscribersForJob({ job: data }).catch((error) => {
+        console.warn('[COMPANY SUBSCRIBER NOTIFICATIONS]', error?.message || error);
+      });
+
       await enqueueJobPostedSideEffects({
         jobId: data.id,
         triggerSource: 'job_created'
@@ -383,6 +417,22 @@ const updateHrJob = async (req, res) => {
   if (!existingJob) return;
 
   const payload = buildJobPayload(req.body || {});
+  try {
+    const profileCompanyName = req.user.role === ROLES.HR
+      ? await getHrProfileCompanyForUser(req.user.id)
+      : '';
+    if (profileCompanyName) {
+      payload.company_name = profileCompanyName;
+    }
+  } catch (error) {
+    if (error?.code) {
+      sendSupabaseError(res, error);
+      return;
+    }
+    res.status(error.statusCode || 500).send({ status: false, message: error.message || 'Unable to load HR company profile' });
+    return;
+  }
+
   const manualValidationErrors = validateManualJobPostingRules({
     ...existingJob,
     ...payload,

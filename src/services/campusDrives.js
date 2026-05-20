@@ -1,5 +1,6 @@
 const { supabase } = require('../supabase');
 const { normalizeCompanyKey } = require('./companyDirectory');
+const { notifyCompanySubscribersForCampusDrive } = require('./companySubscriptions');
 const { createNotification } = require('./notifications');
 const { notifyUser } = require('./notificationOrchestrator');
 
@@ -237,8 +238,17 @@ const countEligibleCampusStudentsForDrive = async ({ collegeId, drive }) => {
 
 const publishCampusDriveNotifications = async ({ collegeId, drive, actorUserId = null }) => {
   const eligibleStudents = await loadEligibleCampusStudents({ collegeId, drive });
+  const subscriberNotificationSummary = await notifyCompanySubscribersForCampusDrive({ drive }).catch((error) => {
+    console.warn('[COMPANY SUBSCRIBER CAMPUS DRIVE NOTIFICATIONS]', error?.message || error);
+    return { skipped: true, reason: 'company_subscriber_notification_failed', notificationsSent: 0 };
+  });
+
   if (eligibleStudents.length === 0) {
-    return { eligibleStudents: 0, notificationsSent: 0 };
+    return {
+      eligibleStudents: 0,
+      notificationsSent: 0,
+      companySubscriberNotificationsSent: subscriberNotificationSummary.notificationsSent || 0
+    };
   }
 
   const notificationResults = await Promise.allSettled(
@@ -293,7 +303,8 @@ const publishCampusDriveNotifications = async ({ collegeId, drive, actorUserId =
 
   return {
     eligibleStudents: eligibleStudents.length,
-    notificationsSent: notificationResults.filter((result) => result.status === 'fulfilled').length
+    notificationsSent: notificationResults.filter((result) => result.status === 'fulfilled').length,
+    companySubscriberNotificationsSent: subscriberNotificationSummary.notificationsSent || 0
   };
 };
 

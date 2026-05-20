@@ -3,8 +3,11 @@ const assert = require('node:assert/strict');
 
 const {
   buildCompanySubscriptionKey,
+  getCompanySubscriptionStatus,
+  notifyCompanySubscribersForCampusDrive,
   notifyCompanySubscribersForJob,
-  notifyConnectedCampusesForJob
+  notifyConnectedCampusesForJob,
+  setCompanySubscription
 } = require('../src/services/companySubscriptions');
 
 const createQuery = (rows) => {
@@ -86,6 +89,74 @@ const createNotificationFanoutClient = ({ subscriptions = [], connections = [], 
   };
 };
 
+const createUnavailableSubscriptionClient = () => {
+  const state = { notifications: [] };
+  const unavailableError = { message: 'Could not find the table company_subscriptions in the schema cache' };
+
+  return {
+    state,
+    client: {
+      from(table) {
+        if (table === 'company_subscriptions') {
+          return {
+            select() {
+              return createQueryWithError(unavailableError);
+            },
+            update() {
+              return createQueryWithError(unavailableError);
+            },
+            upsert() {
+              return {
+                select() {
+                  return {
+                    single() {
+                      return Promise.resolve({ data: null, error: unavailableError });
+                    }
+                  };
+                }
+              };
+            }
+          };
+        }
+
+        if (table === 'notifications') {
+          return {
+            insert(payload) {
+              const inserted = payload.map((row, index) => ({
+                id: `fallback-notification-${state.notifications.length + index + 1}`,
+                ...row
+              }));
+              state.notifications.push(...inserted);
+              return {
+                select() {
+                  return Promise.resolve({ data: inserted, error: null });
+                }
+              };
+            }
+          };
+        }
+
+        throw new Error(`Unexpected table: ${table}`);
+      }
+    }
+  };
+};
+
+const createQueryWithError = (error) => {
+  const query = {
+    eq() {
+      return query;
+    },
+    maybeSingle() {
+      return Promise.resolve({ data: null, error });
+    },
+    then(resolve, reject) {
+      return Promise.resolve({ data: null, error }).then(resolve, reject);
+    }
+  };
+  return query;
+};
+
 test('buildCompanySubscriptionKey normalizes company names and slugs consistently', () => {
   assert.equal(buildCompanySubscriptionKey({ companyName: 'ACME & Sons Pvt. Ltd.' }), 'acme and sons pvt ltd');
   assert.equal(buildCompanySubscriptionKey({ companySlug: 'acme-sons-pvt-ltd' }), 'acme sons pvt ltd');
@@ -118,6 +189,69 @@ test('notifyCompanySubscribersForJob sends one notification per subscribed porta
   assert.equal(state.notifications[0].link, '/portal/student/jobs/job-1');
   assert.equal(state.notifications.find((item) => item.user_id === 'hr-1').link, '/portal/hr/jobs');
   assert.equal(state.notifications.find((item) => item.user_id === 'campus-1').link, '/portal/campus-connect/connections');
+});
+
+test('company subscriptions fall back when Supabase table is missing', async () => {
+  const { client, state } = createUnavailableSubscriptionClient();
+  const subscription = await setCompanySubscription({
+    userId: 'fallback-student-1',
+    userRole: 'student',
+    companyName: 'Fallback Labs',
+    companySlug: 'fallback-labs',
+    subscribed: true,
+    supabaseClient: client
+  });
+
+  assert.equal(subscription.subscribed, true);
+
+  const status = await getCompanySubscriptionStatus({
+    userId: 'fallback-student-1',
+    userRole: 'student',
+    companyName: 'Fallback Labs',
+    companySlug: 'fallback-labs',
+    supabaseClient: client
+  });
+
+  assert.equal(status.subscribed, true);
+
+  const summary = await notifyCompanySubscribersForJob({
+    job: {
+      id: 'fallback-job-1',
+      job_title: 'Backend Intern',
+      company_name: 'Fallback Labs'
+    },
+    supabaseClient: client
+  });
+
+  assert.deepEqual(summary, { skipped: false, notificationsSent: 1 });
+  assert.equal(state.notifications[0].user_id, 'fallback-student-1');
+  assert.equal(state.notifications[0].link, '/portal/student/jobs/fallback-job-1');
+});
+
+test('notifyCompanySubscribersForCampusDrive sends subscribed company drive notifications', async () => {
+  const { client, state } = createNotificationFanoutClient({
+    subscriptions: [
+      { subscriber_user_id: 'student-1', subscriber_role: 'student', company_key: 'eimager', is_active: true },
+      { subscriber_user_id: 'campus-1', subscriber_role: 'campus_connect', company_key: 'eimager', is_active: true },
+      { subscriber_user_id: 'student-2', subscriber_role: 'student', company_key: 'other co', is_active: true }
+    ]
+  });
+
+  const summary = await notifyCompanySubscribersForCampusDrive({
+    drive: {
+      id: 'drive-1',
+      college_id: 'college-1',
+      job_title: 'Trainee Engineer',
+      company_name: 'Eimager'
+    },
+    supabaseClient: client
+  });
+
+  assert.deepEqual(summary, { skipped: false, notificationsSent: 2 });
+  assert.deepEqual(state.notifications.map((item) => item.user_id).sort(), ['campus-1', 'student-1']);
+  assert.equal(state.notifications[0].type, 'company_campus_drive_posted');
+  assert.equal(state.notifications.find((item) => item.user_id === 'student-1').link, '/portal/student/campus-connect');
+  assert.equal(state.notifications.find((item) => item.user_id === 'campus-1').link, '/portal/campus-connect/drives');
 });
 
 test('notifyConnectedCampusesForJob notifies accepted campus connections', async () => {

@@ -2232,6 +2232,7 @@ router.get('/company-subscriptions/:companySlug', asyncHandler(async (req, res) 
   try {
     const subscription = await getCompanySubscriptionStatus({
       userId: req.user.id,
+      userRole: req.user.role,
       companyName: req.query?.companyName,
       companySlug: req.params.companySlug
     });
@@ -2255,6 +2256,7 @@ router.put('/company-subscriptions/:companySlug', asyncHandler(async (req, res) 
   try {
     const subscription = await setCompanySubscription({
       userId: req.user.id,
+      userRole: req.user.role,
       companyName: req.body?.companyName,
       companySlug: req.params.companySlug,
       subscribed: req.body?.subscribed !== false

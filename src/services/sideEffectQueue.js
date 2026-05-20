@@ -34,7 +34,6 @@ const registerSideEffectHandlers = () => {
       await notifications.notifyMatchingJobAlerts(job);
       await recommendations.notifyRecommendedStudentsForJob(job);
       await companySubscriptions.notifyConnectedCampusesForJob({ job });
-      await companySubscriptions.notifyCompanySubscribersForJob({ job });
       await autoApply.processAutoApplyForJob(job, { triggerSource });
     },
     [SIDE_EFFECT_JOB_TYPES.CAMPUS_INVITE_EMAIL]: async (payload) => {
