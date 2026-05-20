@@ -20,11 +20,12 @@ const registerSideEffectHandlers = () => {
 
   registerQueueHandlers({
     [SIDE_EFFECT_JOB_TYPES.JOB_POSTED_FANOUT]: async ({ jobId, triggerSource = 'job_created' }) => {
-      const [{ data: job, error: jobError }, notifications, recommendations, autoApply] = await Promise.all([
+      const [{ data: job, error: jobError }, notifications, recommendations, autoApply, companySubscriptions] = await Promise.all([
         supabase.from('jobs').select('*').eq('id', jobId).maybeSingle(),
         Promise.resolve(require('./notifications')),
         Promise.resolve(require('./recommendations')),
-        Promise.resolve(require('./autoApply'))
+        Promise.resolve(require('./autoApply')),
+        Promise.resolve(require('./companySubscriptions'))
       ]);
 
       if (jobError) throw jobError;
@@ -32,6 +33,8 @@ const registerSideEffectHandlers = () => {
 
       await notifications.notifyMatchingJobAlerts(job);
       await recommendations.notifyRecommendedStudentsForJob(job);
+      await companySubscriptions.notifyConnectedCampusesForJob({ job });
+      await companySubscriptions.notifyCompanySubscribersForJob({ job });
       await autoApply.processAutoApplyForJob(job, { triggerSource });
     },
     [SIDE_EFFECT_JOB_TYPES.CAMPUS_INVITE_EMAIL]: async (payload) => {

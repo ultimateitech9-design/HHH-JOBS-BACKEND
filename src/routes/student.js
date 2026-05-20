@@ -29,6 +29,11 @@ const {
   sendStudentAutoApplyDigest
 } = require('../services/autoApply');
 const { enqueueRecommendationDigest } = require('../services/sideEffectQueue');
+const {
+  getCompanySubscriptionStatus,
+  isStorageUnavailableError,
+  setCompanySubscription
+} = require('../services/companySubscriptions');
 const { requirePlanFeature } = require('../middleware/planAccess');
 
 const upload = multer({
@@ -101,6 +106,9 @@ const toNullableBoolean = (value) => {
   if (normalized === 'false') return false;
   return undefined;
 };
+
+const isCandidateSubscriptionRole = (role) =>
+  role === ROLES.STUDENT;
 
 const parseMissingColumnFromError = (error) => {
   const candidates = [
@@ -2213,6 +2221,57 @@ router.get('/interviews', asyncHandler(async (req, res) => {
       job_title: item.job_title || jobsMap[item.job_id]?.job_title || campusDriveMap[item.campus_drive_id]?.job_title || null
     }))
   });
+}));
+
+router.get('/company-subscriptions/:companySlug', asyncHandler(async (req, res) => {
+  if (!isCandidateSubscriptionRole(req.user.role)) {
+    res.status(403).send({ status: false, message: 'Only candidate accounts can manage company subscriptions' });
+    return;
+  }
+
+  try {
+    const subscription = await getCompanySubscriptionStatus({
+      userId: req.user.id,
+      companyName: req.query?.companyName,
+      companySlug: req.params.companySlug
+    });
+
+    res.send({ status: true, subscription });
+  } catch (error) {
+    if (isStorageUnavailableError(error)) {
+      res.status(503).send({ status: false, message: 'Company subscriptions are not ready yet' });
+      return;
+    }
+    throw error;
+  }
+}));
+
+router.put('/company-subscriptions/:companySlug', asyncHandler(async (req, res) => {
+  if (!isCandidateSubscriptionRole(req.user.role)) {
+    res.status(403).send({ status: false, message: 'Only candidate accounts can manage company subscriptions' });
+    return;
+  }
+
+  try {
+    const subscription = await setCompanySubscription({
+      userId: req.user.id,
+      companyName: req.body?.companyName,
+      companySlug: req.params.companySlug,
+      subscribed: req.body?.subscribed !== false
+    });
+
+    res.send({ status: true, subscription });
+  } catch (error) {
+    if (error.statusCode === 400) {
+      res.status(400).send({ status: false, message: error.message });
+      return;
+    }
+    if (isStorageUnavailableError(error)) {
+      res.status(503).send({ status: false, message: 'Company subscriptions are not ready yet' });
+      return;
+    }
+    throw error;
+  }
 }));
 
 router.get('/company-reviews/:companyName', asyncHandler(async (req, res) => {
