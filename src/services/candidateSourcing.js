@@ -335,8 +335,12 @@ const mergeSubscriptionPlanMeta = (subscription = {}) => ({
   ...(subscription.role_plans?.meta && typeof subscription.role_plans.meta === 'object' ? subscription.role_plans.meta : {}),
   ...(subscription.meta && typeof subscription.meta === 'object' ? subscription.meta : {})
 });
+const hasPendingPlanSetup = (subscription = {}) =>
+  Boolean(subscription?.meta?.pendingAutopaySetup || subscription?.meta?.pendingPlanChangeSetup);
 const resolveStudentDbViewLimit = (subscription = {}) => {
   if (!subscription) return null;
+  if (normalizeLowerText(subscription.status) === 'active' && !hasPendingPlanSetup(subscription)) return null;
+
   const meta = mergeSubscriptionPlanMeta(subscription);
   const configuredLimit = toPositiveIntegerOrNull(
     meta.studentDbViewLimit
