@@ -2237,6 +2237,7 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
       companyName: drive.company_name,
       jobTitle: drive.job_title,
       driveDate: drive.drive_date,
+      createdAt: drive.created_at,
       driveMode: drive.drive_mode || '',
       location: drive.location || '',
       status: drive.status,
