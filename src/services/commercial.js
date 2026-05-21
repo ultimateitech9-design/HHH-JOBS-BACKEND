@@ -35,6 +35,16 @@ const AUTOPAY_STATUSES = {
 
 const normalizeText = (value = '') => String(value || '').trim();
 const normalizeLower = (value = '') => normalizeText(value).toLowerCase();
+const normalizeJobCreditBuckets = (value = {}) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+
+  return Object.entries(value)
+    .map(([planSlug, credits]) => ({
+      planSlug: normalizeLower(planSlug),
+      credits: Math.max(0, parseInt(credits || 0, 10) || 0)
+    }))
+    .filter((bucket) => bucket.planSlug && bucket.credits > 0);
+};
 const toNumber = (value, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -737,26 +747,34 @@ const createSalesOrder = async ({ purchase = null, plan = null, profile = null }
 const grantHrCreditsForRolePlan = async ({ purchase = null, plan = null, expiresAt = null, source = 'role_plan' } = {}) => {
   if (!purchase || !plan) return null;
   if (normalizeAudienceRole(purchase.audience_role) !== ROLES.HR) return null;
-  if (!plan.includedJobCredits || !plan.includedJobPlanSlug) return null;
 
-  const totalCredits = Math.max(0, (plan.includedJobCredits || 0) * Math.max(1, parseInt(purchase.quantity || 1, 10) || 1));
-  if (totalCredits <= 0) return null;
+  const qty = Math.max(1, parseInt(purchase.quantity || 1, 10) || 1);
+  const configuredBuckets = normalizeJobCreditBuckets(plan.meta?.jobPostingCredits);
+  const buckets = configuredBuckets.length > 0
+    ? configuredBuckets
+    : [{
+      planSlug: plan.includedJobPlanSlug,
+      credits: Math.max(0, parseInt(plan.includedJobCredits || 0, 10) || 0)
+    }].filter((bucket) => bucket.planSlug && bucket.credits > 0);
+
+  if (buckets.length === 0) return null;
+
+  const rows = buckets.map((bucket) => ({
+    hr_id: purchase.user_id,
+    plan_slug: bucket.planSlug,
+    total_credits: bucket.credits * qty,
+    used_credits: 0,
+    source: `${source}:${plan.slug}`,
+    expires_at: expiresAt || addDays(new Date(), plan.durationDays)
+  }));
 
   const { data, error } = await supabase
     .from('hr_posting_credits')
-    .insert({
-      hr_id: purchase.user_id,
-      plan_slug: plan.includedJobPlanSlug,
-      total_credits: totalCredits,
-      used_credits: 0,
-      source: `${source}:${plan.slug}`,
-      expires_at: expiresAt || addDays(new Date(), plan.durationDays)
-    })
-    .select('*')
-    .single();
+    .insert(rows)
+    .select('*');
 
   if (error) throw error;
-  return data;
+  return data || [];
 };
 
 const incrementCouponUsage = async (couponCode = '') => {

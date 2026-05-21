@@ -1,4 +1,5 @@
 const PLAN_SLUGS = {
+  PREMIUM: 'premium',
   HOT_VACANCY: 'hot_vacancy',
   CLASSIFIED: 'classified',
   STANDARD: 'standard',
@@ -14,6 +15,7 @@ const PURCHASE_STATUSES = {
 };
 
 const DEFAULT_SORT_ORDER = [
+  PLAN_SLUGS.PREMIUM,
   PLAN_SLUGS.HOT_VACANCY,
   PLAN_SLUGS.CLASSIFIED,
   PLAN_SLUGS.STANDARD,

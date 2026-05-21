@@ -19,11 +19,21 @@ const {
   validateJobPayloadAgainstPlan,
   isJobExpiredByValidity
 } = require('../modules/pricing/engine');
+const { getCurrentRolePlanSubscription } = require('./commercial');
 const { normalizeCompanyKey } = require('./companyDirectory');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
 const MAX_JOB_POSTING_LOCATIONS = 1;
 const MAX_JOB_POSTING_DESCRIPTION_CHARS = 250;
+const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
+
+const isRoleSubscriptionUsableForPosting = (subscription = null) => {
+  if (!subscription) return false;
+  if (!ACTIVE_ROLE_SUBSCRIPTION_STATUSES.has(String(subscription.status || '').toLowerCase())) return false;
+  if (!subscription.autopay_enabled) return false;
+  if (!subscription.ends_at) return true;
+  return new Date(subscription.ends_at).getTime() >= Date.now();
+};
 
 const notifyBlockedJobToAdmins = async ({
   actor = {},
@@ -308,6 +318,29 @@ const createHrJob = async (req, res) => {
   }
 
   const requestedPlanSlug = normalizePlanSlug(payload.plan_slug || req.body?.planSlug || req.body?.plan_slug || PLAN_SLUGS.FREE);
+
+  if (req.user.role !== ROLES.ADMIN && req.user.role !== ROLES.SUPER_ADMIN) {
+    const activeRoleSubscription = await getCurrentRolePlanSubscription({
+      userId: req.user.id,
+      audienceRole: ROLES.HR
+    });
+
+    if (!isRoleSubscriptionUsableForPosting(activeRoleSubscription)) {
+      res.status(402).send({
+        status: false,
+        message: 'Start a recruiter plan with Razorpay auto-pay before posting jobs.'
+      });
+      return;
+    }
+
+    if (requestedPlanSlug === PLAN_SLUGS.FREE) {
+      res.status(400).send({
+        status: false,
+        message: 'Free job posting is disabled for HR accounts. Use your recruiter plan credits.'
+      });
+      return;
+    }
+  }
 
   let plan;
   try {
