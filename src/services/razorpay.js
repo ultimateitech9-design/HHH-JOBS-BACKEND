@@ -126,6 +126,13 @@ const verifyWebhookSignature = (rawBody, webhookSignature) => {
 
 const fetchPaymentDetails = async (paymentId) => razorpayFetch(`/payments/${paymentId}`);
 const fetchSubscriptionDetails = async (subscriptionId) => razorpayFetch(`/subscriptions/${subscriptionId}`);
+const cancelRazorpaySubscription = async (subscriptionId, { cancelAtCycleEnd = false } = {}) =>
+  razorpayFetch(`/subscriptions/${subscriptionId}/cancel`, {
+    method: 'POST',
+    body: {
+      cancel_at_cycle_end: Boolean(cancelAtCycleEnd)
+    }
+  });
 
 const initiateRefund = async (paymentId, { amount, notes = {} } = {}) => {
   const body = { notes };
@@ -264,6 +271,7 @@ module.exports = {
   verifyWebhookSignature,
   fetchPaymentDetails,
   fetchSubscriptionDetails,
+  cancelRazorpaySubscription,
   initiateRefund,
   createCheckoutOrder,
   confirmCheckoutPayment,

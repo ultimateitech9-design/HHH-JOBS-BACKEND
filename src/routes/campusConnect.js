@@ -23,6 +23,7 @@ const router = express.Router();
 const ELIGIBLE_ACCOUNT_STATUSES = new Set(['active', 'linked_existing']);
 const DRIVE_VISIBILITY_SCOPES = new Set(['campus_only', 'platform_open']);
 const CAMPUS_APPLICATION_STATUSES = new Set(['applied', 'shortlisted', 'rejected', 'withdrawn', 'selected']);
+const requireCampusService = requirePlanFeature('campus.connect_service');
 const CONNECTION_SOURCE = {
   COMPANY: 'company',
   COLLEGE: 'college'
@@ -947,6 +948,8 @@ router.put('/profile', asyncHandler(async (req, res) => {
 
   res.send({ status: true, profile: data });
 }));
+
+router.use(requireCampusService);
 
 // ── Students ──────────────────────────────────────────────────────────────────
 

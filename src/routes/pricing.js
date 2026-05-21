@@ -38,6 +38,7 @@ const {
 const { PURCHASE_STATUSES } = require('../modules/pricing/constants');
 const { logAudit, getClientIp } = require('../services/audit');
 const { notifyPlanPurchased, notifyPaymentReceived } = require('../services/planNotifications');
+const razorpay = require('../services/razorpay');
 
 const router = express.Router();
 
@@ -69,10 +70,19 @@ const notifySalesForRolePlanRequest = async ({ lead = null, user = {}, plan = {}
     .in('role', [ROLES.SALES, ROLES.ADMIN, ROLES.SUPER_ADMIN])
     .eq('status', 'active');
 
-  const title = reason === 'downgrade_request' ? 'HR downgrade request' : 'HR plan sales request';
+  const isCampus = normalizeAudienceRole(user?.role || lead?.target_role || '') === ROLES.CAMPUS_CONNECT;
+  const requesterLabel = isCampus ? 'A college' : 'An HR';
+  const planLabel = isCampus ? 'Campus Connect service' : 'recruiter plan';
+  const title = reason === 'downgrade_request'
+    ? `${isCampus ? 'Campus' : 'HR'} downgrade request`
+    : reason === 'subscription_cancelled'
+      ? `${isCampus ? 'Campus' : 'HR'} subscription cancellation`
+      : `${isCampus ? 'Campus' : 'HR'} plan sales request`;
   const message = reason === 'downgrade_request'
-    ? `${lead?.company_name || user?.name || 'An HR'} wants to switch from ${currentPlan?.name || 'current plan'} to ${plan?.name || plan?.slug || 'selected plan'}.`
-    : `${lead?.company_name || user?.name || 'An HR'} is interested in ${plan?.name || plan?.slug || 'a recruiter plan'}.`;
+    ? `${lead?.company_name || user?.name || requesterLabel} wants to switch from ${currentPlan?.name || 'current plan'} to ${plan?.name || plan?.slug || 'selected plan'}.`
+    : reason === 'subscription_cancelled'
+      ? `${lead?.company_name || user?.name || requesterLabel} cancelled ${plan?.name || plan?.slug || planLabel}. Sales should follow up and understand the college experience.`
+      : `${lead?.company_name || user?.name || requesterLabel} is interested in ${plan?.name || plan?.slug || planLabel}.`;
 
   await Promise.all((salesUsers || []).map((salesUser) => createNotification({
     userId: salesUser.id,
@@ -525,6 +535,141 @@ router.get('/role-subscriptions/current', requireAuth, requireActiveUser, requir
     });
 
     res.send({ status: true, subscription: subscription || null });
+  } catch (error) {
+    sendRouteError(res, error);
+  }
+}));
+
+router.post('/role-subscriptions/:id/cancel', requireAuth, requireActiveUser, requireRole(...ROLE_PLAN_ALLOWED_ROLES), asyncHandler(async (req, res) => {
+  const subscriptionId = req.params.id;
+  if (!isValidUuid(subscriptionId)) {
+    res.status(400).send({ status: false, message: 'Invalid subscription id' });
+    return;
+  }
+
+  try {
+    const { data: subscription, error } = await supabase
+      .from('role_plan_subscriptions')
+      .select('*')
+      .eq('id', subscriptionId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!subscription) {
+      res.status(404).send({ status: false, message: 'Subscription not found' });
+      return;
+    }
+
+    const isOwner = String(subscription.user_id) === String(req.user.id);
+    const isAdmin = req.user.role === ROLES.ADMIN || req.user.role === ROLES.SUPER_ADMIN;
+    if (!isOwner && !isAdmin) {
+      res.status(403).send({ status: false, message: 'You are not allowed to cancel this subscription.' });
+      return;
+    }
+
+    const normalizedAudienceRole = normalizeAudienceRole(subscription.audience_role || req.user.role);
+    if (!isAdmin && normalizedAudienceRole !== normalizeAudienceRole(req.user.role)) {
+      res.status(403).send({ status: false, message: 'This subscription does not belong to your portal.' });
+      return;
+    }
+
+    let remoteCancellation = null;
+    let remoteCancellationError = '';
+    if (subscription.provider_subscription_id && String(subscription.provider || '').toLowerCase().includes('razorpay')) {
+      try {
+        remoteCancellation = await razorpay.cancelRazorpaySubscription(subscription.provider_subscription_id, {
+          cancelAtCycleEnd: false
+        });
+      } catch (cancelError) {
+        remoteCancellationError = cancelError.message || 'Razorpay cancellation failed';
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const nextMeta = {
+      ...(subscription.meta && typeof subscription.meta === 'object' ? subscription.meta : {}),
+      cancelledAt: nowIso,
+      cancelledBy: req.user.id,
+      cancellationReason: String(req.body?.reason || req.body?.note || 'Cancelled from billing page').trim(),
+      cancellationSource: 'campus_billing',
+      salesFollowUpRequired: normalizedAudienceRole === ROLES.CAMPUS_CONNECT,
+      razorpayCancellation: remoteCancellation || null,
+      razorpayCancellationError: remoteCancellationError || null
+    };
+
+    const { data: updated, error: updateError } = await supabase
+      .from('role_plan_subscriptions')
+      .update({
+        status: 'cancelled',
+        autopay_enabled: false,
+        autopay_status: 'cancelled',
+        ends_at: nowIso,
+        meta: nextMeta
+      })
+      .eq('id', subscription.id)
+      .select('*')
+      .single();
+
+    if (updateError) throw updateError;
+
+    const plan = await getRolePlanOrThrow(subscription.role_plan_slug, {
+      audienceRole: normalizedAudienceRole,
+      includeInactive: true
+    }).catch(() => null);
+
+    if (normalizedAudienceRole === ROLES.CAMPUS_CONNECT) {
+      const lead = await upsertCommercialLeadForUser({
+        userId: subscription.user_id,
+        role: normalizedAudienceRole,
+        name: req.user.name,
+        email: req.user.email,
+        mobile: req.user.mobile
+      });
+
+      await updateLeadForCommercialEvent({
+        userId: subscription.user_id,
+        role: normalizedAudienceRole,
+        status: 'qualified',
+        onboardingStatus: 'follow_up',
+        planSlug: subscription.role_plan_slug,
+        couponCode: subscription.coupon_code || '',
+        notes: `Campus Connect subscription cancelled. Reason: ${nextMeta.cancellationReason || 'Not provided'}. Sales should schedule a feedback meeting.`
+      });
+
+      await notifySalesForRolePlanRequest({
+        lead,
+        user: { ...req.user, role: normalizedAudienceRole },
+        plan: plan || { slug: subscription.role_plan_slug, name: subscription.role_plan_slug },
+        currentPlan: plan,
+        reason: 'subscription_cancelled',
+        notes: nextMeta.cancellationReason
+      });
+    }
+
+    await logAudit({
+      userId: req.user.id,
+      action: AUDIT_ACTIONS.PLAN_PURCHASE_STATUS_CHANGE,
+      entityType: 'role_plan_subscription',
+      entityId: updated.id,
+      details: {
+        rolePlanSlug: updated.role_plan_slug,
+        audienceRole: updated.audience_role,
+        previousStatus: subscription.status,
+        nextStatus: updated.status,
+        remoteCancellationError: remoteCancellationError || null
+      },
+      ipAddress: getClientIp(req)
+    });
+
+    res.send({
+      status: true,
+      subscription: updated,
+      remoteCancellation,
+      remoteCancellationError: remoteCancellationError || null,
+      message: remoteCancellationError
+        ? 'Subscription cancelled locally. Razorpay cancellation needs manual follow-up.'
+        : 'Subscription cancelled successfully.'
+    });
   } catch (error) {
     sendRouteError(res, error);
   }

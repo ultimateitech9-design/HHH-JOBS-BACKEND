@@ -44,12 +44,13 @@ const FEATURE_PLAN_REQUIREMENTS = {
   'student.external_jobs': { minTier: 1, plans: ['student_basic', 'student_plus', 'student_pro'] },
 
   // Campus Features
-  'campus.drive_creation': { minTier: 1, plans: ['campus_basic', 'campus_growth', 'campus_enterprise'] },
-  'campus.company_connections': { minTier: 1, plans: ['campus_basic', 'campus_growth', 'campus_enterprise'] },
-  'campus.bulk_student_upload': { minTier: 2, plans: ['campus_growth', 'campus_enterprise'] },
-  'campus.analytics_advanced': { minTier: 2, plans: ['campus_growth', 'campus_enterprise'] },
-  'campus.reports_export': { minTier: 2, plans: ['campus_growth', 'campus_enterprise'] },
-  'campus.unlimited_drives': { minTier: 3, plans: ['campus_enterprise'] }
+  'campus.connect_service': { minTier: 1, plans: ['campus_basic'] },
+  'campus.drive_creation': { minTier: 1, plans: ['campus_basic'] },
+  'campus.company_connections': { minTier: 1, plans: ['campus_basic'] },
+  'campus.bulk_student_upload': { minTier: 1, plans: ['campus_basic'] },
+  'campus.analytics_advanced': { minTier: 1, plans: ['campus_basic'] },
+  'campus.reports_export': { minTier: 1, plans: ['campus_basic'] },
+  'campus.unlimited_drives': { minTier: 1, plans: ['campus_basic'] }
 };
 
 const getUserActiveSubscription = async (userId, audienceRole) => {
@@ -64,6 +65,10 @@ const getUserActiveSubscription = async (userId, audienceRole) => {
     .maybeSingle();
 
   if (error || !data) return null;
+  const status = String(data.status || '').toLowerCase();
+  if (data.meta?.pendingAutopaySetup || data.meta?.pendingPlanChangeSetup) return null;
+  if (!data.autopay_enabled && (status === 'trialing' || data.meta?.isTrial)) return null;
+  if (data.ends_at && new Date(data.ends_at).getTime() < Date.now()) return null;
   return data;
 };
 
