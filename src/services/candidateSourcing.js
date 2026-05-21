@@ -335,11 +335,8 @@ const mergeSubscriptionPlanMeta = (subscription = {}) => ({
   ...(subscription.role_plans?.meta && typeof subscription.role_plans.meta === 'object' ? subscription.role_plans.meta : {}),
   ...(subscription.meta && typeof subscription.meta === 'object' ? subscription.meta : {})
 });
-const hasPendingPlanSetup = (subscription = {}) =>
-  Boolean(subscription?.meta?.pendingAutopaySetup || subscription?.meta?.pendingPlanChangeSetup);
 const resolveStudentDbViewLimit = (subscription = {}) => {
   if (!subscription) return null;
-  if (normalizeLowerText(subscription.status) === 'active' && !hasPendingPlanSetup(subscription)) return null;
 
   const meta = mergeSubscriptionPlanMeta(subscription);
   const configuredLimit = toPositiveIntegerOrNull(
@@ -569,12 +566,14 @@ const buildSystemTemplateMessage = ({ template, candidate, hrProfile }) => {
 
 const buildCandidatePresentation = ({
   candidate,
-  access
+  access,
+  exposeResume = true
 }) => {
   const { user = {}, profile = {}, crm = {}, education = {} } = candidate;
   const hasAcceptedInterest = crm.interestStatus === 'accepted';
   const canBrowseFullProfile = Boolean(access.hasPaidAccess && access.candidateProfileUnlocked !== false);
   const canUnlockContact = Boolean(access.hasPaidAccess && hasAcceptedInterest);
+  const hasResume = Boolean(profile.resume_url || profile.resume_text);
   const canViewResume = canBrowseFullProfile;
   const visibleSkills = canBrowseFullProfile ? collectSkills(profile) : collectSkills(profile).slice(0, 4);
   const verification = getCandidateVerification(profile);
@@ -608,10 +607,10 @@ const buildCandidatePresentation = ({
       availabilityToJoin: canBrowseFullProfile ? (profile.availability_to_join || '') : '',
       expectedSalary: canBrowseFullProfile ? (profile.expected_salary || profile.preferred_salary_max || null) : null,
       skills: visibleSkills,
-      hasResume: Boolean(profile.resume_url || profile.resume_text),
-      resumeUrl: canViewResume ? (profile.resume_url || null) : null,
-      resumeText: canViewResume ? (profile.resume_text || '') : '',
-      resumeLocked: Boolean(profile.resume_url || profile.resume_text) && !canViewResume,
+      hasResume,
+      resumeUrl: canViewResume && exposeResume ? (profile.resume_url || null) : null,
+      resumeText: canViewResume && exposeResume ? (profile.resume_text || '') : '',
+      resumeLocked: hasResume && !canViewResume,
       links: visibleLinks
     },
     education: {
@@ -635,6 +634,7 @@ const buildCandidatePresentation = ({
       canSendInterest: Boolean(access.hasPaidAccess && canBrowseFullProfile),
       canViewContact: canUnlockContact,
       canViewResume,
+      resumeRequiresTracking: Boolean(hasResume && canViewResume && !exposeResume),
       unlockedByInterest: hasAcceptedInterest,
       blurReason: access.hasPaidAccess
         ? (canBrowseFullProfile
@@ -950,6 +950,44 @@ const ensureHrStudentDbCandidateUnlocked = async ({ hrUser, studentId } = {}) =>
   };
 };
 
+const viewHrCandidateResume = async ({ hrUser, studentId } = {}) => {
+  const unlock = await ensureHrStudentDbCandidateUnlocked({ hrUser, studentId });
+  if (!unlock.allowed) return { allowed: false, code: 'STUDENT_DB_LIMIT_REACHED', access: unlock.access, reason: unlock.reason };
+
+  const [{ data: user, error: userError }, profileResp] = await Promise.all([
+    supabase.from('users').select('id, name').eq('id', studentId).maybeSingle(),
+    selectStudentProfilesSafe({
+      fields: ['user_id', 'resume_url', 'resume_text', 'headline', 'target_role'],
+      userIds: [studentId]
+    })
+  ]);
+
+  if (userError) throw userError;
+  if (profileResp.error) throw profileResp.error;
+
+  const profile = (profileResp.data || [])[0] || {};
+  if (!user || (!profile.resume_url && !profile.resume_text)) {
+    return {
+      allowed: false,
+      code: 'RESUME_NOT_AVAILABLE',
+      access: unlock.access,
+      reason: 'Resume is not available for this candidate.'
+    };
+  }
+
+  return {
+    allowed: true,
+    access: unlock.access,
+    resume: {
+      studentId,
+      candidateName: user.name || 'Candidate',
+      headline: profile.headline || profile.target_role || '',
+      resumeUrl: profile.resume_url || null,
+      resumeText: profile.resume_text || ''
+    }
+  };
+};
+
 const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, limit = 24 }) => {
   const access = await getHrSourcingAccess({ userId: hrUser.id, role: hrUser.role });
   const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
@@ -995,22 +1033,17 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
     }
 
     const { candidates: rawCandidates } = await buildCandidateRowsForProfiles({ profiles: pageProfiles, hrUser });
-    const quota = await applyStudentDbViewQuota({
-      hrUser,
-      access,
-      candidates: rawCandidates,
-      consume: true
-    });
     const pagedCandidates = rawCandidates.map((candidate) => buildCandidatePresentation({
       candidate,
       access: {
-        ...quota.access,
-        candidateProfileUnlocked: quota.unlockedIds.has(candidate.user.id)
-      }
+        ...access,
+        candidateProfileUnlocked: true
+      },
+      exposeResume: false
     }));
 
     return {
-      access: quota.access,
+      access,
       summary: {
         total,
         blurred: access.hasPaidAccess
@@ -1019,9 +1052,9 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
         connected: rawCandidates.filter((item) => item.crm?.interestStatus === 'accepted').length,
         availableNow: rawCandidates.filter((item) => item.profile?.available_to_hire).length,
         verified: rawCandidates.filter((item) => getCandidateVerification(item.profile).isVerified).length,
-        studentDbViewsUsed: quota.access.studentDbViewsUsed,
-        studentDbViewsRemaining: quota.access.studentDbViewsRemaining,
-        studentDbViewLimit: quota.access.studentDbViewLimit
+        studentDbViewsUsed: access.studentDbViewsUsed,
+        studentDbViewsRemaining: access.studentDbViewsRemaining,
+        studentDbViewLimit: access.studentDbViewLimit
       },
       pagination: {
         page: safePage,
@@ -1060,22 +1093,17 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
   const safePage = Math.min(currentPage, totalPages);
   const startIndex = (safePage - 1) * pageSize;
   const pagedRawCandidates = filtered.slice(startIndex, startIndex + pageSize);
-  const quota = await applyStudentDbViewQuota({
-    hrUser,
-    access,
-    candidates: pagedRawCandidates,
-    consume: true
-  });
   const pagedCandidates = pagedRawCandidates.map((candidate) => buildCandidatePresentation({
     candidate,
     access: {
-      ...quota.access,
-      candidateProfileUnlocked: quota.unlockedIds.has(candidate.user.id)
-    }
+      ...access,
+      candidateProfileUnlocked: true
+    },
+    exposeResume: false
   }));
 
   return {
-    access: quota.access,
+    access,
     summary: {
       total,
       blurred: access.hasPaidAccess
@@ -1084,9 +1112,9 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
       connected: filtered.filter((item) => item.crm.interestStatus === 'accepted').length,
       availableNow: filtered.filter((item) => item.profile.available_to_hire).length,
       verified: filtered.filter((item) => getCandidateVerification(item.profile).isVerified).length,
-      studentDbViewsUsed: quota.access.studentDbViewsUsed,
-      studentDbViewsRemaining: quota.access.studentDbViewsRemaining,
-      studentDbViewLimit: quota.access.studentDbViewLimit
+      studentDbViewsUsed: access.studentDbViewsUsed,
+      studentDbViewsRemaining: access.studentDbViewsRemaining,
+      studentDbViewLimit: access.studentDbViewLimit
     },
     pagination: {
       page: safePage,
@@ -1254,6 +1282,7 @@ module.exports = {
   buildSystemTemplateMessage,
   buildCandidatePresentation,
   getHrSourcingAccess,
+  viewHrCandidateResume,
   listHrMessageTemplates,
   upsertHrMessageTemplate,
   deleteHrMessageTemplate,

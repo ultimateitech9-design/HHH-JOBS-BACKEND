@@ -20,7 +20,8 @@ const {
   listHrShortlistedCandidates,
   resolveTemplateForInterest,
   searchDiscoverableCandidates,
-  upsertHrMessageTemplate
+  upsertHrMessageTemplate,
+  viewHrCandidateResume
 } = require('../services/candidateSourcing');
 const {
   normalizeInterviewMode,
@@ -451,6 +452,28 @@ router.get('/candidates/search', requireApprovedHr, attachPlanAccess, asyncHandl
   }
 }));
 
+router.post('/candidates/:studentId/resume-view', requireApprovedHr, asyncHandler(async (req, res) => {
+  const { studentId } = req.params;
+  if (!isValidUuid(studentId)) return res.status(400).send({ status: false, message: 'Invalid studentId' });
+
+  const result = await viewHrCandidateResume({ hrUser: req.user, studentId });
+  if (!result.allowed) {
+    const statusCode = result.code === 'STUDENT_DB_LIMIT_REACHED' ? 402 : 404;
+    return res.status(statusCode).send({
+      status: false,
+      code: result.code || 'RESUME_NOT_AVAILABLE',
+      message: result.reason || 'Unable to open candidate resume.',
+      access: result.access
+    });
+  }
+
+  res.send({
+    status: true,
+    access: result.access,
+    resume: result.resume
+  });
+}));
+
 router.post('/candidates/:studentId/interest', requireApprovedHr, asyncHandler(async (req, res) => {
   const { studentId } = req.params;
   if (!isValidUuid(studentId)) return res.status(400).send({ status: false, message: 'Invalid studentId' });
@@ -520,7 +543,7 @@ router.post('/candidates/:studentId/interest', requireApprovedHr, asyncHandler(a
     meta: { interestId: data.id, hrUserId: req.user.id }
   });
 
-  res.status(201).send({ status: true, interest: data });
+  res.status(201).send({ status: true, access: unlock.access, interest: data });
 }));
 
 router.post('/candidates/bulk-interest', requireApprovedHr, requirePlanFeature('hr.candidate_bulk_interest'), asyncHandler(async (req, res) => {
@@ -537,6 +560,20 @@ router.post('/candidates/bulk-interest', requireApprovedHr, requirePlanFeature('
 
   if (studentIds.length === 0) return res.status(400).send({ status: false, message: 'studentIds must be a non-empty array of valid UUIDs' });
   if (studentIds.length > 50) return res.status(400).send({ status: false, message: 'Maximum 50 candidates per bulk request' });
+
+  let latestAccess = access;
+  for (const id of studentIds) {
+    const unlock = await ensureHrStudentDbCandidateUnlocked({ hrUser: req.user, studentId: id });
+    latestAccess = unlock.access || latestAccess;
+    if (!unlock.allowed) {
+      return res.status(402).send({
+        status: false,
+        code: 'STUDENT_DB_LIMIT_REACHED',
+        message: unlock.reason || 'Candidate view limit reached for your current plan.',
+        access: latestAccess
+      });
+    }
+  }
 
   const [{ data: hrProfile }, { data: hrUser }, { data: candidateUsers }, { data: candidateProfiles }] = await Promise.all([
     supabase.from('hr_profiles').select('company_name').eq('user_id', req.user.id).maybeSingle(),
@@ -591,7 +628,7 @@ router.post('/candidates/bulk-interest', requireApprovedHr, requirePlanFeature('
     )
   );
 
-  res.status(201).send({ status: true, sentCount: (data || []).length });
+  res.status(201).send({ status: true, access: latestAccess, sentCount: (data || []).length });
 }));
 
 router.get('/candidates/message-templates', requireApprovedHr, asyncHandler(async (req, res) => {

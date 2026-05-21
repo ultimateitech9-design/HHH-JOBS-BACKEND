@@ -138,6 +138,17 @@ test('buildCandidatePresentation shows browseable profiles and unlocks contact a
   assert.equal(browseable.profile.resumeUrl, 'https://example.com/resume.pdf');
   assert.equal(browseable.profile.resumeText, 'Aisha Khan resume content');
 
+  const searchResult = buildCandidatePresentation({
+    candidate: baseCandidate,
+    access: { hasPaidAccess: true, requiresUpgrade: false, candidateProfileUnlocked: true },
+    exposeResume: false
+  });
+
+  assert.equal(searchResult.access.canViewResume, true);
+  assert.equal(searchResult.access.resumeRequiresTracking, true);
+  assert.equal(searchResult.profile.resumeUrl, null);
+  assert.equal(searchResult.profile.resumeText, '');
+
   const unlocked = buildCandidatePresentation({
     candidate: {
       ...baseCandidate,
