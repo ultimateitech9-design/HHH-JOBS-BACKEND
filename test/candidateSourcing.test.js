@@ -131,9 +131,10 @@ test('buildCandidatePresentation shows browseable profiles and unlocks contact a
 
   assert.equal(browseable.access.canBrowseFullProfile, true);
   assert.equal(browseable.access.canSendInterest, true);
-  assert.equal(browseable.access.canViewResume, false);
+  assert.equal(browseable.access.canViewResume, true);
   assert.equal(browseable.user.email, 'ai***@example.com');
   assert.equal(browseable.user.name, 'Aisha Khan');
+  assert.equal(browseable.profile.resumeUrl, 'https://example.com/resume.pdf');
 
   const unlocked = buildCandidatePresentation({
     candidate: {

@@ -571,6 +571,7 @@ const buildCandidatePresentation = ({
   const hasAcceptedInterest = crm.interestStatus === 'accepted';
   const canBrowseFullProfile = Boolean(access.hasPaidAccess && access.candidateProfileUnlocked !== false);
   const canUnlockContact = Boolean(access.hasPaidAccess && hasAcceptedInterest);
+  const canViewResume = canBrowseFullProfile;
   const visibleSkills = canBrowseFullProfile ? collectSkills(profile) : collectSkills(profile).slice(0, 4);
   const verification = getCandidateVerification(profile);
   const visibleLinks = canBrowseFullProfile
@@ -604,8 +605,8 @@ const buildCandidatePresentation = ({
       expectedSalary: canBrowseFullProfile ? (profile.expected_salary || profile.preferred_salary_max || null) : null,
       skills: visibleSkills,
       hasResume: Boolean(profile.resume_url || profile.resume_text),
-      resumeUrl: canUnlockContact ? (profile.resume_url || null) : null,
-      resumeLocked: Boolean(profile.resume_url || profile.resume_text) && !canUnlockContact,
+      resumeUrl: canViewResume ? (profile.resume_url || null) : null,
+      resumeLocked: Boolean(profile.resume_url || profile.resume_text) && !canViewResume,
       links: visibleLinks
     },
     education: {
@@ -628,11 +629,11 @@ const buildCandidatePresentation = ({
       canBrowseFullProfile,
       canSendInterest: Boolean(access.hasPaidAccess && canBrowseFullProfile),
       canViewContact: canUnlockContact,
-      canViewResume: canUnlockContact,
+      canViewResume,
       unlockedByInterest: hasAcceptedInterest,
       blurReason: access.hasPaidAccess
         ? (canBrowseFullProfile
-          ? (hasAcceptedInterest ? '' : 'Contact details and resume unlock after the candidate accepts your interest request.')
+          ? (hasAcceptedInterest ? '' : 'Contact details unlock after the candidate accepts your interest request.')
           : `Your trial student database limit allows ${access.studentDbViewLimit || DEFAULT_TRIAL_STUDENT_DB_VIEW_LIMIT} unique profile views. Upgrade to continue viewing new profiles.`)
         : 'Upgrade to a paid hiring plan to unlock full candidate profiles and direct outreach.'
     }
