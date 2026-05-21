@@ -69,6 +69,28 @@ const normalizeList = (value) => {
 
   return [];
 };
+const hasCandidateSearchFilters = (filters = {}) => [
+  filters.search,
+  filters.q,
+  filters.keyword,
+  filters.skills,
+  filters.location,
+  filters.experience,
+  filters.degree,
+  filters.branch,
+  filters.college,
+  filters.batchYear,
+  filters.batch_year,
+  filters.minCgpa,
+  filters.min_cgpa,
+  filters.availableOnly,
+  filters.available,
+  filters.verifiedOnly,
+  filters.verified
+].some((value) => {
+  if (typeof value === 'boolean') return value;
+  return value !== undefined && value !== null && String(value).trim() !== '';
+});
 const chunkList = (items = [], size = 200) => {
   const list = Array.isArray(items) ? items : [];
   const chunkSize = Math.max(1, size);
@@ -161,6 +183,8 @@ const selectStudentProfilesSafe = async ({
   limit = null,
   from = null,
   to = null,
+  count = null,
+  head = false,
   userIds = [],
   filters = []
 }) => {
@@ -168,7 +192,9 @@ const selectStudentProfilesSafe = async ({
   let lastError = null;
 
   for (let attempt = 0; attempt < workingFields.length; attempt += 1) {
-    let query = supabase.from('student_profiles').select(workingFields.join(', '));
+    let query = count
+      ? supabase.from('student_profiles').select(workingFields.join(', '), { count, head })
+      : supabase.from('student_profiles').select(workingFields.join(', '));
 
     filters.forEach((apply) => {
       if (typeof apply === 'function') {
@@ -225,6 +251,68 @@ const selectAllStudentProfilesSafe = async ({ fields = [], filters = [] } = {}) 
   }
 
   return { data: rows, error: null };
+};
+
+const buildCandidateRowsForProfiles = async ({ profiles = [], hrUser }) => {
+  const userIds = [...new Set((profiles || []).map((item) => item.user_id))];
+  if (userIds.length === 0) {
+    return {
+      candidates: [],
+      usersMap: {},
+      interestMap: {},
+      shortlistMap: {}
+    };
+  }
+
+  const [users, interestsResp, shortlistResp] = await Promise.all([
+    fetchRowsByIdsInChunks({
+      table: 'users',
+      select: 'id, name, email, mobile, role, status',
+      ids: userIds,
+      decorateQuery: (query) => query.in('role', [ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE]).eq('status', 'active')
+    }),
+    fetchRowsByIdsInChunks({
+      table: 'hr_candidate_interests',
+      select: 'student_user_id, status',
+      column: 'student_user_id',
+      ids: userIds,
+      decorateQuery: (query) => query.eq('hr_user_id', hrUser.id)
+    }).then((data) => ({ data, error: null })).catch((error) => ({ data: null, error })),
+    fetchRowsByIdsInChunks({
+      table: 'hr_shortlisted_candidates',
+      select: 'student_user_id, tags, notes',
+      column: 'student_user_id',
+      ids: userIds,
+      decorateQuery: (query) => query.eq('hr_user_id', hrUser.id)
+    }).then((data) => ({ data, error: null })).catch((error) => ({ data: null, error }))
+  ]);
+
+  const usersMap = Object.fromEntries(users.map((item) => [item.id, item]));
+  const interests = resolveOptionalResponse(interestsResp, []);
+  const shortlists = resolveOptionalResponse(shortlistResp, []);
+  const interestMap = Object.fromEntries(interests.map((item) => [item.student_user_id, item.status]));
+  const shortlistMap = Object.fromEntries(shortlists.map((item) => [item.student_user_id, item]));
+
+  const candidates = (profiles || [])
+    .filter((profile) => usersMap[profile.user_id])
+    .map((profile) => ({
+      user: usersMap[profile.user_id],
+      profile,
+      education: toEducationInsight(profile),
+      crm: {
+        interestStatus: interestMap[profile.user_id] || null,
+        isShortlisted: Boolean(shortlistMap[profile.user_id]),
+        tags: shortlistMap[profile.user_id]?.tags || [],
+        notes: shortlistMap[profile.user_id]?.notes || ''
+      }
+    }));
+
+  return {
+    candidates,
+    usersMap,
+    interestMap,
+    shortlistMap
+  };
 };
 
 const resolveOptionalResponse = (response, fallback = []) => {
@@ -860,18 +948,88 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
   const access = await getHrSourcingAccess({ userId: hrUser.id, role: hrUser.role });
   const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
   const pageSize = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 24));
+  const hasActiveFilters = hasCandidateSearchFilters(filters);
+  const profileFields = [
+    'user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies',
+    'experience', 'location', 'resume_url', 'resume_text', 'about', 'profile_summary',
+    'is_discoverable', 'available_to_hire', 'expected_salary', 'preferred_salary_max',
+    'availability_to_join', 'education', 'graduation_details', 'education_score',
+    'linkedin_url', 'github_url', 'portfolio_url', 'eimager_id', 'verification_status',
+    'verification_source', 'verification_badge', 'identity_verified', 'address_verified',
+    'experience_verified', 'verified_experience_count', 'verification_verified_at',
+    'verification_synced_at'
+  ];
+
+  if (!hasActiveFilters) {
+    const from = (currentPage - 1) * pageSize;
+    const { data: profiles, error, count } = await selectStudentProfilesSafe({
+      fields: profileFields,
+      from,
+      to: from + pageSize - 1,
+      count: 'exact'
+    });
+
+    if (error) throw error;
+
+    const total = Number(count || 0);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(currentPage, totalPages);
+    let pageProfiles = profiles || [];
+
+    if (safePage !== currentPage) {
+      const pageResponse = await selectStudentProfilesSafe({
+        fields: profileFields,
+        from: (safePage - 1) * pageSize,
+        to: ((safePage - 1) * pageSize) + pageSize - 1,
+        count: 'exact'
+      });
+
+      if (pageResponse.error) throw pageResponse.error;
+      pageProfiles = pageResponse.data || [];
+    }
+
+    const { candidates: rawCandidates } = await buildCandidateRowsForProfiles({ profiles: pageProfiles, hrUser });
+    const quota = await applyStudentDbViewQuota({
+      hrUser,
+      access,
+      candidates: rawCandidates,
+      consume: true
+    });
+    const pagedCandidates = rawCandidates.map((candidate) => buildCandidatePresentation({
+      candidate,
+      access: {
+        ...quota.access,
+        candidateProfileUnlocked: quota.unlockedIds.has(candidate.user.id)
+      }
+    }));
+
+    return {
+      access: quota.access,
+      summary: {
+        total,
+        blurred: access.hasPaidAccess
+          ? pagedCandidates.filter((item) => item.access?.requiresUpgrade || !item.access?.canBrowseFullProfile).length
+          : total,
+        connected: rawCandidates.filter((item) => item.crm?.interestStatus === 'accepted').length,
+        availableNow: rawCandidates.filter((item) => item.profile?.available_to_hire).length,
+        verified: rawCandidates.filter((item) => getCandidateVerification(item.profile).isVerified).length,
+        studentDbViewsUsed: quota.access.studentDbViewsUsed,
+        studentDbViewsRemaining: quota.access.studentDbViewsRemaining,
+        studentDbViewLimit: quota.access.studentDbViewLimit
+      },
+      pagination: {
+        page: safePage,
+        limit: pageSize,
+        total,
+        totalPages,
+        count: pagedCandidates.length
+      },
+      candidates: pagedCandidates
+    };
+  }
 
   const { data: profiles, error } = await selectAllStudentProfilesSafe({
-    fields: [
-      'user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies',
-      'experience', 'location', 'resume_url', 'resume_text', 'about', 'profile_summary',
-      'is_discoverable', 'available_to_hire', 'expected_salary', 'preferred_salary_max',
-      'availability_to_join', 'education', 'graduation_details', 'education_score',
-      'linkedin_url', 'github_url', 'portfolio_url', 'eimager_id', 'verification_status',
-      'verification_source', 'verification_badge', 'identity_verified', 'address_verified',
-      'experience_verified', 'verified_experience_count', 'verification_verified_at',
-      'verification_synced_at'
-    ]
+    fields: profileFields
   });
 
   if (error) throw error;
@@ -885,48 +1043,9 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
     };
   }
 
-  const [users, interestsResp, shortlistResp] = await Promise.all([
-    fetchRowsByIdsInChunks({
-      table: 'users',
-      select: 'id, name, email, mobile, role, status',
-      ids: userIds,
-      decorateQuery: (query) => query.in('role', [ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE]).eq('status', 'active')
-    }),
-    fetchRowsByIdsInChunks({
-      table: 'hr_candidate_interests',
-      select: 'student_user_id, status',
-      column: 'student_user_id',
-      ids: userIds,
-      decorateQuery: (query) => query.eq('hr_user_id', hrUser.id)
-    }).then((data) => ({ data, error: null })).catch((error) => ({ data: null, error })),
-    fetchRowsByIdsInChunks({
-      table: 'hr_shortlisted_candidates',
-      select: 'student_user_id, tags, notes',
-      column: 'student_user_id',
-      ids: userIds,
-      decorateQuery: (query) => query.eq('hr_user_id', hrUser.id)
-    }).then((data) => ({ data, error: null })).catch((error) => ({ data: null, error }))
-  ]);
+  const { candidates: candidateRows } = await buildCandidateRowsForProfiles({ profiles, hrUser });
 
-  const usersMap = Object.fromEntries(users.map((item) => [item.id, item]));
-  const interests = resolveOptionalResponse(interestsResp, []);
-  const shortlists = resolveOptionalResponse(shortlistResp, []);
-  const interestMap = Object.fromEntries(interests.map((item) => [item.student_user_id, item.status]));
-  const shortlistMap = Object.fromEntries(shortlists.map((item) => [item.student_user_id, item]));
-
-  const filtered = (profiles || [])
-    .filter((profile) => usersMap[profile.user_id])
-    .map((profile) => ({
-      user: usersMap[profile.user_id],
-      profile,
-      education: toEducationInsight(profile),
-      crm: {
-        interestStatus: interestMap[profile.user_id] || null,
-        isShortlisted: Boolean(shortlistMap[profile.user_id]),
-        tags: shortlistMap[profile.user_id]?.tags || [],
-        notes: shortlistMap[profile.user_id]?.notes || ''
-      }
-    }))
+  const filtered = candidateRows
     .filter((candidate) => matchesCandidateFilters({ candidate, filters }))
     .sort((left, right) => scoreCandidate({ candidate: right, filters }) - scoreCandidate({ candidate: left, filters }));
 
