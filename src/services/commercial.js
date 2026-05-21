@@ -1326,6 +1326,11 @@ const createRolePlanAutopaySession = async ({
     audienceRole: normalizedAudienceRole,
     includeInactive: false
   });
+  if (Boolean(plan.meta?.contactSales) || plan.meta?.selfCheckout === false) {
+    const error = new Error('Enterprise plan requires Contact Sales.');
+    error.statusCode = 400;
+    throw error;
+  }
   let currentSubscription = await getCurrentRolePlanSubscription({
     userId: user.id,
     audienceRole: normalizedAudienceRole
@@ -1906,6 +1911,11 @@ const createRolePlanPurchase = async ({
     quantity,
     couponCode
   });
+  if (Boolean(quote.plan?.meta?.contactSales) || quote.plan?.meta?.selfCheckout === false) {
+    const error = new Error('Enterprise plan requires Contact Sales.');
+    error.statusCode = 400;
+    throw error;
+  }
 
   const normalizedStatus = normalizeLower(status || PURCHASE_STATUSES.PENDING);
   if (![PURCHASE_STATUSES.PENDING, PURCHASE_STATUSES.PAID].includes(normalizedStatus)) {

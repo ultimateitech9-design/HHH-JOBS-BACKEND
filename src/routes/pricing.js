@@ -19,6 +19,7 @@ const {
 } = require('../services/pricing');
 const {
   fetchRolePlans,
+  getRolePlanOrThrow,
   updateRolePlanBySlug,
   quoteRolePlan,
   createRolePlanPurchase,
@@ -29,7 +30,9 @@ const {
   listRolePlanSubscriptions,
   getCurrentRolePlanSubscription,
   formatRolePlanForClient,
-  normalizeAudienceRole
+  normalizeAudienceRole,
+  upsertCommercialLeadForUser,
+  updateLeadForCommercialEvent
 } = require('../services/commercial');
 const { PURCHASE_STATUSES } = require('../modules/pricing/constants');
 const { logAudit, getClientIp } = require('../services/audit');
@@ -180,6 +183,47 @@ router.post('/role-plans/quote', requireAuth, requireActiveUser, requireRole(...
   }
 }));
 
+router.post('/role-plans/contact-sales', requireAuth, requireActiveUser, requireRole(...ROLE_PLAN_ALLOWED_ROLES), asyncHandler(async (req, res) => {
+  try {
+    const audienceRole = normalizeAudienceRole(req.body?.audienceRole || req.body?.audience_role || req.user?.role);
+    const plan = await getRolePlanOrThrow(req.body?.planSlug || req.body?.plan_slug, {
+      audienceRole,
+      includeInactive: false
+    });
+
+    if (!Boolean(plan.meta?.contactSales) && plan.meta?.selfCheckout !== false) {
+      res.status(400).send({ status: false, message: 'This plan is available for self checkout.' });
+      return;
+    }
+
+    const lead = await upsertCommercialLeadForUser({
+      userId: req.user.id,
+      role: audienceRole,
+      name: req.user.name,
+      email: req.user.email,
+      mobile: req.user.mobile
+    });
+
+    await updateLeadForCommercialEvent({
+      userId: req.user.id,
+      role: audienceRole,
+      status: 'qualified',
+      onboardingStatus: 'negotiation',
+      planSlug: plan.slug,
+      couponCode: ''
+    });
+
+    res.status(201).send({
+      status: true,
+      message: 'Sales team has been notified for this plan.',
+      lead,
+      plan: formatRolePlanForClient(plan)
+    });
+  } catch (error) {
+    sendRouteError(res, error);
+  }
+}));
+
 router.post('/role-plans/checkout', requireAuth, requireActiveUser, requireRole(...ROLE_PLAN_ALLOWED_ROLES), asyncHandler(async (req, res) => {
   const paymentStatus = String(req.body?.paymentStatus || PURCHASE_STATUSES.PENDING).toLowerCase();
   const provider = String(req.body?.provider || '').trim().toLowerCase();
@@ -189,6 +233,15 @@ router.post('/role-plans/checkout', requireAuth, requireActiveUser, requireRole(
   }
 
   try {
+    const plan = await getRolePlanOrThrow(req.body?.planSlug || req.body?.plan_slug, {
+      audienceRole: normalizeAudienceRole(req.user.role),
+      includeInactive: false
+    });
+    if (Boolean(plan.meta?.contactSales) || plan.meta?.selfCheckout === false) {
+      res.status(400).send({ status: false, message: 'Enterprise plan requires Contact Sales.' });
+      return;
+    }
+
     if (provider === 'razorpay') {
       const checkout = await createRolePlanAutopaySession({
         user: req.user,
