@@ -276,7 +276,7 @@ insert into public.platform_settings (key, value) values
   ('default_job_expiry_days', '30'::jsonb),
   ('max_applications_per_job', '500'::jsonb),
   ('support_email', '"support@hhh-jobs.com"'::jsonb),
-  ('external_jobs_sync_interval_minutes', '30'::jsonb),
+  ('external_jobs_sync_interval_minutes', '1440'::jsonb),
   ('faqs', '[]'::jsonb),
   ('knowledge_base', '[]'::jsonb)
 on conflict (key) do nothing;

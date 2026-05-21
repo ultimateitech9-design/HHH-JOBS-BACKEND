@@ -1,32 +1,27 @@
-const { supabase } = require('../../supabase');
 const { runFullIngestion, runVerification } = require('./ingestor');
 
-const DEFAULT_INTERVAL_MINUTES = 30;
-const STARTUP_DELAY_MS = 10 * 1000;
+const DAILY_SYNC_HOUR_IST = 6;
+const DAILY_SYNC_MINUTE_IST = 0;
+const IST_OFFSET_MINUTES = 5 * 60 + 30;
+const VERIFICATION_DELAY_MS = 2 * 60 * 1000;
+const MIN_RESCHEDULE_DELAY_MS = 60 * 1000;
 
-let ingestionTimer = null;
+let dailyTimer = null;
 let verificationTimer = null;
 let isRunning = false;
 
-const getConfiguredIntervalMinutes = async () => {
-  try {
-    const { data, error } = await supabase
-      .from('platform_settings')
-      .select('value')
-      .eq('key', 'external_jobs_sync_interval_minutes')
-      .maybeSingle();
+const getNextDailyRunAt = (fromDate = new Date()) => {
+  const fromMs = fromDate.getTime();
+  const istNow = new Date(fromMs + IST_OFFSET_MINUTES * 60 * 1000);
+  const nextIstRun = new Date(istNow);
 
-    if (error) throw error;
+  nextIstRun.setUTCHours(DAILY_SYNC_HOUR_IST, DAILY_SYNC_MINUTE_IST, 0, 0);
 
-    const minutes = Number(data?.value);
-    if (Number.isFinite(minutes) && minutes >= 5 && minutes <= 1440) {
-      return minutes;
-    }
-  } catch (err) {
-    console.warn('[ExternalJobs Scheduler] Using default interval:', err.message);
+  if (nextIstRun.getTime() <= istNow.getTime()) {
+    nextIstRun.setUTCDate(nextIstRun.getUTCDate() + 1);
   }
 
-  return DEFAULT_INTERVAL_MINUTES;
+  return new Date(nextIstRun.getTime() - IST_OFFSET_MINUTES * 60 * 1000);
 };
 
 const runIngestionCycle = async () => {
@@ -56,37 +51,49 @@ const runVerificationCycle = async () => {
   }
 };
 
+const runDailyCycle = async () => {
+  await runIngestionCycle();
+
+  verificationTimer = setTimeout(() => {
+    verificationTimer = null;
+    runVerificationCycle('Post-ingestion verification');
+  }, VERIFICATION_DELAY_MS);
+};
+
+const scheduleNextDailyRun = () => {
+  if (!isRunning) return;
+
+  const nextRunAt = getNextDailyRunAt();
+  const delayMs = Math.max(nextRunAt.getTime() - Date.now(), MIN_RESCHEDULE_DELAY_MS);
+
+  console.log(`[ExternalJobs Scheduler] Next daily scrape scheduled at ${nextRunAt.toISOString()} (06:00 IST)`);
+
+  dailyTimer = setTimeout(async () => {
+    dailyTimer = null;
+    await runDailyCycle();
+    scheduleNextDailyRun();
+  }, delayMs);
+};
+
 const start = () => {
   if (isRunning) return;
   isRunning = true;
 
-  console.log('[ExternalJobs Scheduler] Starting — first run in', STARTUP_DELAY_MS / 1000, 'seconds');
-
-  setTimeout(async () => {
-    const intervalMinutes = await getConfiguredIntervalMinutes();
-    const intervalMs = intervalMinutes * 60 * 1000;
-
-    console.log(`[ExternalJobs Scheduler] Using ${intervalMinutes} minute sync interval`);
-
-    await runIngestionCycle();
-    ingestionTimer = setInterval(runIngestionCycle, intervalMs);
-
-    await runVerificationCycle();
-    verificationTimer = setInterval(runVerificationCycle, intervalMs);
-  }, STARTUP_DELAY_MS);
+  console.log('[ExternalJobs Scheduler] Starting daily scrape policy — once per day at 06:00 IST');
+  scheduleNextDailyRun();
 };
 
 const stop = () => {
-  if (ingestionTimer) {
-    clearInterval(ingestionTimer);
-    ingestionTimer = null;
+  if (dailyTimer) {
+    clearTimeout(dailyTimer);
+    dailyTimer = null;
   }
   if (verificationTimer) {
-    clearInterval(verificationTimer);
+    clearTimeout(verificationTimer);
     verificationTimer = null;
   }
   isRunning = false;
   console.log('[ExternalJobs Scheduler] Stopped');
 };
 
-module.exports = { start, stop };
+module.exports = { start, stop, getNextDailyRunAt };

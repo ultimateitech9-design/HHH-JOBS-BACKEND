@@ -12,7 +12,7 @@ create table if not exists public.job_sources (
   name text not null,
   base_url text not null,
   is_active boolean not null default true,
-  fetch_interval_minutes integer not null default 30,
+  fetch_interval_minutes integer not null default 1440,
   last_fetched_at timestamptz,
   last_fetch_status text,
   last_fetch_count integer not null default 0,

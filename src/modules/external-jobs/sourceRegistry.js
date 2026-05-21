@@ -22,7 +22,7 @@ const buildSourceRecord = (adapter) => ({
   key: adapter.SOURCE_KEY,
   name: adapter.SOURCE_NAME,
   base_url: adapter.BASE_URL,
-  fetch_interval_minutes: 30
+  fetch_interval_minutes: 1440
 });
 
 const syncSourceRegistry = async () => {

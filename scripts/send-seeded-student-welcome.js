@@ -31,6 +31,7 @@ Usage:
 Options:
   --seed-dir <path>            Seed chunk directory (default: supabase/seeds/20260514_resume_bulk_seed_50_chunks)
   --send                       Actually reset passwords and send emails. Without this, dry-run only.
+  --offset <n>                 Skip first N seeded emails before applying --limit
   --limit <n>                  Process only first N seeded emails
   --email-concurrency <n>      Parallel email workers when --send is used (default: ${DEFAULT_EMAIL_CONCURRENCY})
   --base-url <url>             Frontend base URL (default: ${DEFAULT_BASE_URL})
@@ -57,6 +58,7 @@ const parseArgs = (argv = []) => {
   const args = {
     seedDir: DEFAULT_SEED_DIR,
     send: false,
+    offset: 0,
     limit: null,
     emailConcurrency: DEFAULT_EMAIL_CONCURRENCY,
     baseUrl: DEFAULT_BASE_URL,
@@ -75,6 +77,11 @@ const parseArgs = (argv = []) => {
     }
     if (token === '--limit' && next) {
       args.limit = Number.parseInt(next, 10);
+      index += 1;
+      continue;
+    }
+    if (token === '--offset' && next) {
+      args.offset = Math.max(0, Number.parseInt(next, 10) || 0);
       index += 1;
       continue;
     }
@@ -382,12 +389,50 @@ const writeReport = ({ reportPath, results }) => {
   return resolvedReportPath;
 };
 
+const ensureReport = (reportPath) => {
+  const resolvedReportPath = path.resolve(reportPath);
+  fs.mkdirSync(path.dirname(resolvedReportPath), { recursive: true });
+
+  if (!fs.existsSync(resolvedReportPath) || fs.statSync(resolvedReportPath).size === 0) {
+    fs.writeFileSync(
+      resolvedReportPath,
+      [
+        ['source_row_no', 'seed_file', 'name', 'email', 'hhh_user_id', 'eimager_id', 'temp_password', 'sent', 'reason']
+          .map(csvCell)
+          .join(',')
+      ].join('\n'),
+      'utf8'
+    );
+  }
+
+  return resolvedReportPath;
+};
+
+const appendReportRow = ({ reportPath, result }) => {
+  fs.appendFileSync(
+    reportPath,
+    `\n${[
+      result.sourceRowNo || '',
+      result.seedFile || '',
+      result.name || '',
+      result.email || '',
+      result.userId || '',
+      result.eimagerId || '',
+      result.tempPassword || '',
+      result.sent ? 'yes' : 'no',
+      result.reason || ''
+    ].map(csvCell).join(',')}`,
+    'utf8'
+  );
+};
+
 const main = async () => {
   const args = parseArgs(process.argv.slice(2));
   const candidates = readSeedCandidates(args.seedDir);
+  const offsetCandidates = candidates.slice(args.offset);
   const limitedCandidates = Number.isFinite(args.limit) && args.limit > 0
-    ? candidates.slice(0, args.limit)
-    : candidates;
+    ? offsetCandidates.slice(0, args.limit)
+    : offsetCandidates;
 
   const supabase = createSupabaseClient();
   const { accounts, missingEmails, skippedNonStudents } = await fetchSeededStudentAccounts({
@@ -397,6 +442,7 @@ const main = async () => {
 
   const summary = {
     seedCandidates: candidates.length,
+    offset: args.offset,
     selectedSeedCandidates: limitedCandidates.length,
     matchedStudentUsers: accounts.length,
     missingUsers: missingEmails.length,
@@ -418,6 +464,10 @@ const main = async () => {
   }
 
   const results = [];
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const reportPath = args.reportOut
+    || path.join(__dirname, '..', 'tmp-logs', `seeded-student-welcome-${timestamp}.csv`);
+  const resolvedReportPath = ensureReport(reportPath);
   let pointer = 0;
   const worker = async () => {
     while (pointer < accounts.length) {
@@ -433,6 +483,7 @@ const main = async () => {
           dashboardPath: args.dashboardPath
         });
         results.push(result);
+        appendReportRow({ reportPath: resolvedReportPath, result });
         console.log(`[sent:${result.sent ? 'yes' : 'no'}] ${account.email}${result.reason ? ` (${result.reason})` : ''}`);
       } catch (error) {
         const failedResult = {
@@ -442,6 +493,7 @@ const main = async () => {
           reason: error.message || 'send_failed'
         };
         results.push(failedResult);
+        appendReportRow({ reportPath: resolvedReportPath, result: failedResult });
         console.error(`[failed] ${account.email}: ${failedResult.reason}`);
       }
     }
@@ -452,10 +504,6 @@ const main = async () => {
 
   const sentCount = results.filter((result) => result.sent).length;
   const failed = results.filter((result) => !result.sent);
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const reportPath = args.reportOut
-    || path.join(__dirname, '..', 'tmp-logs', `seeded-student-welcome-${timestamp}.csv`);
-  const resolvedReportPath = writeReport({ reportPath, results });
 
   console.log(JSON.stringify({
     attempted: results.length,
