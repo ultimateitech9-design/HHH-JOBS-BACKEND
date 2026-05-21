@@ -9,9 +9,7 @@ const { enqueueJobPostedSideEffects } = require('./sideEffectQueue');
 const {
   getPlanOrThrow,
   getPlanBySlug,
-  prepareJobPlanData,
-  consumePostingCredit,
-  releasePostingCredit
+  prepareJobPlanData
 } = require('./pricing');
 const { PLAN_SLUGS } = require('../modules/pricing/constants');
 const {
@@ -19,7 +17,7 @@ const {
   validateJobPayloadAgainstPlan,
   isJobExpiredByValidity
 } = require('../modules/pricing/engine');
-const { getCurrentRolePlanSubscription } = require('./commercial');
+const { getCurrentRolePlanSubscription, getRolePlanBySlug } = require('./commercial');
 const { normalizeCompanyKey } = require('./companyDirectory');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
@@ -29,10 +27,77 @@ const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
 
 const isRoleSubscriptionUsableForPosting = (subscription = null) => {
   if (!subscription) return false;
-  if (!ACTIVE_ROLE_SUBSCRIPTION_STATUSES.has(String(subscription.status || '').toLowerCase())) return false;
-  if (!subscription.autopay_enabled) return false;
+  const status = String(subscription.status || '').toLowerCase();
+  if (!ACTIVE_ROLE_SUBSCRIPTION_STATUSES.has(status)) return false;
+  if (subscription?.meta?.pendingAutopaySetup || subscription?.meta?.pendingPlanChangeSetup) return false;
+  if (!subscription.autopay_enabled && (status === 'trialing' || subscription?.meta?.isTrial)) return false;
   if (!subscription.ends_at) return true;
   return new Date(subscription.ends_at).getTime() >= Date.now();
+};
+
+const getRolePlanPostingLimit = (rolePlan = {}, jobPlanSlug = '') => {
+  const normalizedJobPlanSlug = normalizePlanSlug(jobPlanSlug);
+  const buckets = rolePlan?.meta?.jobPostingCredits || {};
+  const bucketLimit = Number(buckets[normalizedJobPlanSlug] || 0);
+  if (Number.isFinite(bucketLimit) && bucketLimit > 0) return Math.floor(bucketLimit);
+
+  if (normalizePlanSlug(rolePlan.includedJobPlanSlug) === normalizedJobPlanSlug) {
+    return Math.max(0, parseInt(rolePlan.includedJobCredits || 0, 10) || 0);
+  }
+
+  return 0;
+};
+
+const assertRolePlanPostingAllowance = async ({ userId, subscription = null, jobPlanSlug = '' } = {}) => {
+  const rolePlan = await getRolePlanBySlug(subscription?.role_plan_slug, {
+    audienceRole: ROLES.HR,
+    includeInactive: true
+  });
+
+  if (!rolePlan) {
+    const error = new Error('Your recruiter plan could not be found. Please choose or renew a plan before posting.');
+    error.statusCode = 402;
+    throw error;
+  }
+
+  const allowedPosts = getRolePlanPostingLimit(rolePlan, jobPlanSlug);
+  if (allowedPosts <= 0) {
+    const error = new Error(`${rolePlan.name || 'Your current plan'} does not include this job listing type. Upgrade your plan to post it.`);
+    error.statusCode = 402;
+    throw error;
+  }
+
+  let query = supabase
+    .from('jobs')
+    .select('id', { count: 'exact', head: true })
+    .eq('created_by', userId)
+    .eq('plan_slug', normalizePlanSlug(jobPlanSlug))
+    .neq('status', JOB_STATUSES.DELETED);
+
+  if (subscription.starts_at || subscription.created_at) {
+    query = query.gte('created_at', subscription.starts_at || subscription.created_at);
+  }
+
+  if (subscription.ends_at) {
+    query = query.lte('created_at', subscription.ends_at);
+  }
+
+  const { count, error } = await query;
+  if (error) throw error;
+
+  const usedPosts = Math.max(0, count || 0);
+  if (usedPosts >= allowedPosts) {
+    const error = new Error(`No ${jobPlanSlug === 'hot_vacancy' ? 'Hot Vacancy' : jobPlanSlug === 'premium' ? 'Premium' : 'Normal'} job posts left in your current plan. Upgrade your plan to post more.`);
+    error.statusCode = 402;
+    throw error;
+  }
+
+  return {
+    rolePlan,
+    allowedPosts,
+    usedPosts,
+    remainingPosts: Math.max(allowedPosts - usedPosts - 1, 0)
+  };
 };
 
 const notifyBlockedJobToAdmins = async ({
@@ -318,9 +383,10 @@ const createHrJob = async (req, res) => {
   }
 
   const requestedPlanSlug = normalizePlanSlug(payload.plan_slug || req.body?.planSlug || req.body?.plan_slug || PLAN_SLUGS.FREE);
+  let activeRoleSubscription = null;
 
   if (req.user.role !== ROLES.ADMIN && req.user.role !== ROLES.SUPER_ADMIN) {
-    const activeRoleSubscription = await getCurrentRolePlanSubscription({
+    activeRoleSubscription = await getCurrentRolePlanSubscription({
       userId: req.user.id,
       audienceRole: ROLES.HR
     });
@@ -336,7 +402,7 @@ const createHrJob = async (req, res) => {
     if (requestedPlanSlug === PLAN_SLUGS.FREE) {
       res.status(400).send({
         status: false,
-        message: 'Free job posting is disabled for HR accounts. Use your recruiter plan credits.'
+        message: 'Free job posting is disabled for HR accounts. Use your active recruiter plan.'
       });
       return;
     }
@@ -370,27 +436,24 @@ const createHrJob = async (req, res) => {
     return;
   }
 
-  let consumedCreditId = null;
-
   try {
     const fallbackCompanyLogo = normalizeLogoInput(payload.company_logo)
       ? ''
       : await getHrProfileLogoForUser(req.user.id, payload.company_name);
 
     if (req.user.role !== ROLES.ADMIN && !plan.isFree) {
-      const credit = await consumePostingCredit({ hrId: req.user.id, planSlug: plan.slug });
-      if (!credit.success) {
-        res.status(402).send({ status: false, message: credit.message });
-        return;
-      }
-      consumedCreditId = credit.creditId;
+      await assertRolePlanPostingAllowance({
+        userId: req.user.id,
+        subscription: activeRoleSubscription,
+        jobPlanSlug: plan.slug
+      });
     }
 
     const jobInsert = {
       ...payload,
       company_logo: normalizeLogoInput(payload.company_logo) || fallbackCompanyLogo || null,
       ...planValidation.jobPlanFields,
-      consumed_credit_id: consumedCreditId,
+      consumed_credit_id: null,
       is_paid: !plan.isFree,
       posted_by: normalizeEmail(req.user.email),
       created_by: req.user.id,
@@ -406,9 +469,6 @@ const createHrJob = async (req, res) => {
       .single();
 
     if (error) {
-      if (consumedCreditId) {
-        await releasePostingCredit(consumedCreditId).catch(() => {});
-      }
       sendSupabaseError(res, error);
       return;
     }
@@ -431,10 +491,6 @@ const createHrJob = async (req, res) => {
       job: mapJobFromRow(data)
     });
   } catch (error) {
-    if (consumedCreditId) {
-      await releasePostingCredit(consumedCreditId).catch(() => {});
-    }
-
     if (error?.code) {
       sendSupabaseError(res, error);
       return;

@@ -61,12 +61,12 @@ const DEFAULT_KNOWLEDGE = [
       'HR users can manage company profile, create and delete jobs, review applicants for a job, search candidates, schedule interviews, track analytics, and use AI helpers for job description improvement and candidate summaries.'
   },
   {
-    id: 'pricing-and-credits',
+    id: 'pricing-and-plans',
     audiences: [ROLES.HR, ROLES.ADMIN, ROLES.SUPER_ADMIN],
-    keywords: ['plan', 'pricing', 'credit', 'checkout', 'purchase', 'invoice', 'billing', 'payment'],
+    keywords: ['plan', 'pricing', 'checkout', 'purchase', 'invoice', 'billing', 'payment'],
     pagePrefixes: ['/portal/hr'],
     content:
-      'Recruiter pricing flows include plan listing, quote calculation, checkout, credit balance, and purchase history. Paid job-posting flows depend on available HR posting credits unless an admin bypass applies.'
+      'Recruiter pricing flows include plan listing, quote calculation, checkout, plan status, and purchase history. Paid job-posting availability depends on the active recruiter plan limits unless an admin bypass applies.'
   },
   {
     id: 'admin-ops',

@@ -142,7 +142,7 @@ const calculateQuote = ({ plan, quantity = 1 }) => {
   const qty = clamp(requestedQty, minPurchaseQuantity, maxPurchaseQuantity);
 
   if (requestedQty !== qty) {
-    const error = new Error(`${plan.name} credits must be purchased between ${minPurchaseQuantity} and ${maxPurchaseQuantity} at a time.`);
+    const error = new Error(`${plan.name} job posts must be purchased between ${minPurchaseQuantity} and ${maxPurchaseQuantity} at a time.`);
     error.statusCode = 400;
     throw error;
   }

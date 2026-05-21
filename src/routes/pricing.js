@@ -171,11 +171,17 @@ router.patch('/role-plans/:slug', requireAuth, requireActiveUser, requireRole(RO
 
 router.post('/role-plans/quote', requireAuth, requireActiveUser, requireRole(...ROLE_PLAN_ALLOWED_ROLES), asyncHandler(async (req, res) => {
   try {
+    const audienceRole = normalizeAudienceRole(req.body?.audienceRole || req.body?.audience_role || req.user?.role);
+    const currentSubscription = await getCurrentRolePlanSubscription({
+      userId: req.user.id,
+      audienceRole
+    });
     const quote = await quoteRolePlan({
       planSlug: req.body?.planSlug || req.body?.plan_slug,
-      audienceRole: normalizeAudienceRole(req.body?.audienceRole || req.body?.audience_role || req.user?.role),
+      audienceRole,
       quantity: req.body?.quantity,
-      couponCode: req.body?.couponCode || req.body?.coupon_code || ''
+      couponCode: req.body?.couponCode || req.body?.coupon_code || '',
+      currentSubscription
     });
     res.send({ status: true, quote });
   } catch (error) {

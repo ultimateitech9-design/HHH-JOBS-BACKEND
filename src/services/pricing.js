@@ -180,11 +180,11 @@ const consumePostingCredit = async ({ hrId, planSlug }) => {
     return {
       success: false,
       creditId: null,
-      message: 'No available posting credits for this plan. Please purchase credits first.'
+      message: 'No job posts left for this listing type in your current plan. Upgrade your plan to post more.'
     };
   }
 
-  return { success: true, creditId: data, message: 'Credit consumed' };
+  return { success: true, creditId: data, message: 'Plan job post used' };
 };
 
 const releasePostingCredit = async (creditId) => {
