@@ -105,6 +105,7 @@ const submitApplicationForUser = async ({
   const normalizedCoverLetter = String(coverLetter || '').trim() || null;
   const studentMessage = studentNotification.message
     || `Your application to ${job.job_title} was submitted successfully.`;
+  const hrApplicantLink = `/portal/hr/jobs/${job.id || jobId}/applicants`;
 
   const applicationInsert = {
     job_id: jobId,
@@ -141,7 +142,7 @@ const submitApplicationForUser = async ({
     type: 'new_application',
     title: `New application for ${job.job_title}`,
     message: `${user.name || user.email} has applied to your job.`,
-    link: '/hr',
+    link: `${hrApplicantLink}?applicationId=${data.id}`,
     meta: { jobId: job.id, applicationId: data.id }
   });
 
@@ -161,7 +162,7 @@ const submitApplicationForUser = async ({
       type: 'new_application',
       title: `New application for ${job.job_title}`,
       message: `${user.name || user.email} has applied to your job.`,
-      link: '/portal/hr/jobs',
+      link: `${hrApplicantLink}?applicationId=${data.id}`,
       meta: { jobId: job.id, applicationId: data.id }
     },
     emailPayload: {
@@ -171,13 +172,13 @@ const submitApplicationForUser = async ({
         user.email ? `Candidate email: ${user.email}` : '',
         totalApplications != null ? `Total applications so far: ${totalApplications}` : '',
         '',
-        'Review applicants: https://hhh-jobs.com/portal/hr/jobs'
+        `Review applicants: https://hhh-jobs.com${hrApplicantLink}?applicationId=${data.id}`
       ].filter(Boolean).join('\n'),
       html: `
         <p><strong>${user.name || user.email}</strong> applied for <strong>${job.job_title}</strong>.</p>
         ${user.email ? `<p>Candidate email: <strong>${user.email}</strong></p>` : ''}
         ${totalApplications != null ? `<p>Total applications so far: <strong>${totalApplications}</strong></p>` : ''}
-        <p><a href="https://hhh-jobs.com/portal/hr/jobs">Review applicants</a></p>
+        <p><a href="https://hhh-jobs.com${hrApplicantLink}?applicationId=${data.id}">Review applicants</a></p>
       `.trim()
     }
   });

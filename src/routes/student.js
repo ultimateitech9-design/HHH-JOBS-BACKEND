@@ -1701,7 +1701,9 @@ router.post('/applications/:applicationId/offer-response', asyncHandler(async (r
     const message = decision === 'accept'
       ? `${req.user.name || 'The student'} accepted the offer for ${job?.job_title || 'the role'} at ${job?.company_name || 'your company'}.`
       : `${req.user.name || 'The student'} rejected the offer for ${job?.job_title || 'the role'} at ${job?.company_name || 'your company'}.`;
-    const link = job?.id ? `/portal/hr/jobs/${job.id}/applicants` : '/portal/hr/jobs';
+    const link = job?.id
+      ? `/portal/hr/jobs/${job.id}/applicants?applicationId=${updatedApplication.id}`
+      : '/portal/hr/jobs';
 
     await createNotification({
       userId: recruiterUserId,

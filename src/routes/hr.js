@@ -45,6 +45,11 @@ const MAX_INTERVIEW_ROOM_PARTICIPANTS = 500;
 const DEFAULT_CAMPUS_APPLICANTS_PAGE_SIZE = 25;
 const MAX_CAMPUS_APPLICANTS_PAGE_SIZE = 100;
 const DEFAULT_EXTERNAL_MEETING_BASE_URL = 'https://meet.jit.si';
+const FIXED_TIMEZONE_OFFSETS = {
+  'Asia/Kolkata': 330,
+  IST: 330,
+  UTC: 0
+};
 
 const toMeetingSlug = (value = '') =>
   String(value || '')
@@ -62,6 +67,28 @@ const normalizeHttpUrl = (value = '') => {
   } catch (error) {
     return '';
   }
+};
+
+const parseScheduledDateTime = (value, timezone = 'Asia/Kolkata') => {
+  const raw = String(value || '').trim();
+  if (!raw) return new Date(NaN);
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(raw)) return new Date(raw);
+
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  const offsetMinutes = FIXED_TIMEZONE_OFFSETS[timezone] ?? FIXED_TIMEZONE_OFFSETS.Asia/Kolkata;
+  if (match) {
+    const [, year, month, day, hour, minute, second = '0'] = match;
+    return new Date(Date.UTC(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second)
+    ) - (offsetMinutes * 60 * 1000));
+  }
+
+  return new Date(raw);
 };
 
 const buildExternalInterviewMeetingLink = ({ title = 'interview', scheduledAt = '' } = {}) => {
@@ -1065,7 +1092,11 @@ router.post('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
     });
   }
 
-  const scheduledStart = new Date(scheduledAt);
+  const scheduledStart = parseScheduledDateTime(scheduledAt, timezone);
+  if (Number.isNaN(scheduledStart.getTime())) {
+    res.status(400).send({ status: false, message: 'scheduledAt is invalid' });
+    return;
+  }
   const scheduledEndAt = new Date(scheduledStart.getTime() + (durationMinutes * 60 * 1000)).toISOString();
   const interviewTitle = title || `${schedulingTitleBase} ${roundLabel}`;
   const shouldUseExternalMeeting = mode === 'virtual' && participantCount > P2P_INTERVIEW_ROOM_PARTICIPANTS;
@@ -1195,7 +1226,7 @@ router.post('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
     userId: item.candidate_id,
     type: 'interview_scheduled',
     title: 'Interview scheduled',
-    message: `Your interview for ${schedulingTitleBase} is scheduled on ${new Date(item.scheduled_at).toLocaleString()}. Open HHH Jobs to join at the scheduled time.`,
+    message: `Your interview for ${schedulingTitleBase} is scheduled on ${new Date(item.scheduled_at).toLocaleString('en-IN', { timeZone: timezone })}. Open HHH Jobs to join at the scheduled time.`,
     link: '/portal/student/interviews',
     meta: {
       interviewId: item.id,
@@ -1233,7 +1264,17 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
         : (normalizedStatus === 'cancelled' ? 'cancelled' : 'scheduled')
     );
   }
-  if (scheduledAt) updateDoc.scheduled_at = new Date(scheduledAt).toISOString();
+  const nextTimezone = req.body?.timezone !== undefined
+    ? (String(req.body.timezone || 'Asia/Kolkata').trim() || 'Asia/Kolkata')
+    : null;
+  if (scheduledAt) {
+    const scheduledDate = parseScheduledDateTime(scheduledAt, nextTimezone || 'Asia/Kolkata');
+    if (Number.isNaN(scheduledDate.getTime())) {
+      res.status(400).send({ status: false, message: 'scheduledAt is invalid' });
+      return;
+    }
+    updateDoc.scheduled_at = scheduledDate.toISOString();
+  }
   if (req.body?.meetingLink !== undefined) updateDoc.meeting_link = normalizeHttpUrl(req.body.meetingLink) || null;
   if (req.body?.location !== undefined) updateDoc.location = req.body.location;
   if (req.body?.note !== undefined) updateDoc.note = req.body.note;
@@ -1243,7 +1284,7 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
   if (req.body?.durationMinutes !== undefined) {
     updateDoc.duration_minutes = Math.max(15, Math.min(180, Number(req.body.durationMinutes || 45)));
   }
-  if (req.body?.timezone !== undefined) updateDoc.timezone = String(req.body.timezone || 'Asia/Kolkata').trim() || 'Asia/Kolkata';
+  if (req.body?.timezone !== undefined) updateDoc.timezone = nextTimezone;
   if (req.body?.panelMode !== undefined) updateDoc.panel_mode = Boolean(req.body.panelMode);
   if (req.body?.panelMembers !== undefined) updateDoc.panel_members = sanitizePanelMembers(req.body.panelMembers);
   if (req.body?.candidateConsentRequired !== undefined) {
