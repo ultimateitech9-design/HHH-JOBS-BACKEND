@@ -19,6 +19,7 @@ const {
 } = require('../services/companyDirectory');
 
 const router = express.Router();
+const OPENCORPORATES_SEARCH_URL = 'https://api.opencorporates.com/v0.4/companies/search';
 
 const companySubscriptionAuth = [
   requireAuth,
@@ -131,6 +132,114 @@ const getDirectorySourceData = async (nowIso) => {
     portalJobsResp,
     externalJobsResp
   };
+};
+
+const getOpenCorporatesToken = () =>
+  String(process.env.OPENCORPORATES_API_TOKEN || process.env.OPEN_CORPORATES_API_TOKEN || '').trim();
+
+const normalizeRegistryCompany = (company = {}) => ({
+  id: company.company_number ? `registry-${company.jurisdiction_code || 'in'}-${company.company_number}` : '',
+  name: String(company.name || '').trim(),
+  companyType: company.company_type || '',
+  status: company.current_status || company.status || '',
+  jurisdictionCode: company.jurisdiction_code || '',
+  registrationNumber: company.company_number || '',
+  registeredAddress: company.registered_address_in_full || '',
+  source: 'registry'
+});
+
+const searchOpenCorporatesCompanies = async ({ search, limit = 20 } = {}) => {
+  const token = getOpenCorporatesToken();
+  if (!token || !search) return [];
+
+  const params = new URLSearchParams({
+    q: search,
+    jurisdiction_code: 'in',
+    per_page: String(Math.max(1, Math.min(30, Number(limit || 20)))),
+    api_token: token
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const response = await fetch(`${OPENCORPORATES_SEARCH_URL}?${params.toString()}`, {
+      signal: controller.signal,
+      headers: { accept: 'application/json' }
+    });
+
+    if (!response.ok) return [];
+
+    const payload = await response.json();
+    return (payload?.results?.companies || [])
+      .map((entry) => normalizeRegistryCompany(entry?.company || entry))
+      .filter((company) => company.name);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const searchLocalDirectoryCompanies = async ({ search, limit = 20 } = {}) => {
+  if (!supabase || !search) return [];
+
+  const nowIso = new Date().toISOString();
+  const { sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData(nowIso);
+  if (sponsorsResp.error || profilesResp.error || portalJobsResp.error || externalJobsResp.error) {
+    return [];
+  }
+
+  const companies = buildCompanyDirectory({
+    sponsoredCompanies: sponsorsResp.data || [],
+    hrProfiles: profilesResp.data || [],
+    portalJobs: portalJobsResp.data || [],
+    externalJobs: externalJobsResp.data || []
+  });
+
+  return companies
+    .filter((company) => {
+      const haystack = [
+        company.name,
+        company.companyType,
+        company.location,
+        company.industry,
+        company.websiteHost
+      ].join(' ').toLowerCase();
+
+      return haystack.includes(search.toLowerCase());
+    })
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 20))))
+    .map((company) => ({
+      id: company.id || company.slug,
+      name: company.name,
+      companyType: company.companyType || '',
+      status: company.verifiedEmployer ? 'verified' : '',
+      jurisdictionCode: 'in',
+      registrationNumber: '',
+      registeredAddress: company.location || '',
+      source: company.portalProfile ? 'portal' : 'directory'
+    }));
+};
+
+const mergeCompanyResults = (...groups) => {
+  const byKey = new Map();
+
+  groups.flat().forEach((company) => {
+    const name = String(company?.name || '').trim();
+    const key = normalizeCompanyKey(name);
+    if (!key) return;
+
+    const existing = byKey.get(key);
+    byKey.set(key, {
+      ...company,
+      ...existing,
+      name: existing?.name || name,
+      source: existing?.source || company.source
+    });
+  });
+
+  return Array.from(byKey.values()).sort((left, right) => left.name.localeCompare(right.name));
 };
 
 const mapExternalCompanyJob = (job, brandIndex) => {
@@ -286,6 +395,32 @@ router.get('/sponsors', asyncHandler(async (req, res) => {
       sponsorsWithJobs: sponsoredCompanies.filter((company) => company.totalJobs > 0).length,
       totalOpenRoles: sponsoredCompanies.reduce((sum, company) => sum + Number(company.totalJobs || 0), 0)
     }
+  });
+}));
+
+router.get('/registry-search', asyncHandler(async (req, res) => {
+  const search = String(req.query.search || req.query.q || '').trim();
+  const limit = Math.max(1, Math.min(50, Number(req.query.limit || 20)));
+
+  if (search.length < 2) {
+    res.send({
+      status: true,
+      companies: [],
+      source: getOpenCorporatesToken() ? 'registry' : 'local'
+    });
+    return;
+  }
+
+  const [registryCompanies, localCompanies] = await Promise.all([
+    searchOpenCorporatesCompanies({ search, limit }),
+    searchLocalDirectoryCompanies({ search, limit })
+  ]);
+
+  res.send({
+    status: true,
+    companies: mergeCompanyResults(localCompanies, registryCompanies).slice(0, limit),
+    source: getOpenCorporatesToken() ? 'registry' : 'local',
+    registryConfigured: Boolean(getOpenCorporatesToken())
   });
 }));
 
