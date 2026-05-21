@@ -3,7 +3,8 @@ const { ROLES, AUDIT_ACTIONS } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('../middleware/roles');
 const { asyncHandler, isValidUuid } = require('../utils/helpers');
-const { sendSupabaseError } = require('../supabase');
+const { supabase, sendSupabaseError } = require('../supabase');
+const { createNotification } = require('../services/notifications');
 const {
   fetchPlans,
   getPlanBySlug,
@@ -52,6 +53,42 @@ const sendRouteError = (res, error) => {
   }
 
   res.status(500).send({ status: false, message: error?.message || 'Internal Server Error' });
+};
+
+const getComparableRolePlanPrice = (plan = {}) => Number(plan?.meta?.trialRenewalPrice || plan?.price || 0);
+
+const isDowngradeRequest = ({ currentPlan = null, nextPlan = null } = {}) => {
+  if (!currentPlan || !nextPlan) return false;
+  return getComparableRolePlanPrice(nextPlan) < getComparableRolePlanPrice(currentPlan);
+};
+
+const notifySalesForRolePlanRequest = async ({ lead = null, user = {}, plan = {}, currentPlan = null, reason = '', notes = '' } = {}) => {
+  const { data: salesUsers } = await supabase
+    .from('users')
+    .select('id')
+    .in('role', [ROLES.SALES, ROLES.ADMIN, ROLES.SUPER_ADMIN])
+    .eq('status', 'active');
+
+  const title = reason === 'downgrade_request' ? 'HR downgrade request' : 'HR plan sales request';
+  const message = reason === 'downgrade_request'
+    ? `${lead?.company_name || user?.name || 'An HR'} wants to switch from ${currentPlan?.name || 'current plan'} to ${plan?.name || plan?.slug || 'selected plan'}.`
+    : `${lead?.company_name || user?.name || 'An HR'} is interested in ${plan?.name || plan?.slug || 'a recruiter plan'}.`;
+
+  await Promise.all((salesUsers || []).map((salesUser) => createNotification({
+    userId: salesUser.id,
+    type: 'sales_lead',
+    title,
+    message,
+    link: '/portal/sales/leads',
+    meta: {
+      leadId: lead?.id || null,
+      requesterUserId: user?.id || null,
+      requestedPlanSlug: plan?.slug || null,
+      currentPlanSlug: currentPlan?.slug || null,
+      reason,
+      notes
+    }
+  })));
 };
 
 const ROLE_PLAN_ALLOWED_ROLES = [ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT, ROLES.ADMIN];
@@ -192,12 +229,25 @@ router.post('/role-plans/quote', requireAuth, requireActiveUser, requireRole(...
 router.post('/role-plans/contact-sales', requireAuth, requireActiveUser, requireRole(...ROLE_PLAN_ALLOWED_ROLES), asyncHandler(async (req, res) => {
   try {
     const audienceRole = normalizeAudienceRole(req.body?.audienceRole || req.body?.audience_role || req.user?.role);
+    const reason = String(req.body?.reason || '').trim().toLowerCase();
+    const note = String(req.body?.note || '').trim();
     const plan = await getRolePlanOrThrow(req.body?.planSlug || req.body?.plan_slug, {
       audienceRole,
       includeInactive: false
     });
+    const currentSubscription = await getCurrentRolePlanSubscription({
+      userId: req.user.id,
+      audienceRole
+    });
+    const currentPlan = currentSubscription?.role_plan_slug
+      ? await getRolePlanOrThrow(currentSubscription.role_plan_slug, {
+        audienceRole,
+        includeInactive: true
+      }).catch(() => null)
+      : null;
+    const downgradeRequest = reason === 'downgrade_request' || isDowngradeRequest({ currentPlan, nextPlan: plan });
 
-    if (!Boolean(plan.meta?.contactSales) && plan.meta?.selfCheckout !== false) {
+    if (!downgradeRequest && !Boolean(plan.meta?.contactSales) && plan.meta?.selfCheckout !== false) {
       res.status(400).send({ status: false, message: 'This plan is available for self checkout.' });
       return;
     }
@@ -216,12 +266,28 @@ router.post('/role-plans/contact-sales', requireAuth, requireActiveUser, require
       status: 'qualified',
       onboardingStatus: 'negotiation',
       planSlug: plan.slug,
-      couponCode: ''
+      couponCode: '',
+      notes: downgradeRequest
+        ? (note || `Downgrade request from ${currentPlan?.name || currentSubscription?.role_plan_slug || 'current plan'} to ${plan.name || plan.slug}. Sales should contact the HR before switching.`)
+        : (note || `Interested in ${plan.name || plan.slug}.`)
+    });
+
+    await notifySalesForRolePlanRequest({
+      lead,
+      user: req.user,
+      plan,
+      currentPlan,
+      reason: downgradeRequest ? 'downgrade_request' : 'contact_sales',
+      notes: downgradeRequest
+        ? (note || `Downgrade request from ${currentPlan?.name || currentSubscription?.role_plan_slug || 'current plan'} to ${plan.name || plan.slug}.`)
+        : note
     });
 
     res.status(201).send({
       status: true,
-      message: 'Sales team has been notified for this plan.',
+      message: downgradeRequest
+        ? 'Sales team has been notified for this downgrade request.'
+        : 'Sales team has been notified for this plan.',
       lead,
       plan: formatRolePlanForClient(plan)
     });

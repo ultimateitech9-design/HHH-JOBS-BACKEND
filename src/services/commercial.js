@@ -478,12 +478,13 @@ const quoteRolePlan = async ({ planSlug, audienceRole = '', quantity = 1, coupon
     && currentPlanSlug !== plan.slug
     && !currentSubscription?.meta?.pendingAutopaySetup
     && !currentSubscription?.meta?.pendingPlanChangeSetup
+    && (currentSubscription.autopay_enabled || (currentStatus !== 'trialing' && !currentSubscription?.meta?.isTrial))
   ) {
     const currentPlan = await getRolePlanBySlug(currentPlanSlug, {
       audienceRole: plan.audienceRole,
       includeInactive: true
     });
-    if (currentPlan) {
+    if (currentPlan && Number(plan.price || 0) >= Number(currentPlan.price || 0)) {
       const remainingRatio = getSubscriptionRemainingRatio(currentSubscription, currentPlan.durationDays || plan.durationDays);
       const currentQuantity = Math.max(1, parseInt(currentSubscription?.meta?.renewalQuantity || currentSubscription?.quantity || 1, 10) || 1);
       upgradeCreditAmount = roundMoney((currentPlan.price || 0) * currentQuantity * remainingRatio);
@@ -613,7 +614,8 @@ const updateLeadForCommercialEvent = async ({
   planSlug = '',
   couponCode = '',
   purchaseId = null,
-  subscriptionId = null
+  subscriptionId = null,
+  notes = ''
 } = {}) => {
   if (!isValidUuid(userId)) return null;
 
@@ -626,6 +628,7 @@ const updateLeadForCommercialEvent = async ({
   if (couponCode !== undefined) updateDoc.coupon_code = normalizeText(couponCode).toUpperCase() || null;
   if (purchaseId) updateDoc.source_purchase_id = purchaseId;
   if (subscriptionId) updateDoc.source_subscription_id = subscriptionId;
+  if (notes !== undefined) updateDoc.notes = normalizeText(notes) || null;
   updateDoc.last_followup_at = new Date().toISOString();
 
   const { data, error } = await supabase
@@ -1044,6 +1047,8 @@ const isSubscriptionStillUsable = (subscription = null) => {
   if (!subscription) return false;
   const status = normalizeLower(subscription.status);
   if (!ACTIVE_SUBSCRIPTION_STATUSES.has(status)) return false;
+  if (subscription?.meta?.pendingAutopaySetup || subscription?.meta?.pendingPlanChangeSetup) return false;
+  if (!subscription.autopay_enabled && (status === 'trialing' || subscription?.meta?.isTrial)) return false;
   if (!subscription.ends_at) return true;
   return new Date(subscription.ends_at).getTime() >= Date.now();
 };
@@ -1654,6 +1659,24 @@ const createRolePlanAutopaySession = async ({
     const error = new Error('Enterprise plan requires Contact Sales.');
     error.statusCode = 400;
     throw error;
+  }
+  if (
+    currentSubscription
+    && normalizeLower(currentSubscription.status) !== 'pending'
+    && isSubscriptionStillUsable(currentSubscription)
+    && normalizeLower(currentSubscription.role_plan_slug) !== plan.slug
+  ) {
+    const currentPlan = await getRolePlanBySlug(currentSubscription.role_plan_slug, {
+      audienceRole: normalizedAudienceRole,
+      includeInactive: true
+    });
+    const currentComparablePrice = Number(currentPlan?.meta?.trialRenewalPrice || currentPlan?.price || 0);
+    const nextComparablePrice = Number(plan?.meta?.trialRenewalPrice || plan?.price || 0);
+    if (currentPlan && nextComparablePrice < currentComparablePrice) {
+      const error = new Error('Downgrade requests are handled by sales. Please request a downgrade instead of checkout.');
+      error.statusCode = 400;
+      throw error;
+    }
   }
 
   if (!currentSubscription) {
