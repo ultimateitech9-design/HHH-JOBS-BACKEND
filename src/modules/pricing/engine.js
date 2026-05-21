@@ -136,7 +136,16 @@ const calculateEntitlements = (plan, createdAt = new Date()) => ({
 });
 
 const calculateQuote = ({ plan, quantity = 1 }) => {
-  const qty = clamp(parseInt(quantity || '1', 10) || 1, 1, 1000);
+  const minPurchaseQuantity = Math.max(1, parseInt(plan?.meta?.minPurchaseQuantity || 1, 10) || 1);
+  const maxPurchaseQuantity = Math.max(minPurchaseQuantity, parseInt(plan?.meta?.maxPurchaseQuantity || 1000, 10) || 1000);
+  const requestedQty = parseInt(quantity || '1', 10) || 1;
+  const qty = clamp(requestedQty, minPurchaseQuantity, maxPurchaseQuantity);
+
+  if (requestedQty !== qty) {
+    const error = new Error(`${plan.name} credits must be purchased between ${minPurchaseQuantity} and ${maxPurchaseQuantity} at a time.`);
+    error.statusCode = 400;
+    throw error;
+  }
 
   const unitPrice = roundMoney(plan.price);
   const subtotal = roundMoney(unitPrice * qty);
