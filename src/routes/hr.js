@@ -1372,6 +1372,67 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
   res.send({ status: true, interview: hostInterview, interviews: data || [] });
 }));
 
+router.delete('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res) => {
+  const interviewCapabilities = await getInterviewScheduleCapabilities({ force: true });
+  const { data: existing, error: existingErr } = await supabase
+    .from('interview_schedules')
+    .select('*')
+    .eq('id', req.params.id)
+    .eq('hr_id', req.user.id)
+    .maybeSingle();
+
+  if (existingErr) {
+    sendSupabaseError(res, existingErr);
+    return;
+  }
+  if (!existing) {
+    res.status(404).send({ status: false, message: 'Interview not found' });
+    return;
+  }
+
+  const roomInterviewId = getInterviewRoomHostId(existing);
+  const relatedQuery = supabase
+    .from('interview_schedules')
+    .select('id')
+    .eq('hr_id', req.user.id);
+
+  const { data: relatedInterviews, error: relatedError } = interviewCapabilities.hasSharedRoomHostInterviewId
+    ? await relatedQuery.or(`id.eq.${roomInterviewId},shared_room_host_interview_id.eq.${roomInterviewId}`)
+    : await relatedQuery.eq('id', roomInterviewId);
+
+  if (relatedError) {
+    sendSupabaseError(res, relatedError);
+    return;
+  }
+
+  const relatedIds = (relatedInterviews || []).map((item) => item.id);
+  const { data: deletedInterviews, error: deleteError } = await supabase
+    .from('interview_schedules')
+    .delete()
+    .in('id', relatedIds.length > 0 ? relatedIds : [existing.id])
+    .select('id');
+
+  if (deleteError) {
+    sendSupabaseError(res, deleteError);
+    return;
+  }
+
+  const deletedIds = (deletedInterviews || []).map((item) => item.id);
+  if (deletedIds.length === 0) {
+    res.status(409).send({
+      status: false,
+      message: 'Interview could not be deleted. Refresh and try again.'
+    });
+    return;
+  }
+
+  res.send({
+    status: true,
+    roomInterviewId,
+    deletedIds
+  });
+}));
+
 // =============================================
 // Bulk application action
 // =============================================

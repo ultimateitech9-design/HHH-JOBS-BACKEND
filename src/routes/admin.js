@@ -19,7 +19,7 @@ const { createNotification } = require('../services/notifications');
 const { logAudit, getClientIp } = require('../services/audit');
 const { isStudentPortalRole } = require('../services/accountRoles');
 const { upsertRoleProfile } = require('../services/profileTables');
-const { enqueueWelcomeEmail } = require('../services/sideEffectQueue');
+const { enqueueCreatedUserWelcomeEmail } = require('../services/createdUserWelcome');
 
 const router = express.Router();
 
@@ -1012,7 +1012,7 @@ router.patch('/payments/:id', asyncHandler(async (req, res) => {
 // =============================================
 // Bulk Registration (Migration)
 // POST /admin/bulk-register
-// Body: { candidates: [...], sendEmail: true, loginUrl: "..." }
+// Body: { candidates: [...], sendEmail: true }
 // Each candidate: { name, email, mobile, password, role?, gender?, caste?, religion? }
 // =============================================
 router.post('/bulk-register', asyncHandler(async (req, res) => {
@@ -1032,7 +1032,6 @@ router.post('/bulk-register', asyncHandler(async (req, res) => {
   }
 
   const sendEmail   = req.body?.sendEmail !== false;
-  const loginUrl    = String(req.body?.loginUrl || 'https://hhh-jobs.com/login').trim();
   const defaultRole = ROLES.STUDENT;
 
   const results   = [];
@@ -1121,7 +1120,14 @@ router.post('/bulk-register', asyncHandler(async (req, res) => {
     let emailQueued = false;
     if (sendEmail) {
       try {
-        await enqueueWelcomeEmail({ to: email, name, password, loginUrl });
+        await enqueueCreatedUserWelcomeEmail({
+          user: {
+            email,
+            name,
+            role: newUser.role
+          },
+          password
+        });
         emailQueued = true;
       } catch (_) {
         // email failure is non-fatal

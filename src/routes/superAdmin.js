@@ -10,6 +10,7 @@ const { getRoleSyncSummary, repairRoleProfiles, upsertRoleProfile } = require('.
 const { notifyMatchingJobAlerts } = require('../services/notifications');
 const { notifyRecommendedStudentsForJob } = require('../services/recommendations');
 const { processAutoApplyForJob } = require('../services/autoApply');
+const { enqueueCreatedUserWelcomeEmail } = require('../services/createdUserWelcome');
 const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
@@ -336,6 +337,13 @@ router.post('/users', asyncHandler(async (req, res) => {
     actor_name: req.user?.name,
     actor_role: req.user?.role,
     details: `Created user ${user.email} with role ${role}`
+  });
+
+  await enqueueCreatedUserWelcomeEmail({
+    user,
+    password
+  }).catch((welcomeError) => {
+    console.warn('[CREATED USER WELCOME EMAIL]', welcomeError?.message || welcomeError);
   });
 
   res.status(201).send({ status: true, user });

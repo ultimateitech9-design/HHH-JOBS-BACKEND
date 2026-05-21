@@ -1,1 +1,56 @@
 [QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+[AutoApply Scheduler] Digest 2026-05-21T04:17:27.572Z — error: TypeError: fetch failed
+[ExternalJobs Scheduler] Ingestion 2026-05-21T04:17:27.590Z — unexpected error: TypeError: fetch failed
+[QUEUE] REDIS_URL not configured. Falling back to in-process asyPort 6004 Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run d[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npPort 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run d[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npPort 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run d[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.
+PORT in .env and set the matching frontend API base URL.
+Port 6004 is already in use.
+Another process is already listening on that port.
+If this is an older HHH Job API instance, rerun `npm run dev` to replace it automatically.
+If a different app owns the port, update PORT in .env and set the matching frontend API base URL.

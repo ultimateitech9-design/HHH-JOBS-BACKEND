@@ -1,10 +1,18 @@
 const express = require('express');
-const { ROLES } = require('../constants');
+const { ROLES, USER_STATUSES, JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
 const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
-const { asyncHandler } = require('../utils/helpers');
+const { asyncHandler, normalizeEmail } = require('../utils/helpers');
+const { getPasswordPolicyError } = require('../utils/passwordPolicy');
 const { upsertRoleProfile } = require('../services/profileTables');
+const { normalizeCompanyKey } = require('../services/companyDirectory');
+const { getPlanOrThrow, prepareJobPlanData } = require('../services/pricing');
+const { notifyCompanySubscribersForJob } = require('../services/companySubscriptions');
+const { enqueueJobPostedSideEffects } = require('../services/sideEffectQueue');
+const { enqueueCreatedUserWelcomeEmail } = require('../services/createdUserWelcome');
+const { notifyUser } = require('../services/notificationOrchestrator');
+const { PLAN_SLUGS } = require('../modules/pricing/constants');
 const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
@@ -74,6 +82,310 @@ const validateMobileValue = (value = '') => {
   }
 
   return '';
+};
+
+const getProfileUser = (profile = {}) =>
+  Array.isArray(profile.users) ? profile.users[0] : profile.users;
+
+const listRegisteredHrCompanies = async () => {
+  const { data, error } = await supabase
+    .from('hr_profiles')
+    .select(`
+      user_id,
+      company_name,
+      logo_url,
+      created_at,
+      updated_at,
+      users!inner(id, name, email, role, status, is_hr_approved)
+    `)
+    .order('updated_at', { ascending: false });
+
+  if (error) throw error;
+
+  const companiesByKey = new Map();
+
+  for (const profile of data || []) {
+    const user = getProfileUser(profile);
+    const companyName = String(profile.company_name || '').trim();
+    const companyKey = normalizeCompanyKey(companyName);
+    const userRole = String(user?.role || '').trim().toLowerCase();
+    const userStatus = String(user?.status || '').trim().toLowerCase();
+
+    if (!companyKey || !user) continue;
+    if (userRole && userRole !== ROLES.HR) continue;
+    if (userStatus !== USER_STATUSES.ACTIVE || user.is_hr_approved === false) continue;
+
+    if (!companiesByKey.has(companyKey)) {
+      companiesByKey.set(companyKey, {
+        id: companyKey,
+        companyName,
+        hrUserId: user.id,
+        hrName: user.name || '',
+        hrEmail: user.email || '',
+        logoUrl: profile.logo_url || '',
+        createdAt: profile.created_at || null,
+        updatedAt: profile.updated_at || profile.created_at || null
+      });
+    }
+  }
+
+  return [...companiesByKey.values()].sort((left, right) => left.companyName.localeCompare(right.companyName));
+};
+
+const readJobEntryCompanyName = (entryData = {}) =>
+  String(entryData.companyName || entryData.company_name || '').trim();
+
+const withRegisteredCompanyName = (entryData = {}, companyName = '') => {
+  const nextData = { ...(entryData || {}) };
+  delete nextData.company_name;
+
+  return {
+    ...nextData,
+    companyName
+  };
+};
+
+const findRegisteredHrCompany = async (companyName = '') => {
+  const companyKey = normalizeCompanyKey(companyName);
+  if (!companyKey) return null;
+
+  const companies = await listRegisteredHrCompanies();
+  return companies.find((company) => company.id === companyKey) || null;
+};
+
+const sendUnregisteredCompanyError = (res) => {
+  res.status(400).send({
+    status: false,
+    message: 'Select a registered company from the HHH Jobs employer portal before saving this job entry.'
+  });
+};
+
+const DATA_ENTRY_JOB_PLAN = PLAN_SLUGS.STANDARD;
+const DATA_ENTRY_JOB_SALARY_TYPE = 'LPA';
+const DATA_ENTRY_JOB_LINK = '/portal/hr/jobs';
+const DATA_ENTRY_ACCOUNT_ROLES = new Set([ROLES.HR, ROLES.STUDENT]);
+
+const readPublishedJobId = (entryData = {}) =>
+  String(entryData.publishedJobId || entryData.published_job_id || '').trim();
+
+const readPublishedHrUserId = (entryData = {}) =>
+  String(entryData.publishedForHrId || entryData.published_for_hr_id || '').trim();
+
+const readEntrySalaryValue = (value) => {
+  if (value === null || value === undefined || value === '') return '';
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? String(value).trim() : '';
+};
+
+const getDataEntryJobTitle = (title = '', entryData = {}) =>
+  String(title || entryData.title || entryData.jobTitle || entryData.job_title || '').trim();
+
+const prepareDataEntryHrJob = async ({ title = '', entryData = {}, registeredCompany }) => {
+  const jobTitle = getDataEntryJobTitle(title, entryData);
+  const jobLocation = String(entryData.location || entryData.jobLocation || entryData.job_location || '').trim();
+  const description = String(entryData.description || '').trim();
+  const maxPrice = readEntrySalaryValue(entryData.salaryMax ?? entryData.maxPrice ?? entryData.max_price);
+  const minPrice = readEntrySalaryValue(entryData.salaryMin ?? entryData.minPrice ?? entryData.min_price);
+  const employmentType = String(entryData.employmentType || entryData.employment_type || 'Full-Time').trim() || 'Full-Time';
+  const experienceLevel = String(entryData.experienceLevel || entryData.experience_level || 'Entry').trim() || 'Entry';
+  const missing = [];
+
+  if (!jobTitle) missing.push('title');
+  if (!registeredCompany?.companyName || !registeredCompany?.hrUserId) missing.push('registered company HR');
+  if (!jobLocation) missing.push('location');
+  if (!maxPrice) missing.push('max salary');
+  if (!description) missing.push('description');
+
+  if (missing.length > 0) {
+    const error = new Error(`Complete these fields before posting the HR job: ${missing.join(', ')}.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const plan = await getPlanOrThrow(DATA_ENTRY_JOB_PLAN);
+  const planValidation = prepareJobPlanData({
+    jobPayload: {
+      description,
+      jobLocation,
+      jobLocations: [jobLocation]
+    },
+    plan,
+    createdAt: new Date()
+  });
+
+  if (!planValidation.valid) {
+    const error = new Error(`Job payload does not satisfy the posting plan: ${planValidation.errors.join(', ')}.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return {
+    jobInsert: {
+      job_title: jobTitle,
+      company_name: registeredCompany.companyName,
+      min_price: minPrice || null,
+      max_price: maxPrice,
+      salary_type: DATA_ENTRY_JOB_SALARY_TYPE,
+      posting_date: new Date().toISOString().slice(0, 10),
+      experience_level: experienceLevel,
+      skills: Array.isArray(entryData.skills) ? entryData.skills : [],
+      company_logo: String(registeredCompany.logoUrl || '').trim() || null,
+      employment_type: employmentType,
+      description,
+      posted_by: normalizeEmail(registeredCompany.hrEmail),
+      created_by: registeredCompany.hrUserId,
+      status: JOB_STATUSES.OPEN,
+      approval_status: JOB_APPROVAL_STATUSES.APPROVED,
+      is_paid: false,
+      ...planValidation.jobPlanFields
+    },
+    jobUpdate: {
+      job_title: jobTitle,
+      company_name: registeredCompany.companyName,
+      min_price: minPrice || null,
+      max_price: maxPrice,
+      salary_type: DATA_ENTRY_JOB_SALARY_TYPE,
+      posting_date: new Date().toISOString().slice(0, 10),
+      experience_level: experienceLevel,
+      skills: Array.isArray(entryData.skills) ? entryData.skills : [],
+      company_logo: String(registeredCompany.logoUrl || '').trim() || null,
+      employment_type: employmentType,
+      description,
+      posted_by: normalizeEmail(registeredCompany.hrEmail),
+      created_by: registeredCompany.hrUserId,
+      job_location: planValidation.jobPlanFields.job_location,
+      job_locations: planValidation.jobPlanFields.job_locations,
+      approval_status: JOB_APPROVAL_STATUSES.APPROVED,
+      approval_note: null
+    }
+  };
+};
+
+const notifyHrForDataEntryJob = async ({ registeredCompany, job, entry, actor }) => {
+  const title = `Job posted for ${registeredCompany.companyName}`;
+  const message = `HHH Jobs Data Entry posted "${job.job_title}" for your company. It is available in your HR Job Postings.`;
+
+  await notifyUser({
+    userId: registeredCompany.hrUserId,
+    channels: ['in_app', 'email'],
+    notification: {
+      type: 'dataentry_job_posted',
+      title,
+      message,
+      link: DATA_ENTRY_JOB_LINK,
+      meta: {
+        jobId: job.id,
+        dataEntryId: entry.id,
+        dataEntryUserId: actor?.id || null,
+        companyName: registeredCompany.companyName
+      }
+    },
+    emailPayload: {
+      subject: `${job.job_title} was posted for ${registeredCompany.companyName}`,
+      text: [
+        `A new HHH Jobs posting was created for ${registeredCompany.companyName}.`,
+        '',
+        `Role: ${job.job_title}`,
+        `Location: ${job.job_location}`,
+        '',
+        'Open your HR Job Postings to review and manage this role:',
+        'https://hhh-jobs.com/portal/hr/jobs'
+      ].join('\n'),
+      html: `
+        <p>A new HHH Jobs posting was created for <strong>${registeredCompany.companyName}</strong>.</p>
+        <p><strong>Role:</strong> ${job.job_title}<br /><strong>Location:</strong> ${job.job_location}</p>
+        <p><a href="https://hhh-jobs.com/portal/hr/jobs">Open HR Job Postings</a></p>
+      `.trim()
+    }
+  });
+};
+
+const persistPublishedDataEntryJob = async ({ entry, job, registeredCompany }) => {
+  const currentData = entry.data && typeof entry.data === 'object' ? entry.data : {};
+  const nextData = {
+    ...currentData,
+    publishedJobId: job.id,
+    publishedForHrId: registeredCompany.hrUserId,
+    publishedAt: currentData.publishedAt || new Date().toISOString()
+  };
+
+  const { data, error } = await supabase
+    .from('dataentry_entries')
+    .update({
+      data: nextData,
+      status: 'approved',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', entry.id)
+    .select('*')
+    .single();
+
+  if (error) throw error;
+  return data;
+};
+
+const publishDataEntryJobForHr = async ({
+  entry,
+  registeredCompany,
+  preparedJob,
+  actor
+}) => {
+  const currentData = entry.data && typeof entry.data === 'object' ? entry.data : {};
+  const publishedJobId = readPublishedJobId(currentData);
+  let job = null;
+  let created = false;
+
+  if (publishedJobId) {
+    const updatedJob = await supabase
+      .from('jobs')
+      .update(preparedJob.jobUpdate)
+      .eq('id', publishedJobId)
+      .select('*')
+      .maybeSingle();
+
+    if (updatedJob.error) throw updatedJob.error;
+    job = updatedJob.data || null;
+  }
+
+  if (!job) {
+    const insertedJob = await supabase
+      .from('jobs')
+      .insert(preparedJob.jobInsert)
+      .select('*')
+      .single();
+
+    if (insertedJob.error) throw insertedJob.error;
+    job = insertedJob.data;
+    created = true;
+  }
+
+  const publishedEntry = await persistPublishedDataEntryJob({ entry, job, registeredCompany });
+  const ownerChanged = readPublishedHrUserId(currentData) !== String(registeredCompany.hrUserId);
+
+  if (created) {
+    await notifyCompanySubscribersForJob({ job }).catch((error) => {
+      console.warn('[DATA ENTRY COMPANY SUBSCRIBER NOTIFICATIONS]', error?.message || error);
+    });
+    await enqueueJobPostedSideEffects({
+      jobId: job.id,
+      triggerSource: 'dataentry_job_created'
+    }).catch((error) => {
+      console.warn('[DATA ENTRY JOB SIDE EFFECTS]', error?.message || error);
+    });
+  }
+
+  if (created || ownerChanged) {
+    await notifyHrForDataEntryJob({
+      registeredCompany,
+      job,
+      entry: publishedEntry,
+      actor
+    }).catch((error) => {
+      console.warn('[DATA ENTRY HR JOB EMAIL]', error?.message || error);
+    });
+  }
+
+  return { entry: publishedEntry, job };
 };
 
 const normalizeDataEntryEntry = (entry = {}) => {
@@ -173,6 +485,134 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
       recentEntries: recent || []
     }
   });
+}));
+
+// =============================================
+// HR / Student IDs created by Data Entry
+// =============================================
+router.post('/users', asyncHandler(async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  const email = normalizeEmail(req.body?.email);
+  const password = String(req.body?.password || '');
+  const role = String(req.body?.role || '').trim().toLowerCase();
+  const mobile = String(req.body?.mobile || '').trim();
+  const company = String(req.body?.company || req.body?.companyName || req.body?.team || '').trim();
+
+  if (!name || !email || !password || !role || !company) {
+    res.status(400).send({
+      status: false,
+      message: 'name, email, password, company/team and role are required'
+    });
+    return;
+  }
+
+  if (!DATA_ENTRY_ACCOUNT_ROLES.has(role)) {
+    res.status(400).send({
+      status: false,
+      message: 'Data Entry can create only HR or Student user IDs.'
+    });
+    return;
+  }
+
+  const passwordError = getPasswordPolicyError(password);
+  if (passwordError) {
+    res.status(400).send({ status: false, message: passwordError });
+    return;
+  }
+
+  const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+    user_metadata: { name, role }
+  });
+
+  if (authError) {
+    sendSupabaseError(res, authError, 400);
+    return;
+  }
+
+  const bcrypt = require('bcryptjs');
+  const passwordHash = await bcrypt.hash(password, 12);
+
+  const { data: user, error: userError } = await supabase
+    .from('users')
+    .insert({
+      id: authData.user.id,
+      name,
+      email,
+      mobile,
+      password_hash: passwordHash,
+      role,
+      status: USER_STATUSES.ACTIVE,
+      is_hr_approved: true,
+      is_email_verified: true
+    })
+    .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at')
+    .single();
+
+  if (userError) {
+    sendSupabaseError(res, userError);
+    return;
+  }
+
+  try {
+    await upsertRoleProfile({
+      supabase,
+      role,
+      userId: user.id,
+      reqBody: {
+        ...(req.body || {}),
+        company,
+        companyName: company
+      }
+    });
+  } catch (profileError) {
+    sendSupabaseError(res, profileError);
+    return;
+  }
+
+  await supabase.from('system_logs').insert({
+    action: 'user_created',
+    module: 'dataentry',
+    level: 'info',
+    actor_id: req.user?.id,
+    actor_name: req.user?.name,
+    actor_role: req.user?.role,
+    details: `Created ${role} user ${email} from Data Entry`
+  });
+
+  await enqueueCreatedUserWelcomeEmail({
+    user,
+    password
+  }).catch((welcomeError) => {
+    console.warn('[DATA ENTRY CREATED USER WELCOME EMAIL]', welcomeError?.message || welcomeError);
+  });
+
+  res.status(201).send({
+    status: true,
+    user: {
+      ...user,
+      company
+    }
+  });
+}));
+
+router.get('/registered-companies', asyncHandler(async (req, res) => {
+  try {
+    const companies = await listRegisteredHrCompanies();
+    res.send({
+      status: true,
+      companies: companies.map((company) => ({
+        id: company.id,
+        companyName: company.companyName,
+        createdAt: company.createdAt,
+        updatedAt: company.updatedAt
+      }))
+    });
+  } catch (error) {
+    sendSupabaseError(res, error);
+  }
 }));
 
 // =============================================
@@ -320,12 +760,35 @@ router.post('/jobs', asyncHandler(async (req, res) => {
   const { title, ...rest } = req.body || {};
   if (!title) return res.status(400).send({ status: false, message: 'title is required' });
 
+  const registeredCompany = await findRegisteredHrCompany(readJobEntryCompanyName(rest));
+  if (!registeredCompany) {
+    sendUnregisteredCompanyError(res);
+    return;
+  }
+
+  const entryData = withRegisteredCompanyName(rest, registeredCompany.companyName);
+  let preparedJob;
+
+  try {
+    preparedJob = await prepareDataEntryHrJob({
+      title,
+      entryData,
+      registeredCompany
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).send({
+      status: false,
+      message: error.message || 'Unable to prepare HR job posting.'
+    });
+    return;
+  }
+
   const { data, error } = await supabase
     .from('dataentry_entries')
     .insert({
       type: 'job',
       title: String(title).trim(),
-      data: rest || {},
+      data: entryData,
       status: 'draft',
       submitted_by: req.user?.id
     })
@@ -334,7 +797,26 @@ router.post('/jobs', asyncHandler(async (req, res) => {
 
   if (error) { sendSupabaseError(res, error); return; }
 
-  res.status(201).send({ status: true, entry: data });
+  try {
+    const publication = await publishDataEntryJobForHr({
+      entry: data,
+      registeredCompany,
+      preparedJob,
+      actor: req.user
+    });
+
+    res.status(201).send({ status: true, entry: publication.entry, job: publication.job });
+  } catch (publicationError) {
+    if (publicationError?.code) {
+      sendSupabaseError(res, publicationError);
+      return;
+    }
+
+    res.status(publicationError.statusCode || 500).send({
+      status: false,
+      message: publicationError.message || 'Unable to publish job to the HR account.'
+    });
+  }
 }));
 
 router.post('/properties', asyncHandler(async (req, res) => {
@@ -364,12 +846,56 @@ router.post('/properties', asyncHandler(async (req, res) => {
 router.patch('/entries/:id', asyncHandler(async (req, res) => {
   const { title, data: entryData, status } = req.body || {};
   const updates = { updated_at: new Date().toISOString() };
+  const hasEntryDataUpdate = entryData && typeof entryData === 'object';
+  const shouldValidateJobCompany = hasEntryDataUpdate || ['pending', 'approved'].includes(status);
+  const shouldPublishJob = hasEntryDataUpdate || status === 'approved';
+  let registeredJobCompany = null;
+  let preparedJob = null;
 
   if (title) updates.title = String(title).trim();
-  if (entryData && typeof entryData === 'object') updates.data = entryData;
+  if (hasEntryDataUpdate) updates.data = entryData;
   if (['draft', 'pending', 'approved', 'rejected'].includes(status)) {
     updates.status = status;
     if (['approved', 'rejected'].includes(status)) updates.reviewed_by = req.user?.id;
+  }
+
+  if (shouldValidateJobCompany) {
+    const existingResponse = await supabase
+      .from('dataentry_entries')
+      .select('id, type, title, data')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (existingResponse.error) { sendSupabaseError(res, existingResponse.error); return; }
+    if (!existingResponse.data) return res.status(404).send({ status: false, message: 'Entry not found' });
+
+    if (String(existingResponse.data.type || '').trim().toLowerCase() === 'job') {
+      const nextEntryData = hasEntryDataUpdate ? entryData : (existingResponse.data.data || {});
+      const registeredCompany = await findRegisteredHrCompany(readJobEntryCompanyName(nextEntryData));
+      if (!registeredCompany) {
+        sendUnregisteredCompanyError(res);
+        return;
+      }
+
+      updates.data = withRegisteredCompanyName(nextEntryData, registeredCompany.companyName);
+      registeredJobCompany = registeredCompany;
+
+      if (shouldPublishJob) {
+        try {
+          preparedJob = await prepareDataEntryHrJob({
+            title: title || existingResponse.data.title,
+            entryData: updates.data,
+            registeredCompany
+          });
+        } catch (publicationError) {
+          res.status(publicationError.statusCode || 500).send({
+            status: false,
+            message: publicationError.message || 'Unable to prepare HR job posting.'
+          });
+          return;
+        }
+      }
+    }
   }
 
   const { data, error } = await supabase
@@ -381,6 +907,31 @@ router.patch('/entries/:id', asyncHandler(async (req, res) => {
 
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Entry not found' });
+
+  if (preparedJob && registeredJobCompany) {
+    try {
+      const publication = await publishDataEntryJobForHr({
+        entry: data,
+        registeredCompany: registeredJobCompany,
+        preparedJob,
+        actor: req.user
+      });
+
+      res.send({ status: true, entry: publication.entry, job: publication.job });
+      return;
+    } catch (publicationError) {
+      if (publicationError?.code) {
+        sendSupabaseError(res, publicationError);
+        return;
+      }
+
+      res.status(publicationError.statusCode || 500).send({
+        status: false,
+        message: publicationError.message || 'Unable to publish job to the HR account.'
+      });
+      return;
+    }
+  }
 
   res.send({ status: true, entry: data });
 }));
