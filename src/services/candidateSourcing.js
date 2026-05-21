@@ -610,6 +610,7 @@ const buildCandidatePresentation = ({
       skills: visibleSkills,
       hasResume: Boolean(profile.resume_url || profile.resume_text),
       resumeUrl: canViewResume ? (profile.resume_url || null) : null,
+      resumeText: canViewResume ? (profile.resume_text || '') : '',
       resumeLocked: Boolean(profile.resume_url || profile.resume_text) && !canViewResume,
       links: visibleLinks
     },

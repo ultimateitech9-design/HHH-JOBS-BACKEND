@@ -101,6 +101,7 @@ test('buildCandidatePresentation shows browseable profiles and unlocks contact a
       location: 'Mumbai',
       available_to_hire: true,
       resume_url: 'https://example.com/resume.pdf',
+      resume_text: 'Aisha Khan resume content',
       skills: ['React', 'JavaScript'],
       verification_status: 'verified',
       verification_badge: 'KYC_VERIFIED',
@@ -135,6 +136,7 @@ test('buildCandidatePresentation shows browseable profiles and unlocks contact a
   assert.equal(browseable.user.email, 'ai***@example.com');
   assert.equal(browseable.user.name, 'Aisha Khan');
   assert.equal(browseable.profile.resumeUrl, 'https://example.com/resume.pdf');
+  assert.equal(browseable.profile.resumeText, 'Aisha Khan resume content');
 
   const unlocked = buildCandidatePresentation({
     candidate: {
@@ -148,6 +150,7 @@ test('buildCandidatePresentation shows browseable profiles and unlocks contact a
   assert.equal(unlocked.access.canViewResume, true);
   assert.equal(unlocked.user.email, 'aisha@example.com');
   assert.equal(unlocked.profile.resumeUrl, 'https://example.com/resume.pdf');
+  assert.equal(unlocked.profile.resumeText, 'Aisha Khan resume content');
   assert.equal(unlocked.verification.isVerified, true);
   assert.equal(unlocked.verification.addressVerified, true);
   assert.equal(unlocked.verification.verifiedExperienceCount, 2);
