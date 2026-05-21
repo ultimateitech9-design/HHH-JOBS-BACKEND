@@ -296,6 +296,9 @@ const buildCompanyDirectory = ({
   return Object.values(directory)
     .map(finalizeEntry)
     .sort((left, right) => {
+      const leftPortalWeight = Number(left.portalProfile || left.portalJobs > 0);
+      const rightPortalWeight = Number(right.portalProfile || right.portalJobs > 0);
+      if (rightPortalWeight !== leftPortalWeight) return rightPortalWeight - leftPortalWeight;
       if (Number(right.premium) !== Number(left.premium)) return Number(right.premium) - Number(left.premium);
       if (right.totalJobs !== left.totalJobs) return right.totalJobs - left.totalJobs;
       if (Number(right.verifiedEmployer) !== Number(left.verifiedEmployer)) {
