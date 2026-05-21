@@ -171,6 +171,7 @@ router.get('/', asyncHandler(async (req, res) => {
   }
 
   const search = String(req.query.search || '').trim().toLowerCase();
+  const includeAll = ['1', 'true', 'yes'].includes(String(req.query.includeAll || '').toLowerCase());
   const nowIso = new Date().toISOString();
 
   const { sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData(nowIso);
@@ -202,7 +203,9 @@ router.get('/', asyncHandler(async (req, res) => {
     externalJobs: externalJobsResp.data || []
   });
 
-  const listedCompanies = companies.filter((company) => company.totalJobs > 0);
+  const listedCompanies = includeAll
+    ? companies
+    : companies.filter((company) => company.totalJobs > 0);
 
   const filteredCompanies = search
     ? listedCompanies.filter((company) => {
