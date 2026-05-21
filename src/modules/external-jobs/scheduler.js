@@ -31,7 +31,11 @@ const runIngestionCycle = async () => {
   try {
     const results = await runFullIngestion('scheduled');
     const summary = Object.entries(results)
-      .map(([key, s]) => `${key}: +${s.inserted} new, ${s.deduped} dupes${s.error ? ` (ERROR: ${s.error})` : ''}`)
+      .map(([key, s]) => (
+        s.skipped
+          ? `${key}: skipped (already scraped today)`
+          : `${key}: +${s.inserted} new, ${s.deduped} dupes${s.error ? ` (ERROR: ${s.error})` : ''}`
+      ))
       .join(' | ');
     console.log(`${label} — done: ${summary}`);
   } catch (err) {

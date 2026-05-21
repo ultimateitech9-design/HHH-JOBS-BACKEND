@@ -5,6 +5,7 @@ const { verifyPendingJobs } = require('./verifier');
 const { ADAPTERS, getActiveAdapters, syncSourceRegistry } = require('./sourceRegistry');
 
 const CHUNK_SIZE = 50;
+const IST_OFFSET_MINUTES = 5 * 60 + 30;
 
 const chunkArray = (arr, size) => {
   const chunks = [];
@@ -42,6 +43,26 @@ const updateSourceStats = async (sourceKey, stats) => {
     .eq('key', sourceKey);
 };
 
+const getIstDayStartUtcIso = (date = new Date()) => {
+  const istDate = new Date(date.getTime() + IST_OFFSET_MINUTES * 60 * 1000);
+  istDate.setUTCHours(0, 0, 0, 0);
+  return new Date(istDate.getTime() - IST_OFFSET_MINUTES * 60 * 1000).toISOString();
+};
+
+const hasSuccessfulScheduledRunToday = async (sourceKey, date = new Date()) => {
+  const { data, error } = await supabase
+    .from('external_jobs_sync_logs')
+    .select('id')
+    .eq('source_key', sourceKey)
+    .eq('run_type', 'scheduled')
+    .eq('status', 'success')
+    .gte('started_at', getIstDayStartUtcIso(date))
+    .limit(1);
+
+  if (error) throw error;
+  return (data || []).length > 0;
+};
+
 const logSyncRun = async (sourceKey, stats, startedAt) => {
   const completedAt = new Date();
   const durationMs = completedAt.getTime() - startedAt.getTime();
@@ -63,9 +84,14 @@ const logSyncRun = async (sourceKey, stats, startedAt) => {
 
 const runAdapterIngestion = async (adapter, runType = 'scheduled') => {
   const startedAt = new Date();
-  const stats = { fetched: 0, inserted: 0, deduped: 0, error: null, runType };
+  const stats = { fetched: 0, inserted: 0, deduped: 0, skipped: false, error: null, runType };
 
   try {
+    if (runType === 'scheduled' && await hasSuccessfulScheduledRunToday(adapter.SOURCE_KEY, startedAt)) {
+      stats.skipped = true;
+      return stats;
+    }
+
     const rawJobs = await adapter.fetchJobs();
     const normalized = normalizeJobs(rawJobs);
     stats.fetched = normalized.length;
