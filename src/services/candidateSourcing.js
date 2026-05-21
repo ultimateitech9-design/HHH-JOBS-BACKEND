@@ -22,6 +22,7 @@ const DEFAULT_TEMPLATES = [
 
 const STUDENT_DB_VIEW_FEATURE_KEY = 'hr.student_database_view';
 const STUDENT_DB_VIEW_SUBJECT_TYPE = 'student_profile';
+const STUDENT_DB_USAGE_CONSUMERS = new Set(['resume_view', 'candidate_interest', 'candidate_bulk_interest']);
 const DEFAULT_TRIAL_STUDENT_DB_VIEW_LIMIT = 25;
 const STUDENT_PROFILE_FETCH_BATCH_SIZE = 1000;
 const STUDENT_PROFILE_FETCH_MAX_ROWS = 100000;
@@ -29,6 +30,10 @@ const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
 
 const normalizeText = (value = '') => String(value || '').trim();
 const normalizeLowerText = (value = '') => normalizeText(value).toLowerCase();
+const getStudentDbUsageConsumer = (row = {}) =>
+  normalizeLowerText(row?.meta?.consumedBy || row?.meta?.consumed_by || '');
+const isCountedStudentDbUsage = (row = {}) =>
+  STUDENT_DB_USAGE_CONSUMERS.has(getStudentDbUsageConsumer(row));
 const parseMissingStudentProfileColumn = (error) => {
   const candidates = [
     String(error?.message || ''),
@@ -372,15 +377,15 @@ const buildStudentDbQuota = async ({ userId, subscription = null } = {}) => {
     };
   }
 
-  const countResp = await supabase
+  const usageResp = await supabase
     .from('role_plan_feature_usage')
-    .select('id', { count: 'exact', head: true })
+    .select('subject_id, meta')
     .eq('user_id', userId)
     .eq('feature_key', STUDENT_DB_VIEW_FEATURE_KEY)
     .eq('subject_type', STUDENT_DB_VIEW_SUBJECT_TYPE);
 
-  if (countResp.error) {
-    if (isOptionalSchemaError(countResp.error)) {
+  if (usageResp.error) {
+    if (isOptionalSchemaError(usageResp.error)) {
       return {
         studentDbViewLimit: limit,
         studentDbViewsUsed: 0,
@@ -389,10 +394,13 @@ const buildStudentDbQuota = async ({ userId, subscription = null } = {}) => {
         studentDbQuotaWarning: 'Student database usage tracking migration is not applied yet.'
       };
     }
-    throw countResp.error;
+    throw usageResp.error;
   }
 
-  const used = Number(countResp.count || 0);
+  const used = new Set((usageResp.data || [])
+    .filter(isCountedStudentDbUsage)
+    .map((row) => row.subject_id)
+    .filter(Boolean)).size;
   return {
     studentDbViewLimit: limit,
     studentDbViewsUsed: used,
@@ -817,7 +825,7 @@ const resolveTemplateForInterest = async ({ hrUserId, templateId }) => {
   return data || null;
 };
 
-const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consume = true } = {}) => {
+const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consume = true, consumedBy = 'candidate_interest' } = {}) => {
   const candidateIds = [...new Set((Array.isArray(candidates) ? candidates : [])
     .map((candidate) => candidate?.user?.id)
     .filter(Boolean))];
@@ -848,7 +856,7 @@ const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consum
 
   const usageResp = await supabase
     .from('role_plan_feature_usage')
-    .select('subject_id')
+    .select('subject_id, meta')
     .eq('user_id', hrUser.id)
     .eq('feature_key', STUDENT_DB_VIEW_FEATURE_KEY)
     .eq('subject_type', STUDENT_DB_VIEW_SUBJECT_TYPE)
@@ -868,7 +876,10 @@ const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consum
     };
   }
 
-  const alreadyUnlockedIds = new Set((usageResp.data || []).map((row) => row.subject_id).filter(Boolean));
+  const alreadyUnlockedIds = new Set((usageResp.data || [])
+    .filter(isCountedStudentDbUsage)
+    .map((row) => row.subject_id)
+    .filter(Boolean));
   let remainingForNewProfiles = Math.max(0, Number(access.studentDbViewsRemaining || 0));
   const newlyUnlockedIds = [];
   const lockedIds = new Set();
@@ -895,7 +906,7 @@ const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consum
       quantity: 1,
       meta: {
         activePlanSlug: access.activePlanSlug || null,
-        consumedBy: 'candidate_search',
+        consumedBy,
         consumedAt: nowIso
       }
     }));
@@ -903,8 +914,7 @@ const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consum
     const insertResp = await supabase
       .from('role_plan_feature_usage')
       .upsert(rows, {
-        onConflict: 'user_id,feature_key,subject_type,subject_id',
-        ignoreDuplicates: true
+        onConflict: 'user_id,feature_key,subject_type,subject_id'
       });
 
     if (insertResp.error && !isOptionalSchemaError(insertResp.error)) {
@@ -928,7 +938,7 @@ const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consum
   };
 };
 
-const ensureHrStudentDbCandidateUnlocked = async ({ hrUser, studentId } = {}) => {
+const ensureHrStudentDbCandidateUnlocked = async ({ hrUser, studentId, consumedBy = 'candidate_interest' } = {}) => {
   const access = await getHrSourcingAccess({ userId: hrUser.id, role: hrUser.role });
   if (!access.hasPaidAccess) {
     return { allowed: false, access, reason: 'Upgrade to a paid hiring plan to send sourcing interest requests.' };
@@ -938,7 +948,8 @@ const ensureHrStudentDbCandidateUnlocked = async ({ hrUser, studentId } = {}) =>
     hrUser,
     access,
     candidates: [{ user: { id: studentId } }],
-    consume: true
+    consume: true,
+    consumedBy
   });
 
   return {
@@ -951,7 +962,7 @@ const ensureHrStudentDbCandidateUnlocked = async ({ hrUser, studentId } = {}) =>
 };
 
 const viewHrCandidateResume = async ({ hrUser, studentId } = {}) => {
-  const unlock = await ensureHrStudentDbCandidateUnlocked({ hrUser, studentId });
+  const unlock = await ensureHrStudentDbCandidateUnlocked({ hrUser, studentId, consumedBy: 'resume_view' });
   if (!unlock.allowed) return { allowed: false, code: 'STUDENT_DB_LIMIT_REACHED', access: unlock.access, reason: unlock.reason };
 
   const [{ data: user, error: userError }, profileResp] = await Promise.all([

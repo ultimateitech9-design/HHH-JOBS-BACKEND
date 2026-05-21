@@ -563,7 +563,7 @@ router.post('/candidates/bulk-interest', requireApprovedHr, requirePlanFeature('
 
   let latestAccess = access;
   for (const id of studentIds) {
-    const unlock = await ensureHrStudentDbCandidateUnlocked({ hrUser: req.user, studentId: id });
+    const unlock = await ensureHrStudentDbCandidateUnlocked({ hrUser: req.user, studentId: id, consumedBy: 'candidate_bulk_interest' });
     latestAccess = unlock.access || latestAccess;
     if (!unlock.allowed) {
       return res.status(402).send({
