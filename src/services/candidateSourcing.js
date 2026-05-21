@@ -23,6 +23,8 @@ const DEFAULT_TEMPLATES = [
 const STUDENT_DB_VIEW_FEATURE_KEY = 'hr.student_database_view';
 const STUDENT_DB_VIEW_SUBJECT_TYPE = 'student_profile';
 const DEFAULT_TRIAL_STUDENT_DB_VIEW_LIMIT = 25;
+const STUDENT_PROFILE_FETCH_BATCH_SIZE = 1000;
+const STUDENT_PROFILE_FETCH_MAX_ROWS = 100000;
 const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
 
 const normalizeText = (value = '') => String(value || '').trim();
@@ -157,6 +159,8 @@ const blurName = (value = '') => {
 const selectStudentProfilesSafe = async ({
   fields = [],
   limit = null,
+  from = null,
+  to = null,
   userIds = [],
   filters = []
 }) => {
@@ -176,9 +180,13 @@ const selectStudentProfilesSafe = async ({
       query = query.in('user_id', userIds);
     }
 
-    if (Number.isFinite(limit) && limit > 0) {
+    if (Number.isFinite(from) && Number.isFinite(to) && from >= 0 && to >= from) {
+      query = query.range(from, to);
+    } else if (Number.isFinite(limit) && limit > 0) {
       query = query.limit(limit);
     }
+
+    query = query.order('user_id', { ascending: true });
 
     const response = await query;
     if (!response.error) return response;
@@ -193,6 +201,30 @@ const selectStudentProfilesSafe = async ({
   }
 
   return { data: null, error: lastError };
+};
+
+const selectAllStudentProfilesSafe = async ({ fields = [], filters = [] } = {}) => {
+  const rows = [];
+
+  for (let offset = 0; offset < STUDENT_PROFILE_FETCH_MAX_ROWS; offset += STUDENT_PROFILE_FETCH_BATCH_SIZE) {
+    const response = await selectStudentProfilesSafe({
+      fields,
+      filters,
+      from: offset,
+      to: offset + STUDENT_PROFILE_FETCH_BATCH_SIZE - 1
+    });
+
+    if (response.error) return response;
+
+    const batch = response.data || [];
+    rows.push(...batch);
+
+    if (batch.length < STUDENT_PROFILE_FETCH_BATCH_SIZE) {
+      return { data: rows, error: null };
+    }
+  }
+
+  return { data: rows, error: null };
 };
 
 const resolveOptionalResponse = (response, fallback = []) => {
@@ -827,9 +859,9 @@ const ensureHrStudentDbCandidateUnlocked = async ({ hrUser, studentId } = {}) =>
 const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, limit = 24 }) => {
   const access = await getHrSourcingAccess({ userId: hrUser.id, role: hrUser.role });
   const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
-  const pageSize = Math.min(60, Math.max(1, Number.parseInt(limit, 10) || 24));
+  const pageSize = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 24));
 
-  const { data: profiles, error } = await selectStudentProfilesSafe({
+  const { data: profiles, error } = await selectAllStudentProfilesSafe({
     fields: [
       'user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies',
       'experience', 'location', 'resume_url', 'resume_text', 'about', 'profile_summary',
@@ -839,8 +871,7 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
       'verification_source', 'verification_badge', 'identity_verified', 'address_verified',
       'experience_verified', 'verified_experience_count', 'verification_verified_at',
       'verification_synced_at'
-    ],
-    limit: 5000
+    ]
   });
 
   if (error) throw error;
