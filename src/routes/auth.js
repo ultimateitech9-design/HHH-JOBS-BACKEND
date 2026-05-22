@@ -62,6 +62,9 @@ const runAsyncSideEffect = (label, task) => {
 const EMAIL_DELIVERY_WAIT_MS = Number(process.env.OTP_DELIVERY_WAIT_MS) > 0
   ? Number(process.env.OTP_DELIVERY_WAIT_MS)
   : (config.nodeEnv === 'production' ? 12000 : 2500);
+const AUTH_DATABASE_WAIT_MS = Number(process.env.AUTH_DATABASE_WAIT_MS) > 0
+  ? Number(process.env.AUTH_DATABASE_WAIT_MS)
+  : 10000;
 const DEFAULT_LOGIN_URL = `${String(config.oauthClientUrl || config.corsOrigins?.[0] || 'https://hhh-jobs.com').replace(/\/+$/, '')}/login`;
 const authSessionReadLimiter = config.nodeEnv === 'development'
   ? (_req, _res, next) => next()
@@ -241,6 +244,25 @@ const deliverEmailWithSoftTimeout = async ({ label, task }) => {
     pending: true,
     reason: 'email_delivery_pending'
   };
+};
+const createAuthDatabaseTimeoutError = (label) => {
+  const error = new Error(`${label} timed out after ${Math.round(AUTH_DATABASE_WAIT_MS / 1000)}s`);
+  error.code = 'AUTH_DATABASE_TIMEOUT';
+  error.statusCode = 503;
+  return error;
+};
+const isAuthDatabaseTimeoutError = (error) => error?.code === 'AUTH_DATABASE_TIMEOUT';
+const withAuthDatabaseTimeout = async (promise, label) => Promise.race([
+  promise,
+  new Promise((_, reject) => {
+    setTimeout(() => reject(createAuthDatabaseTimeoutError(label)), AUTH_DATABASE_WAIT_MS);
+  })
+]);
+const sendAuthDatabaseTimeout = (res) => {
+  res.status(503).send({
+    status: false,
+    message: 'Login service is taking too long to respond. Please try again in a moment.'
+  });
 };
 const queueWelcomeEmailForUser = (user = {}) => {
   if (!user?.email) return;
@@ -1797,9 +1819,31 @@ router.post('/login', asyncHandler(async (req, res) => {
   }
 
   const pendingSignup = getPendingSignupByEmail(email);
-  const userRow = supabase
-    ? (await supabase.from('users').select('*').eq('email', email).maybeSingle()).data
-    : authStore.findUserByEmail(email);
+  let userRow = null;
+  if (supabase) {
+    let userLookupResp;
+    try {
+      userLookupResp = await withAuthDatabaseTimeout(
+        supabase.from('users').select('*').eq('email', email).maybeSingle(),
+        'login user lookup'
+      );
+    } catch (error) {
+      if (isAuthDatabaseTimeoutError(error)) {
+        sendAuthDatabaseTimeout(res);
+        return;
+      }
+      sendSupabaseError(res, error);
+      return;
+    }
+
+    if (userLookupResp.error) {
+      sendSupabaseError(res, userLookupResp.error);
+      return;
+    }
+    userRow = userLookupResp.data;
+  } else {
+    userRow = authStore.findUserByEmail(email);
+  }
   const loginTarget = userRow || pendingSignup;
 
   if (!loginTarget) {
@@ -1907,35 +1951,38 @@ router.post('/login', asyncHandler(async (req, res) => {
 
   const loginTimestamp = new Date().toISOString();
   if (supabase) {
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({ last_login_at: loginTimestamp })
-      .eq('id', userRow.id);
+    runAsyncSideEffect('login-post-auth-sync', async () => {
+      const { error: updateError } = await withAuthDatabaseTimeout(
+        supabase
+          .from('users')
+          .update({ last_login_at: loginTimestamp })
+          .eq('id', userRow.id),
+        'login timestamp update'
+      );
 
-    if (updateError) {
-      sendSupabaseError(res, updateError);
-      return;
-    }
+      if (updateError) throw updateError;
 
-    try {
-      await ensureSupabaseRoleProfile({ user: userRow });
-      await activatePendingCampusStudentRows({ userId: userRow.id, email });
-    } catch (profileError) {
-      sendSupabaseError(res, profileError);
-      return;
-    }
+      await withAuthDatabaseTimeout(
+        ensureSupabaseRoleProfile({ user: userRow }),
+        'login profile sync'
+      );
+      await withAuthDatabaseTimeout(
+        activatePendingCampusStudentRows({ userId: userRow.id, email }),
+        'login campus activation sync'
+      );
+    });
   } else {
     authStore.updateUserById(userRow.id, { last_login_at: loginTimestamp });
   }
 
-  await logAudit({
+  runAsyncSideEffect('audit-login', () => logAudit({
     userId: userRow.id,
     action: AUDIT_ACTIONS.LOGIN,
     entityType: 'user',
     entityId: userRow.id,
     details: { email },
     ipAddress: getClientIp(req)
-  });
+  }));
 
   const token = createAuthToken(userRow);
 

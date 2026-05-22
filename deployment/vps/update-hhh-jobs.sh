@@ -61,6 +61,30 @@ wait_for_backend() {
   return 1
 }
 
+check_auth_login() {
+  local base_url="${1%/}"
+  local status
+  local body_file="/tmp/hhh-jobs-auth-login-smoke.json"
+
+  if ! status=$(curl -sS -o "$body_file" -w "%{http_code}" \
+    -H "Content-Type: application/json" \
+    -H "Origin: ${FRONTEND_URL}" \
+    -H "User-Agent: Mozilla/5.0 HHH-Jobs-Deploy-Smoke" \
+    --max-time 20 \
+    --data '{"email":"deploy-smoke@example.invalid","password":"invalid-password"}' \
+    "${base_url}/auth/login"); then
+    status="000"
+  fi
+
+  if [ "$status" = "000" ] || [ "$status" -ge 500 ]; then
+    echo "ERROR: auth login smoke check failed with HTTP ${status}."
+    cat "$body_file" 2>/dev/null || true
+    return 1
+  fi
+
+  echo "Auth login route responded with HTTP ${status}."
+}
+
 echo "===== UPDATE FRONTEND ====="
 cd "$FRONTEND_SRC"
 git fetch origin
@@ -105,5 +129,7 @@ echo "===== CHECK ====="
 systemctl status hhh-jobs-backend --no-pager -l
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/health"
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/payments/razorpay/webhook"
+check_auth_login "http://127.0.0.1:${BACKEND_PORT}"
 curl -I "$FRONTEND_URL"
 curl -I "${API_URL}/health" || true
+check_auth_login "$API_URL"
