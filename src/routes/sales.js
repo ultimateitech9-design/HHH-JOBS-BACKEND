@@ -125,6 +125,30 @@ const formatLeadRow = (lead = {}) => ({
   lead_code: formatLeadCode(lead)
 });
 
+const isSalesManager = (user = {}) => [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(user?.role);
+const ACTIVE_LEAD_STATUSES = ['new', 'contacted', 'qualified', 'proposal'];
+
+const applySalesOwnershipScope = (query, user = {}) => {
+  if (isSalesManager(user)) return query;
+  return query.eq('assigned_to', user.id);
+};
+
+const formatCouponRequest = (row = {}) => ({
+  ...row,
+  requested_by_name: row.requested_by_user?.name || row.requested_by_name || null,
+  coupon_code: row.sales_coupon?.code || row.coupon_code || null
+});
+
+const summarizeByKey = (rows = [], key, fallback = 'Unassigned') => Object.values(rows.reduce((acc, row) => {
+  const label = String(row?.[key] || fallback).trim() || fallback;
+  const current = acc[label] || { label, leads: 0, converted: 0, revenue: 0 };
+  current.leads += Number(row.leads || 0);
+  current.converted += Number(row.converted || 0);
+  current.revenue += Number(row.revenue || 0);
+  acc[label] = current;
+  return acc;
+}, {})).sort((left, right) => right.revenue - left.revenue || right.converted - left.converted || right.leads - left.leads);
+
 // =============================================
 // Overview
 // =============================================
@@ -137,6 +161,7 @@ router.get('/overview', asyncHandler(async (req, res) => {
     return;
   }
 
+  const scope = (q, ownerColumn = 'assigned_to') => (isSalesManager(req.user) ? q : q.eq(ownerColumn, req.user.id));
   const [
     totalLeads,
     newLeads,
@@ -147,20 +172,22 @@ router.get('/overview', asyncHandler(async (req, res) => {
     salesAgents,
     refunds
   ] = await Promise.all([
-    countRows('sales_leads'),
-    countRows('sales_leads', (q) => q.eq('status', 'new')),
-    countRows('sales_leads', (q) => q.eq('status', 'converted')),
-    countRows('sales_orders'),
-    countRows('sales_customers'),
-    countRows('sales_customers', (q) => q.eq('status', 'active')),
+    countRows('sales_leads', (q) => scope(q)),
+    countRows('sales_leads', (q) => scope(q).eq('status', 'new')),
+    countRows('sales_leads', (q) => scope(q).eq('status', 'converted')),
+    countRows('sales_orders', (q) => scope(q, 'sales_owner_id')),
+    countRows('sales_customers', (q) => scope(q, 'sales_owner_id')),
+    countRows('sales_customers', (q) => scope(q, 'sales_owner_id').eq('status', 'active')),
     countRows('users', (q) => q.eq('role', ROLES.SALES)),
-    countRows('sales_orders', (q) => q.eq('status', 'refunded'))
+    countRows('sales_orders', (q) => scope(q, 'sales_owner_id').eq('status', 'refunded'))
   ]);
 
-  const { data: revenueRows } = await supabase
+  let revenueQuery = supabase
     .from('sales_orders')
     .select('amount, status, created_at')
     .in('status', ['paid', 'refunded']);
+  revenueQuery = isSalesManager(req.user) ? revenueQuery : revenueQuery.eq('sales_owner_id', req.user.id);
+  const { data: revenueRows } = await revenueQuery;
 
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
@@ -195,6 +222,11 @@ router.get('/overview', asyncHandler(async (req, res) => {
 // Team (Sales Agents)
 // =============================================
 router.get('/team', asyncHandler(async (req, res) => {
+  if (!isSalesManager(req.user)) {
+    res.status(403).send({ status: false, message: 'Only admin can view team performance' });
+    return;
+  }
+
   const { data, error } = await supabase
     .from('users')
     .select('id, name, email, status, created_at')
@@ -236,8 +268,11 @@ router.get('/team', asyncHandler(async (req, res) => {
     status: true,
     agents: agents.map((agent) => {
       const stats = leadStatsByAgent[agent.id] || { totalLeads: 0, convertedLeads: 0, revenue: 0 };
+      const assignedLeads = stats.totalLeads;
       return {
         ...agent,
+        assigned_leads: assignedLeads,
+        open_leads: assignedLeads - stats.convertedLeads,
         deals_closed: stats.convertedLeads,
         revenue: stats.revenue,
         lead_response_rate: stats.totalLeads > 0 ? Math.round((stats.convertedLeads / stats.totalLeads) * 100) : 0
@@ -342,9 +377,10 @@ router.get('/orders', asyncHandler(async (req, res) => {
 
   let query = supabase
     .from('sales_orders')
-    .select('id, order_number, customer_name, customer_email, plan, amount, status, payment_method, created_at', { count: 'exact' })
+    .select('id, order_number, customer_name, customer_email, plan, amount, status, payment_method, created_at, sales_owner_id, audience_role, zone, location', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
+  if (!isSalesManager(req.user)) query = query.eq('sales_owner_id', req.user.id);
 
   if (['pending', 'paid', 'failed', 'refunded', 'cancelled'].includes(status)) query = query.eq('status', status);
 
@@ -355,11 +391,12 @@ router.get('/orders', asyncHandler(async (req, res) => {
 }));
 
 router.get('/orders/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  let query = supabase
     .from('sales_orders')
     .select('*')
-    .eq('id', req.params.id)
-    .maybeSingle();
+    .eq('id', req.params.id);
+  if (!isSalesManager(req.user)) query = query.eq('sales_owner_id', req.user.id);
+  const { data, error } = await query.maybeSingle();
 
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Order not found' });
@@ -384,6 +421,7 @@ router.post('/orders', asyncHandler(async (req, res) => {
       amount: Number(amount),
       status: 'pending',
       payment_method: payment_method ? String(payment_method).trim() : null,
+      sales_owner_id: req.user?.role === ROLES.SALES ? req.user.id : null,
       items: items || null
     })
     .select('*')
@@ -427,9 +465,10 @@ router.get('/leads', asyncHandler(async (req, res) => {
 
   let query = supabase
     .from('sales_leads')
-    .select('id, company_name, contact_name, contact_email, contact_phone, status, source, assigned_name, value, created_at, target_role, onboarding_status, next_followup_at, last_followup_at, plan_interest_slug, coupon_code', { count: 'exact' })
+    .select('id, company_name, contact_name, contact_email, contact_phone, status, source, assigned_to, assigned_name, assigned_at, assignment_source, value, created_at, target_role, onboarding_status, next_followup_at, last_followup_at, plan_interest_slug, coupon_code, zone, location, source_purchase_id, source_subscription_id', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
+  query = applySalesOwnershipScope(query, req.user);
 
   if (['new', 'contacted', 'qualified', 'proposal', 'converted', 'lost'].includes(status)) query = query.eq('status', status);
   if ([ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT].includes(targetRole)) query = query.eq('target_role', targetRole);
@@ -446,11 +485,12 @@ router.get('/leads', asyncHandler(async (req, res) => {
 }));
 
 router.get('/leads/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  let query = supabase
     .from('sales_leads')
     .select('*')
-    .eq('id', req.params.id)
-    .maybeSingle();
+    .eq('id', req.params.id);
+  query = applySalesOwnershipScope(query, req.user);
+  const { data, error } = await query.maybeSingle();
 
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Lead not found' });
@@ -459,7 +499,7 @@ router.get('/leads/:id', asyncHandler(async (req, res) => {
 }));
 
 router.post('/leads', asyncHandler(async (req, res) => {
-  const { company_name, contact_name, contact_email, contact_phone, source, notes, value } = req.body || {};
+  const { company_name, contact_name, contact_email, contact_phone, source, notes, value, target_role, zone, location } = req.body || {};
   if (!company_name) return res.status(400).send({ status: false, message: 'company_name is required' });
 
   const { data, error } = await supabase
@@ -474,6 +514,11 @@ router.post('/leads', asyncHandler(async (req, res) => {
       value: value ? Number(value) : null,
       assigned_to: req.user?.id,
       assigned_name: req.user?.name,
+      assigned_at: new Date().toISOString(),
+      assignment_source: 'manual',
+      target_role: target_role ? String(target_role).trim().toLowerCase() : null,
+      zone: zone ? String(zone).trim() : null,
+      location: location ? String(location).trim() : null,
       status: 'new'
     })
     .select('*')
@@ -496,7 +541,9 @@ router.patch('/leads/:id', asyncHandler(async (req, res) => {
     last_followup_at,
     followup_notes,
     plan_interest_slug,
-    coupon_code
+    coupon_code,
+    zone,
+    location
   } = req.body || {};
   const updates = { updated_at: new Date().toISOString() };
   if (status) updates.status = status;
@@ -510,13 +557,17 @@ router.patch('/leads/:id', asyncHandler(async (req, res) => {
   if (followup_notes !== undefined) updates.followup_notes = followup_notes;
   if (plan_interest_slug !== undefined) updates.plan_interest_slug = plan_interest_slug || null;
   if (coupon_code !== undefined) updates.coupon_code = coupon_code ? String(coupon_code).trim().toUpperCase() : null;
+  if (zone !== undefined) updates.zone = zone ? String(zone).trim() : null;
+  if (location !== undefined) updates.location = location ? String(location).trim() : null;
+  updates.last_contacted_by = req.user?.id || null;
+  updates.last_contacted_at = new Date().toISOString();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('sales_leads')
     .update(updates)
-    .eq('id', req.params.id)
-    .select('*')
-    .maybeSingle();
+    .eq('id', req.params.id);
+  query = applySalesOwnershipScope(query, req.user);
+  const { data, error } = await query.select('*').maybeSingle();
 
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Lead not found' });
@@ -543,6 +594,34 @@ router.post('/leads/sync-commercial', asyncHandler(async (req, res) => {
   }
 }));
 
+router.post('/leads/:id/claim', asyncHandler(async (req, res) => {
+  if (isSalesManager(req.user)) {
+    res.status(400).send({ status: false, message: 'Admins can assign leads from the team view; claim is for sales users.' });
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from('sales_leads')
+    .update({
+      assigned_to: req.user.id,
+      assigned_name: req.user.name || req.user.email || 'Sales',
+      assigned_at: new Date().toISOString(),
+      assignment_source: 'sales_claim'
+    })
+    .eq('id', req.params.id)
+    .is('assigned_to', null)
+    .select('*')
+    .maybeSingle();
+
+  if (error) { sendSupabaseError(res, error); return; }
+  if (!data) {
+    res.status(409).send({ status: false, message: 'Lead is already assigned to another sales person.' });
+    return;
+  }
+
+  res.send({ status: true, lead: formatLeadRow(data) });
+}));
+
 // =============================================
 // Customers
 // =============================================
@@ -554,9 +633,10 @@ router.get('/customers', asyncHandler(async (req, res) => {
 
   let query = supabase
     .from('sales_customers')
-    .select('id, company_name, contact_name, email, phone, plan, status, total_spent, created_at, audience_role, sales_owner_id, subscription_id', { count: 'exact' })
+    .select('id, company_name, contact_name, email, phone, plan, status, total_spent, created_at, audience_role, sales_owner_id, subscription_id, zone, location', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
+  if (!isSalesManager(req.user)) query = query.eq('sales_owner_id', req.user.id);
 
   if (search) {
     const safeSearch = search.replace(/[,().]/g, '');
@@ -570,11 +650,12 @@ router.get('/customers', asyncHandler(async (req, res) => {
 }));
 
 router.get('/customers/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  let query = supabase
     .from('sales_customers')
     .select('*')
-    .eq('id', req.params.id)
-    .maybeSingle();
+    .eq('id', req.params.id);
+  if (!isSalesManager(req.user)) query = query.eq('sales_owner_id', req.user.id);
+  const { data, error } = await query.maybeSingle();
 
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Customer not found' });
@@ -586,14 +667,144 @@ router.get('/customers/:id', asyncHandler(async (req, res) => {
 // Coupons
 // =============================================
 router.get('/coupons', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  let query = supabase
     .from('sales_coupons')
     .select('id, code, discount_type, discount_value, max_uses, used_count, valid_from, valid_until, is_active, created_at, audience_roles, plan_slugs, min_amount, max_discount_amount, assigned_to_sales_id, created_by')
     .order('created_at', { ascending: false });
+  if (!isSalesManager(req.user)) {
+    query = query.or(`assigned_to_sales_id.is.null,assigned_to_sales_id.eq.${req.user.id}`);
+  }
+  const { data, error } = await query;
 
   if (error) { sendSupabaseError(res, error); return; }
 
   res.send({ status: true, coupons: data || [] });
+}));
+
+router.post('/coupons/validate', asyncHandler(async (req, res) => {
+  const code = String(req.body?.code || '').trim().toUpperCase();
+  const audienceRole = String(req.body?.audienceRole || req.body?.audience_role || '').trim().toLowerCase();
+  const planSlug = String(req.body?.planSlug || req.body?.plan_slug || '').trim().toLowerCase();
+  const amount = Number(req.body?.amount || 0);
+
+  if (!code) {
+    res.status(400).send({ status: false, message: 'Coupon code is required' });
+    return;
+  }
+
+  let query = supabase
+    .from('sales_coupons')
+    .select('*')
+    .eq('code', code)
+    .maybeSingle();
+  if (!isSalesManager(req.user)) {
+    query = query.or(`assigned_to_sales_id.is.null,assigned_to_sales_id.eq.${req.user.id}`);
+  }
+
+  const { data: coupon, error } = await query;
+  if (error) { sendSupabaseError(res, error); return; }
+  if (!coupon) {
+    res.status(404).send({ status: false, message: 'Coupon not found for this sales account' });
+    return;
+  }
+
+  const now = Date.now();
+  const issues = [];
+  if (!coupon.is_active) issues.push('Coupon is inactive.');
+  if (coupon.valid_from && new Date(coupon.valid_from).getTime() > now) issues.push('Coupon is not active yet.');
+  if (coupon.valid_until && new Date(coupon.valid_until).getTime() < now) issues.push('Coupon has expired.');
+  if (coupon.max_uses != null && Number(coupon.used_count || 0) >= Number(coupon.max_uses || 0)) issues.push('Coupon usage limit reached.');
+  if (Array.isArray(coupon.audience_roles) && coupon.audience_roles.length > 0 && !coupon.audience_roles.includes(audienceRole)) {
+    issues.push('Coupon is not valid for this client role.');
+  }
+  if (Array.isArray(coupon.plan_slugs) && coupon.plan_slugs.length > 0 && !coupon.plan_slugs.includes(planSlug)) {
+    issues.push('Coupon is not valid for this plan.');
+  }
+  if (amount < Number(coupon.min_amount || 0)) issues.push(`Minimum amount is ${coupon.min_amount}.`);
+
+  res.send({
+    status: true,
+    valid: issues.length === 0,
+    issues,
+    coupon
+  });
+}));
+
+router.get('/coupon-requests', asyncHandler(async (req, res) => {
+  let query = supabase
+    .from('sales_coupon_requests')
+    .select('*, requested_by_user:users!sales_coupon_requests_requested_by_fkey(name, email), sales_coupon:sales_coupons(code)')
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (!isSalesManager(req.user)) query = query.eq('requested_by', req.user.id);
+
+  const { data, error } = await query;
+  if (error) { sendSupabaseError(res, error); return; }
+  res.send({ status: true, requests: (data || []).map(formatCouponRequest) });
+}));
+
+router.post('/coupon-requests', asyncHandler(async (req, res) => {
+  const {
+    lead_id,
+    client_name,
+    client_email,
+    client_phone,
+    audience_role,
+    plan_slug,
+    expected_value,
+    requested_discount,
+    reason
+  } = req.body || {};
+
+  const clientName = String(client_name || '').trim();
+  if (!clientName) {
+    res.status(400).send({ status: false, message: 'client_name is required' });
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from('sales_coupon_requests')
+    .insert({
+      requested_by: req.user?.id || null,
+      lead_id: lead_id || null,
+      client_name: clientName,
+      client_email: client_email ? String(client_email).trim().toLowerCase() : null,
+      client_phone: client_phone ? String(client_phone).trim() : null,
+      audience_role: audience_role ? String(audience_role).trim().toLowerCase() : null,
+      plan_slug: plan_slug ? String(plan_slug).trim().toLowerCase() : null,
+      expected_value: expected_value ? Number(expected_value) : 0,
+      requested_discount: requested_discount ? String(requested_discount).trim() : null,
+      reason: reason ? String(reason).trim() : null,
+      status: 'pending'
+    })
+    .select('*')
+    .single();
+
+  if (error) { sendSupabaseError(res, error); return; }
+  res.status(201).send({ status: true, request: data });
+}));
+
+router.patch('/coupon-requests/:id', asyncHandler(async (req, res) => {
+  if (!isSalesManager(req.user)) {
+    res.status(403).send({ status: false, message: 'Only admin can update coupon requests' });
+    return;
+  }
+
+  const updates = {};
+  ['status', 'admin_note', 'coupon_id'].forEach((key) => {
+    if (req.body?.[key] !== undefined) updates[key] = req.body[key] || null;
+  });
+
+  const { data, error } = await supabase
+    .from('sales_coupon_requests')
+    .update(updates)
+    .eq('id', req.params.id)
+    .select('*')
+    .maybeSingle();
+
+  if (error) { sendSupabaseError(res, error); return; }
+  if (!data) return res.status(404).send({ status: false, message: 'Coupon request not found' });
+  res.send({ status: true, request: data });
 }));
 
 router.post('/coupons', asyncHandler(async (req, res) => {
@@ -721,10 +932,16 @@ router.get('/funnel', asyncHandler(async (req, res) => {
 // Reports
 // =============================================
 router.get('/reports', asyncHandler(async (req, res) => {
+  const leadQuery = applySalesOwnershipScope(
+    supabase.from('sales_leads').select('source, status, value, assigned_to, assigned_name, zone, location'),
+    req.user
+  );
+  let orderQuery = supabase.from('sales_orders').select('amount, status, created_at, sales_owner_id, zone, location');
+  if (!isSalesManager(req.user)) orderQuery = orderQuery.eq('sales_owner_id', req.user.id);
   const [leadsResult, ordersResult, totalCustomers] = await Promise.all([
-    supabase.from('sales_leads').select('source, status, value'),
-    supabase.from('sales_orders').select('amount, status, created_at'),
-    countRows('sales_customers')
+    leadQuery,
+    orderQuery,
+    countRows('sales_customers', (q) => (isSalesManager(req.user) ? q : q.eq('sales_owner_id', req.user.id)))
   ]);
 
   if (leadsResult.error) { sendSupabaseError(res, leadsResult.error); return; }
@@ -784,6 +1001,37 @@ router.get('/reports', asyncHandler(async (req, res) => {
       refunds: values.refunds
     }));
 
+  const zoneMap = {};
+  leads.forEach((lead) => {
+    const label = lead.zone || lead.location || 'Unassigned';
+    zoneMap[label] = zoneMap[label] || { zone: label, leads: 0, converted: 0, revenue: 0 };
+    zoneMap[label].leads += 1;
+    if (lead.status === 'converted') zoneMap[label].converted += 1;
+  });
+  orders.filter((order) => order.status === 'paid').forEach((order) => {
+    const label = order.zone || order.location || 'Unassigned';
+    zoneMap[label] = zoneMap[label] || { zone: label, leads: 0, converted: 0, revenue: 0 };
+    zoneMap[label].revenue += Number(order.amount || 0);
+  });
+
+  const ownerMap = {};
+  leads.forEach((lead) => {
+    const label = lead.assigned_name || 'Unassigned';
+    ownerMap[label] = ownerMap[label] || { owner: label, leads: 0, converted: 0, revenue: 0 };
+    ownerMap[label].leads += 1;
+    if (lead.status === 'converted') ownerMap[label].converted += 1;
+  });
+  if (isSalesManager(req.user)) {
+    const paidOrdersByOwner = orders.filter((order) => order.status === 'paid').reduce((acc, order) => {
+      acc[order.sales_owner_id || 'unassigned'] = (acc[order.sales_owner_id || 'unassigned'] || 0) + Number(order.amount || 0);
+      return acc;
+    }, {});
+    Object.values(ownerMap).forEach((owner) => {
+      const matchedLead = leads.find((lead) => (lead.assigned_name || 'Unassigned') === owner.owner);
+      owner.revenue = paidOrdersByOwner[matchedLead?.assigned_to || 'unassigned'] || 0;
+    });
+  }
+
   res.send({
     status: true,
     reports: {
@@ -796,7 +1044,9 @@ router.get('/reports', asyncHandler(async (req, res) => {
       totalRevenue,
       topSources,
       conversion,
-      monthlyRevenue
+      monthlyRevenue,
+      zonePerformance: summarizeByKey(Object.values(zoneMap), 'zone'),
+      ownerPerformance: summarizeByKey(Object.values(ownerMap), 'owner')
     }
   });
 }));

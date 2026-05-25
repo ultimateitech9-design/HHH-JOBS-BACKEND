@@ -544,13 +544,15 @@ const resolveCommercialProfile = async ({ userId, role = '', fallbackName = '', 
       companyName: profile.company_name || user.name || fallbackName || 'HR Account',
       contactName: user.name || fallbackName || 'HR Contact',
       email: user.email || fallbackEmail || '',
-      phone: user.mobile || fallbackMobile || ''
+      phone: user.mobile || fallbackMobile || '',
+      location: profile.location || '',
+      zone: profile.location || ''
     };
   }
 
   if (normalizedRole === ROLES.CAMPUS_CONNECT) {
     const [collegeResp, userResp] = await Promise.all([
-      supabase.from('colleges').select('name, contact_email, contact_phone').eq('user_id', userId).maybeSingle(),
+      supabase.from('colleges').select('name, contact_email, contact_phone, city, state').eq('user_id', userId).maybeSingle(),
       supabase.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
     ]);
     const user = userResp.data || {};
@@ -559,17 +561,59 @@ const resolveCommercialProfile = async ({ userId, role = '', fallbackName = '', 
       companyName: college.name || user.name || fallbackName || 'Campus Account',
       contactName: user.name || fallbackName || 'Campus Contact',
       email: college.contact_email || user.email || fallbackEmail || '',
-      phone: college.contact_phone || user.mobile || fallbackMobile || ''
+      phone: college.contact_phone || user.mobile || fallbackMobile || '',
+      location: [college.city, college.state].filter(Boolean).join(', '),
+      zone: college.state || college.city || ''
     };
   }
 
-  const { data: user } = await supabase.from('users').select('name, email, mobile').eq('id', userId).maybeSingle();
+  const [profileResp, userResp] = await Promise.all([
+    supabase.from('student_profiles').select('location, preferred_work_location').eq('user_id', userId).maybeSingle(),
+    supabase.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
+  ]);
+  const user = userResp.data || {};
+  const studentProfile = profileResp.data || {};
+  const studentLocation = studentProfile.location || studentProfile.preferred_work_location || '';
   return {
-    companyName: user?.name || fallbackName || 'Student Account',
-    contactName: user?.name || fallbackName || 'Student',
-    email: user?.email || fallbackEmail || '',
-    phone: user?.mobile || fallbackMobile || ''
+    companyName: user.name || fallbackName || 'Student Account',
+    contactName: user.name || fallbackName || 'Student',
+    email: user.email || fallbackEmail || '',
+    phone: user.mobile || fallbackMobile || '',
+    location: studentLocation,
+    zone: studentLocation
   };
+};
+
+const getLeastLoadedSalesAgent = async () => {
+  const { data: salesUsers, error: salesError } = await supabase
+    .from('users')
+    .select('id, name, email')
+    .eq('role', ROLES.SALES)
+    .order('created_at', { ascending: true });
+
+  if (salesError) throw salesError;
+  const activeAgents = (salesUsers || []).filter((agent) => agent.id);
+  if (activeAgents.length === 0) return null;
+
+  const { data: leadRows, error: leadsError } = await supabase
+    .from('sales_leads')
+    .select('assigned_to, status')
+    .in('assigned_to', activeAgents.map((agent) => agent.id));
+
+  if (leadsError) throw leadsError;
+  const activeStatuses = new Set(['new', 'contacted', 'qualified', 'proposal']);
+  const counts = (leadRows || []).reduce((acc, lead) => {
+    if (lead.assigned_to && activeStatuses.has(normalizeLower(lead.status))) {
+      acc[lead.assigned_to] = (acc[lead.assigned_to] || 0) + 1;
+    }
+    return acc;
+  }, {});
+
+  return [...activeAgents].sort((left, right) => {
+    const byLoad = (counts[left.id] || 0) - (counts[right.id] || 0);
+    if (byLoad !== 0) return byLoad;
+    return String(left.name || left.email || '').localeCompare(String(right.name || right.email || ''));
+  })[0];
 };
 
 const upsertCommercialLeadForUser = async ({ userId, role = '', name = '', email = '', mobile = '' } = {}) => {
@@ -584,6 +628,14 @@ const upsertCommercialLeadForUser = async ({ userId, role = '', name = '', email
     fallbackMobile: mobile
   });
 
+  const { data: existingLead, error: existingLeadError } = await supabase
+    .from('sales_leads')
+    .select('id, assigned_to, assigned_name')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (existingLeadError) throw existingLeadError;
+  const owner = existingLead?.assigned_to ? null : await getLeastLoadedSalesAgent();
   const payload = {
     user_id: userId,
     target_role: normalizedRole,
@@ -591,10 +643,17 @@ const upsertCommercialLeadForUser = async ({ userId, role = '', name = '', email
     contact_name: profile.contactName || name || 'Account',
     contact_email: normalizeText(profile.email || email).toLowerCase() || null,
     contact_phone: normalizeText(profile.phone || mobile) || null,
+    location: normalizeText(profile.location) || null,
+    zone: normalizeText(profile.zone) || null,
     source: `self_signup_${normalizedRole}`,
-    status: 'new',
-    onboarding_status: 'prospect'
+    status: existingLead ? undefined : 'new',
+    onboarding_status: existingLead ? undefined : 'prospect',
+    assigned_to: existingLead?.assigned_to || owner?.id || null,
+    assigned_name: existingLead?.assigned_name || owner?.name || null,
+    assigned_at: existingLead?.assigned_to ? undefined : new Date().toISOString(),
+    assignment_source: existingLead?.assigned_to ? undefined : 'least_loaded_auto'
   };
+  Object.keys(payload).forEach((key) => payload[key] === undefined && delete payload[key]);
 
   const { data, error } = await supabase
     .from('sales_leads')
@@ -655,6 +714,11 @@ const syncSalesCustomer = async ({ userId, role = '', plan = null, subscriptionI
   if (existingError) throw existingError;
 
   const totalSpent = roundMoney(Number(existing?.total_spent || 0) + Number(amount || 0));
+  const { data: leadOwner } = await supabase
+    .from('sales_leads')
+    .select('assigned_to, zone, location')
+    .eq('user_id', userId)
+    .maybeSingle();
   const payload = {
     user_id: userId,
     company_name: profile.companyName || profile.contactName || 'Customer',
@@ -666,7 +730,9 @@ const syncSalesCustomer = async ({ userId, role = '', plan = null, subscriptionI
     total_spent: totalSpent,
     subscription_id: subscriptionId || existing?.subscription_id || null,
     audience_role: normalizeAudienceRole(role) || existing?.audience_role || null,
-    sales_owner_id: salesOwnerId || existing?.sales_owner_id || null
+    sales_owner_id: salesOwnerId || existing?.sales_owner_id || leadOwner?.assigned_to || null,
+    zone: leadOwner?.zone || existing?.zone || profile.zone || null,
+    location: leadOwner?.location || existing?.location || profile.location || null
   };
 
   const response = existing
@@ -776,6 +842,14 @@ const createSalesOrder = async ({ purchase = null, plan = null, profile = null }
   const orderCount = await countRows('sales_orders');
   const orderNumber = `CMP-${String(orderCount + 1).padStart(6, '0')}`;
 
+  const { data: leadOwner } = purchase?.user_id
+    ? await supabase
+      .from('sales_leads')
+      .select('assigned_to, target_role, zone, location')
+      .eq('user_id', purchase.user_id)
+      .maybeSingle()
+    : { data: null };
+
   const { data, error } = await supabase
     .from('sales_orders')
     .insert({
@@ -787,6 +861,10 @@ const createSalesOrder = async ({ purchase = null, plan = null, profile = null }
       amount: roundMoney(purchase?.total_amount || 0),
       status: purchase?.status || 'paid',
       payment_method: purchase?.provider || 'manual',
+      sales_owner_id: purchase?.sales_owner_id || leadOwner?.assigned_to || null,
+      audience_role: purchase?.audience_role || leadOwner?.target_role || null,
+      zone: leadOwner?.zone || profile?.zone || null,
+      location: leadOwner?.location || profile?.location || null,
       items: [{
         role_plan_slug: purchase?.role_plan_slug,
         quantity: purchase?.quantity || 1
