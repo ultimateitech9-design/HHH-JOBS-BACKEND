@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   buildCompanySubscriptionKey,
   getCompanySubscriptionStatus,
+  listCompanySubscriptionsForUser,
   notifyCompanySubscribersForCampusDrive,
   notifyCompanySubscribersForJob,
   notifyConnectedCampusesForJob,
@@ -189,6 +190,24 @@ test('notifyCompanySubscribersForJob sends one notification per subscribed porta
   assert.equal(state.notifications[0].link, '/portal/student/jobs/job-1');
   assert.equal(state.notifications.find((item) => item.user_id === 'hr-1').link, '/portal/hr/jobs');
   assert.equal(state.notifications.find((item) => item.user_id === 'campus-1').link, '/portal/campus-connect/connections');
+});
+
+test('listCompanySubscriptionsForUser returns active subscriptions for one user', async () => {
+  const { client } = createNotificationFanoutClient({
+    subscriptions: [
+      { subscriber_user_id: 'student-1', subscriber_role: 'student', company_key: 'acme labs', company_name: 'Acme Labs', company_slug: 'acme-labs', is_active: true },
+      { subscriber_user_id: 'student-1', subscriber_role: 'student', company_key: 'old labs', company_name: 'Old Labs', company_slug: 'old-labs', is_active: false },
+      { subscriber_user_id: 'student-2', subscriber_role: 'student', company_key: 'other labs', company_name: 'Other Labs', company_slug: 'other-labs', is_active: true }
+    ]
+  });
+
+  const subscriptions = await listCompanySubscriptionsForUser({
+    userId: 'student-1',
+    supabaseClient: client
+  });
+
+  assert.deepEqual(subscriptions.map((subscription) => subscription.companySlug), ['acme-labs']);
+  assert.equal(subscriptions[0].subscribed, true);
 });
 
 test('company subscriptions fall back when Supabase table is missing', async () => {

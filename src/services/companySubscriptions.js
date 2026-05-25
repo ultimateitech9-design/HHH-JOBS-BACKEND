@@ -87,6 +87,11 @@ const normalizeSubscription = (row = null) => ({
 const getFallbackSubscription = ({ userId, companyKey } = {}) =>
   (ensureFallbackStoreLoaded(), fallbackCompanySubscriptions.get(buildFallbackSubscriptionId({ userId, companyKey })) || null);
 
+const getFallbackSubscriptionsForUser = ({ userId, activeOnly = true } = {}) =>
+  (ensureFallbackStoreLoaded(), Array.from(fallbackCompanySubscriptions.values()).filter((row) => (
+    row.subscriber_user_id === userId && (!activeOnly || row.is_active)
+  )));
+
 const setFallbackSubscription = ({
   userId,
   userRole = '',
@@ -188,6 +193,44 @@ const getCompanySubscriptionStatus = async ({
   }
 
   return normalizeSubscription(data);
+};
+
+const listCompanySubscriptionsForUser = async ({
+  userId,
+  activeOnly = true,
+  supabaseClient = supabase
+} = {}) => {
+  const subscriberUserId = toText(userId);
+  if (!subscriberUserId) return [];
+
+  const fallbackSubscriptions = getFallbackSubscriptionsForUser({
+    userId: subscriberUserId,
+    activeOnly
+  });
+
+  if (!supabaseClient?.from) {
+    return fallbackSubscriptions.map(normalizeSubscription);
+  }
+
+  let query = supabaseClient
+    .from('company_subscriptions')
+    .select('*')
+    .eq('subscriber_user_id', subscriberUserId);
+
+  if (activeOnly) {
+    query = query.eq('is_active', true);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    if (isStorageUnavailableError(error)) {
+      return fallbackSubscriptions.map(normalizeSubscription);
+    }
+    throw error;
+  }
+
+  return (data || []).map(normalizeSubscription);
 };
 
 const setCompanySubscription = async ({
@@ -506,6 +549,7 @@ module.exports = {
   buildCompanySubscriptionKey,
   getCompanySubscriptionStatus,
   isStorageUnavailableError,
+  listCompanySubscriptionsForUser,
   notifyCompanySubscribersForCampusDrive,
   notifyCompanySubscribersForJob,
   notifyConnectedCampusesForJob,

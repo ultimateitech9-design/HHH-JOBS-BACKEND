@@ -2225,6 +2225,64 @@ router.get('/interviews', asyncHandler(async (req, res) => {
   });
 }));
 
+router.delete('/interviews/:id', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'body');
+  const interviewId = req.params.id;
+
+  if (!isValidUuid(interviewId)) {
+    res.status(400).send({ status: false, message: 'Invalid interview id' });
+    return;
+  }
+
+  const { data: interview, error: interviewError } = await supabase
+    .from('interview_schedules')
+    .select('id, status, room_status')
+    .eq('id', interviewId)
+    .eq('candidate_id', targetUserId)
+    .maybeSingle();
+
+  if (interviewError) {
+    sendSupabaseError(res, interviewError);
+    return;
+  }
+  if (!interview) {
+    res.status(404).send({ status: false, message: 'Interview not found' });
+    return;
+  }
+
+  const removableStatuses = new Set(['cancelled', 'canceled', 'no_show']);
+  const canRemoveInterview = [interview.status, interview.room_status]
+    .map((status) => String(status || '').trim().toLowerCase())
+    .some((status) => removableStatuses.has(status));
+
+  if (!canRemoveInterview) {
+    res.status(409).send({
+      status: false,
+      message: 'Only cancelled or no-show interviews can be deleted from your list'
+    });
+    return;
+  }
+
+  const { data: deletedInterview, error: deleteError } = await supabase
+    .from('interview_schedules')
+    .delete()
+    .eq('id', interviewId)
+    .eq('candidate_id', targetUserId)
+    .select('id')
+    .maybeSingle();
+
+  if (deleteError) {
+    sendSupabaseError(res, deleteError);
+    return;
+  }
+  if (!deletedInterview) {
+    res.status(404).send({ status: false, message: 'Interview not found' });
+    return;
+  }
+
+  res.send({ status: true, interviewId: deletedInterview.id });
+}));
+
 router.get('/company-subscriptions/:companySlug', asyncHandler(async (req, res) => {
   if (!isCandidateSubscriptionRole(req.user.role)) {
     res.status(403).send({ status: false, message: 'Only candidate accounts can manage company subscriptions' });

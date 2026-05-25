@@ -10,6 +10,7 @@ const { buildCompanyBrandIndex, buildDomainLogoUrl, resolveCompanyBrand } = requ
 const {
   getCompanySubscriptionStatus,
   isStorageUnavailableError,
+  listCompanySubscriptionsForUser,
   setCompanySubscription
 } = require('../services/companySubscriptions');
 const {
@@ -284,6 +285,22 @@ router.get('/sponsors', asyncHandler(async (req, res) => {
       totalOpenRoles: sponsoredCompanies.reduce((sum, company) => sum + Number(company.totalJobs || 0), 0)
     }
   });
+}));
+
+router.get('/subscriptions', companySubscriptionAuth, asyncHandler(async (req, res) => {
+  try {
+    const subscriptions = await listCompanySubscriptionsForUser({
+      userId: req.user.id
+    });
+
+    res.send({ status: true, subscriptions });
+  } catch (error) {
+    if (isStorageUnavailableError(error)) {
+      res.status(503).send({ status: false, message: 'Company subscriptions are not ready yet' });
+      return;
+    }
+    throw error;
+  }
 }));
 
 router.get('/:companySlug/subscription', companySubscriptionAuth, asyncHandler(async (req, res) => {

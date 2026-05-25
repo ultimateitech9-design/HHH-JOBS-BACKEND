@@ -8,6 +8,7 @@ const DEFAULT_PORT = 5500;
 const ROOT_DIR = path.resolve(__dirname, '..');
 const SERVER_ENTRY = path.join(ROOT_DIR, 'index.js');
 const NODEMON_BIN = require.resolve('nodemon/bin/nodemon.js');
+const NODEMON_IGNORE_PATTERNS = ['logs/**'];
 const port = Number(process.env.PORT) || DEFAULT_PORT;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -130,7 +131,13 @@ const waitForPortToClear = async (targetPort, timeoutMs = 5000) => {
 };
 
 const runNodemon = () => {
-  const child = spawn(process.execPath, [NODEMON_BIN, SERVER_ENTRY], {
+  const nodemonArgs = [
+    NODEMON_BIN,
+    ...NODEMON_IGNORE_PATTERNS.flatMap((pattern) => ['--ignore', pattern]),
+    SERVER_ENTRY
+  ];
+
+  const child = spawn(process.execPath, nodemonArgs, {
     cwd: ROOT_DIR,
     env: process.env,
     stdio: 'inherit'
