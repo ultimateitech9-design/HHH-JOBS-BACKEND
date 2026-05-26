@@ -16,10 +16,14 @@ router.use(requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_
 const formatSalesOverview = ({
   totalLeads = 0,
   newLeads = 0,
+  openLeads = 0,
   convertedLeads = 0,
   totalOrders = 0,
+  paidPayments = 0,
+  pendingPayments = 0,
   totalCustomers = 0,
   activeCustomers = 0,
+  planPendingCustomers = 0,
   monthRevenue = 0,
   totalRevenue = 0,
   salesAgents = 0,
@@ -29,10 +33,14 @@ const formatSalesOverview = ({
 } = {}) => ({
   totalLeads,
   newLeads,
+  openLeads,
   convertedLeads,
   totalOrders,
+  paidPayments,
+  pendingPayments,
   totalCustomers,
   activeCustomers,
+  planPendingCustomers,
   monthRevenue,
   totalRevenue,
   salesAgents,
@@ -41,9 +49,13 @@ const formatSalesOverview = ({
     totalRevenue,
     monthlyRevenue: monthRevenue,
     totalOrders,
-    openLeads: newLeads,
+    paidPayments,
+    pendingPayments,
+    openLeads,
+    newLeads,
     convertedLeads,
     activeCustomers,
+    planPendingCustomers,
     totalLeads,
     totalCustomers,
     salesAgents,
@@ -505,11 +517,13 @@ router.get('/overview', asyncHandler(async (req, res) => {
   const [
     totalLeads,
     newLeads,
+    openLeads,
     convertedLeads,
     salesAgents
   ] = await Promise.all([
     countRows('sales_leads', (q) => scope(q)),
     countRows('sales_leads', (q) => scope(q).eq('status', 'new')),
+    countRows('sales_leads', (q) => scope(q).in('status', ACTIVE_LEAD_STATUSES)),
     countRows('sales_leads', (q) => scope(q).eq('status', 'converted')),
     countRows('users', (q) => q.eq('role', ROLES.SALES))
   ]);
@@ -525,6 +539,7 @@ router.get('/overview', asyncHandler(async (req, res) => {
     .filter((r) => String(r.status || '').toLowerCase() === 'paid' && r.created_at >= monthStart)
     .reduce((sum, r) => sum + Number(r.amount || 0), 0);
   const paidRows = productionOrders.filter((r) => String(r.status || '').toLowerCase() === 'paid');
+  const pendingRows = productionOrders.filter((r) => String(r.status || '').toLowerCase() === 'pending');
   const totalRevenue = paidRows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
   const monthlySales = buildMonthlySeries(paidRows);
   const revenueTrend = buildRevenueTrend(productionOrders);
@@ -534,10 +549,14 @@ router.get('/overview', asyncHandler(async (req, res) => {
     overview: formatSalesOverview({
       totalLeads,
       newLeads,
+      openLeads,
       convertedLeads,
       totalOrders: productionOrders.length,
+      paidPayments: paidRows.length,
+      pendingPayments: pendingRows.length,
       totalCustomers: customerSummary.totalAccounts,
       activeCustomers: customerSummary.activeAccounts,
+      planPendingCustomers: customerSummary.inactiveAccounts,
       monthRevenue,
       totalRevenue,
       salesAgents,
