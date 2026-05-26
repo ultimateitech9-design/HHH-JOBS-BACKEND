@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { supabase, countRows } = require('../supabase');
 const { isValidUuid } = require('../utils/helpers');
+const { buildStateDistrictLabel, resolveStructuredLocation } = require('../utils/geography');
 const { ROLES } = require('../constants');
 const { PURCHASE_STATUSES } = require('../modules/pricing/constants');
 const {
@@ -78,13 +79,7 @@ const normalizeAudienceRole = (value = '') => {
   return SUPPORTED_AUDIENCE_ROLES.has(normalized) ? normalized : '';
 };
 
-const buildZoneLabel = ({ stateName = '', districtName = '', location = '' } = {}) => {
-  const structured = [stateName, districtName]
-    .map((item) => normalizeText(item))
-    .filter(Boolean)
-    .join(' / ');
-  return structured || normalizeText(location);
-};
+const buildZoneLabel = buildStateDistrictLabel;
 
 const normalizeBillingCycle = (value = '') => {
   const normalized = normalizeLower(value);
@@ -548,22 +543,23 @@ const resolveCommercialProfile = async ({ userId, role = '', fallbackName = '', 
     ]);
     const user = userResp.data || {};
     const profile = profileResp.data || {};
-    const zone = buildZoneLabel({
+    const geo = resolveStructuredLocation({
       stateName: profile.state_name,
       districtName: profile.district_name,
       location: profile.location
     });
+    const zone = buildZoneLabel(geo);
     return {
       companyName: profile.company_name || user.name || fallbackName || 'HR Account',
       contactName: user.name || fallbackName || 'HR Contact',
       email: user.email || fallbackEmail || '',
       phone: user.mobile || fallbackMobile || '',
-      location: profile.location || '',
+      location: geo.location || '',
       zone,
       stateId: profile.state_id || null,
       districtId: profile.district_id || null,
-      stateName: profile.state_name || '',
-      districtName: profile.district_name || '',
+      stateName: geo.stateName || '',
+      districtName: geo.districtName || '',
       sectorId: profile.sector_id || null,
       sectorName: profile.sector_name || profile.industry_type || ''
     };
@@ -602,22 +598,23 @@ const resolveCommercialProfile = async ({ userId, role = '', fallbackName = '', 
   const user = userResp.data || {};
   const studentProfile = profileResp.data || {};
   const studentLocation = studentProfile.location || studentProfile.preferred_work_location || '';
-  const zone = buildZoneLabel({
+  const geo = resolveStructuredLocation({
     stateName: studentProfile.state_name,
     districtName: studentProfile.district_name,
     location: studentLocation
   });
+  const zone = buildZoneLabel(geo);
   return {
     companyName: user.name || fallbackName || 'Student Account',
     contactName: user.name || fallbackName || 'Student',
     email: user.email || fallbackEmail || '',
     phone: user.mobile || fallbackMobile || '',
-    location: studentLocation,
+    location: geo.location,
     zone,
     stateId: studentProfile.state_id || null,
     districtId: studentProfile.district_id || null,
-    stateName: studentProfile.state_name || '',
-    districtName: studentProfile.district_name || '',
+    stateName: geo.stateName || '',
+    districtName: geo.districtName || '',
     sectorId: null,
     sectorName: ''
   };

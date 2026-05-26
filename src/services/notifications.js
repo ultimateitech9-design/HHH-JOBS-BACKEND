@@ -52,8 +52,14 @@ const isAlertMatch = (job, alert) => {
     if (!keywordMatched) return false;
   }
 
-  if (alert.location && !String(job.job_location || '').toLowerCase().includes(String(alert.location).toLowerCase())) {
-    return false;
+  if (alert.location) {
+    const locationNeedle = String(alert.location || '').toLowerCase();
+    const locationHaystack = [
+      job.job_location,
+      job.state_name,
+      job.district_name
+    ].join(' ').toLowerCase();
+    if (!locationHaystack.includes(locationNeedle)) return false;
   }
 
   if (alert.experience_level && String(job.experience_level || '').toLowerCase() !== String(alert.experience_level).toLowerCase()) {

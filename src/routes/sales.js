@@ -4,6 +4,7 @@ const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler, isValidUuid } = require('../utils/helpers');
+const { buildStateDistrictLabel, resolveStructuredLocation } = require('../utils/geography');
 const {
   syncCommercialLeadsFromUsers,
   syncCommercialCustomersFromSubscriptions
@@ -586,13 +587,7 @@ const fetchCommercialPlanStateByUserIds = async (userIds = []) => {
   };
 };
 
-const buildLeadZoneLabel = ({ stateName = '', districtName = '', location = '' } = {}) => {
-  const structured = [stateName, districtName]
-    .map((item) => String(item || '').trim())
-    .filter(Boolean)
-    .join(' / ');
-  return structured || String(location || '').trim();
-};
+const buildLeadZoneLabel = buildStateDistrictLabel;
 
 const fetchCommercialProfileStateByAccounts = async (accounts = []) => {
   const grouped = (accounts || []).reduce((acc, account) => {
@@ -635,19 +630,20 @@ const fetchCommercialProfileStateByAccounts = async (accounts = []) => {
   const profilesByUserId = {};
 
   (hrResp.data || []).forEach((profile) => {
-    const zone = buildLeadZoneLabel({
+    const geo = resolveStructuredLocation({
       stateName: profile.state_name,
       districtName: profile.district_name,
       location: profile.location
     });
+    const zone = buildLeadZoneLabel(geo);
     profilesByUserId[profile.user_id] = {
       companyName: profile.company_name || '',
-      location: profile.location || '',
+      location: geo.location || '',
       zone,
       stateId: profile.state_id || null,
       districtId: profile.district_id || null,
-      stateName: profile.state_name || '',
-      districtName: profile.district_name || '',
+      stateName: geo.stateName || '',
+      districtName: geo.districtName || '',
       sectorId: profile.sector_id || null,
       sectorName: profile.sector_name || profile.industry_type || ''
     };
@@ -674,17 +670,18 @@ const fetchCommercialProfileStateByAccounts = async (accounts = []) => {
 
   (studentResp.data || []).forEach((profile) => {
     const location = profile.location || profile.preferred_work_location || '';
+    const geo = resolveStructuredLocation({
+      stateName: profile.state_name,
+      districtName: profile.district_name,
+      location
+    });
     profilesByUserId[profile.user_id] = {
-      location,
-      zone: buildLeadZoneLabel({
-        stateName: profile.state_name,
-        districtName: profile.district_name,
-        location
-      }),
+      location: geo.location,
+      zone: buildLeadZoneLabel(geo),
       stateId: profile.state_id || null,
       districtId: profile.district_id || null,
-      stateName: profile.state_name || '',
-      districtName: profile.district_name || '',
+      stateName: geo.stateName || '',
+      districtName: geo.districtName || '',
       sectorId: null,
       sectorName: ''
     };

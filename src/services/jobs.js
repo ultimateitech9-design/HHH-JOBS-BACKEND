@@ -163,6 +163,17 @@ const buildLocationLabel = ({ districtName = '', stateName = '', fallback = '' }
   return structured || optionalText(fallback) || undefined;
 };
 
+const sanitizePostgrestTerm = (value = '') => String(value || '')
+  .trim()
+  .replace(/[,%()]/g, ' ')
+  .replace(/\s+/g, ' ');
+
+const applyIlikeAny = (query, columns = [], value = '') => {
+  const term = sanitizePostgrestTerm(value);
+  if (!term || columns.length === 0) return query;
+  return query.or(columns.map((column) => `${column}.ilike.%${term}%`).join(','));
+};
+
 const buildJobPayload = (body = {}) => {
   const locations = extractLocationsFromBody(body);
   const stateName = optionalText(body.stateName ?? body.state_name);
@@ -331,6 +342,11 @@ const applyJobFilters = (query, filters = {}) => {
   const {
     search,
     location,
+    state,
+    stateName,
+    district,
+    districtName,
+    companyLocation,
     employmentType,
     experienceLevel,
     salaryType,
@@ -340,13 +356,24 @@ const applyJobFilters = (query, filters = {}) => {
   } = filters;
 
   if (search) {
-    query = query.or(`job_title.ilike.%${search}%,company_name.ilike.%${search}%,description.ilike.%${search}%`);
+    query = applyIlikeAny(query, ['job_title', 'company_name', 'description', 'sector_name', 'category'], search);
   }
-  if (location) query = query.ilike('job_location', `%${location}%`);
+  if (location) {
+    query = applyIlikeAny(query, ['job_location', 'state_name', 'district_name'], location);
+  }
+  if (state || stateName) {
+    query = applyIlikeAny(query, ['state_name', 'job_location'], stateName || state);
+  }
+  if (district || districtName) {
+    query = applyIlikeAny(query, ['district_name', 'job_location'], districtName || district);
+  }
+  if (companyLocation) {
+    query = applyIlikeAny(query, ['job_location', 'state_name', 'district_name'], companyLocation);
+  }
   if (employmentType) query = query.eq('employment_type', employmentType);
   if (experienceLevel) query = query.eq('experience_level', experienceLevel);
   if (salaryType) query = query.eq('salary_type', salaryType);
-  if (category) query = query.eq('category', category);
+  if (category) query = applyIlikeAny(query, ['category', 'sector_name'], category);
   if (status) query = query.eq('status', status);
   if (status === JOB_STATUSES.OPEN) query = query.gte('valid_till', new Date().toISOString());
   if (!includeUnapproved) query = query.neq('approval_status', JOB_APPROVAL_STATUSES.REJECTED);

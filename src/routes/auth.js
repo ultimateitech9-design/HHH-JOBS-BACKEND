@@ -13,6 +13,7 @@ const config = require('../config');
 const { supabase, ensureServerConfig, sendSupabaseError } = require('../supabase');
 const { mapPublicUser } = require('../utils/mappers');
 const { normalizeEmail, asyncHandler } = require('../utils/helpers');
+const { resolveStructuredLocation } = require('../utils/geography');
 const { getPasswordPolicyError } = require('../utils/passwordPolicy');
 const { requireAuth } = require('../middleware/auth');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
@@ -1202,6 +1203,27 @@ router.post('/signup', asyncHandler(async (req, res) => {
   const role = config.adminEmails.includes(email)
     ? ROLES.ADMIN
     : requestedRole;
+
+  if (role === ROLES.HR) {
+    const geo = resolveStructuredLocation({
+      stateName: req.body?.stateName,
+      districtName: req.body?.districtName,
+      location: req.body?.location
+    });
+    if (!String(req.body?.companyName || '').trim()) {
+      res.status(400).send({ status: false, message: 'Company name is required for recruiter signup.' });
+      return;
+    }
+    if (!String(req.body?.sectorId || req.body?.sectorName || '').trim()) {
+      res.status(400).send({ status: false, message: 'Company sector is required for recruiter signup.' });
+      return;
+    }
+    if (!geo.location || !geo.stateName || !geo.districtName) {
+      res.status(400).send({ status: false, message: 'Company location, state, and city/district are required for recruiter signup.' });
+      return;
+    }
+  }
+
   const pendingSignup = getPendingSignupByEmail(email);
 
   const existingUser = supabase

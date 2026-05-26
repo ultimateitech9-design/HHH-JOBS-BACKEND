@@ -6,6 +6,7 @@ const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('../middleware/roles');
 const { supabase, sendSupabaseError } = require('../supabase');
 const { isValidUuid, toArray, maskEmail, maskMobile, asyncHandler } = require('../utils/helpers');
+const { resolveStructuredLocation } = require('../utils/geography');
 const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
 const { notifyUser } = require('../services/notificationOrchestrator');
 const { createHrJob, updateHrJob, deleteHrJob, assertJobOwnership } = require('../services/jobs');
@@ -150,9 +151,22 @@ router.put('/profile', asyncHandler(async (req, res) => {
     return;
   }
 
-  const stateName = String(req.body?.stateName || '').trim();
-  const districtName = String(req.body?.districtName || '').trim();
-  const structuredLocation = [districtName, stateName].filter(Boolean).join(', ');
+  const incomingLocation = String(req.body?.location || '').trim();
+  const geo = resolveStructuredLocation({
+    stateName: req.body?.stateName,
+    districtName: req.body?.districtName,
+    location: incomingLocation
+  });
+  const stateName = geo.stateName;
+  const districtName = geo.districtName;
+
+  if (!incomingLocation || !stateName || !districtName) {
+    res.status(400).send({
+      status: false,
+      message: 'Company location, state, and city/district are required.'
+    });
+    return;
+  }
 
   const payload = {
     user_id: targetUserId,
@@ -162,7 +176,7 @@ router.put('/profile', asyncHandler(async (req, res) => {
     industry_type: req.body?.sectorName || req.body?.industryType,
     founded_year: req.body?.foundedYear,
     company_type: req.body?.companyType,
-    location: req.body?.location || structuredLocation,
+    location: incomingLocation,
     state_id: isValidUuid(req.body?.stateId) ? req.body.stateId : null,
     district_id: isValidUuid(req.body?.districtId) ? req.body.districtId : null,
     state_name: stateName || null,

@@ -1,4 +1,5 @@
 const { ROLES } = require('../constants');
+const { resolveStructuredLocation } = require('../utils/geography');
 
 const PROFILE_TABLE_BY_ROLE = {
   [ROLES.STUDENT]: 'student_profiles',
@@ -158,8 +159,13 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
 
   if (profileRole === ROLES.HR) {
     const sectorName = toOptionalText(reqBody?.sectorName ?? reqBody?.sector_name ?? reqBody?.industryType ?? reqBody?.industry_type);
-    const stateName = toOptionalText(reqBody?.stateName ?? reqBody?.state_name);
-    const districtName = toOptionalText(reqBody?.districtName ?? reqBody?.district_name);
+    const geo = resolveStructuredLocation({
+      stateName: reqBody?.stateName ?? reqBody?.state_name,
+      districtName: reqBody?.districtName ?? reqBody?.district_name,
+      location: reqBody?.location
+    });
+    const stateName = toOptionalText(geo.stateName);
+    const districtName = toOptionalText(geo.districtName);
     return {
       ...basePayload,
       company_name: toOptionalText(reqBody?.companyName ?? reqBody?.company_name),
@@ -168,7 +174,7 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
       industry_type: sectorName,
       founded_year: toOptionalText(reqBody?.foundedYear ?? reqBody?.founded_year),
       company_type: toOptionalText(reqBody?.companyType ?? reqBody?.company_type),
-      location: buildStructuredLocation({ districtName, stateName, fallback: reqBody?.location }),
+      location: toOptionalText(reqBody?.location) || buildStructuredLocation({ districtName, stateName, fallback: reqBody?.location }),
       state_id: toOptionalUuid(reqBody?.stateId ?? reqBody?.state_id),
       district_id: toOptionalUuid(reqBody?.districtId ?? reqBody?.district_id),
       state_name: stateName,
@@ -182,8 +188,13 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
 
   if (profileRole === ROLES.CAMPUS_CONNECT) {
     const fallbackName = toOptionalText(reqBody?.name) || toOptionalText(reqBody?.collegeName) || 'Campus Connect';
-    const stateName = toOptionalText(reqBody?.stateName ?? reqBody?.state_name ?? reqBody?.state);
-    const districtName = toOptionalText(reqBody?.districtName ?? reqBody?.district_name ?? reqBody?.city);
+    const geo = resolveStructuredLocation({
+      stateName: reqBody?.stateName ?? reqBody?.state_name ?? reqBody?.state,
+      districtName: reqBody?.districtName ?? reqBody?.district_name ?? reqBody?.city,
+      location: reqBody?.location
+    });
+    const stateName = toOptionalText(geo.stateName);
+    const districtName = toOptionalText(geo.districtName);
     return {
       ...basePayload,
       name: fallbackName,
