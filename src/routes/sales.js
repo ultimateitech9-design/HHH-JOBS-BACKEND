@@ -142,6 +142,19 @@ const formatLeadRow = (lead = {}) => ({
 
 const isSalesManager = (user = {}) => [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(user?.role);
 const ACTIVE_LEAD_STATUSES = ['new', 'contacted', 'qualified', 'proposal'];
+const CLOSED_LEAD_STATUSES = ['converted', 'lost'];
+
+const normalizeOptionalTimestamp = (value) => {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    const error = new Error('Invalid follow-up date/time');
+    error.statusCode = 400;
+    throw error;
+  }
+  return date.toISOString();
+};
 
 const applyLeadListFilters = (query, {
   user = {},
@@ -938,6 +951,54 @@ router.patch('/leads/:id', asyncHandler(async (req, res) => {
     .eq('id', req.params.id);
   query = applySalesOwnershipScope(query, req.user);
   const { data, error } = await query.select('*').maybeSingle();
+
+  if (error) { sendSupabaseError(res, error); return; }
+  if (!data) return res.status(404).send({ status: false, message: 'Lead not found' });
+
+  res.send({ status: true, lead: formatLeadRow(data) });
+}));
+
+router.post('/leads/:id/call', asyncHandler(async (req, res) => {
+  let existingQuery = supabase
+    .from('sales_leads')
+    .select('*')
+    .eq('id', req.params.id);
+  existingQuery = applySalesOwnershipScope(existingQuery, req.user);
+  const existingResult = await existingQuery.maybeSingle();
+
+  if (existingResult.error) { sendSupabaseError(res, existingResult.error); return; }
+  if (!existingResult.data) return res.status(404).send({ status: false, message: 'Lead not found' });
+
+  const now = new Date().toISOString();
+  const normalizedNextFollowupAt = normalizeOptionalTimestamp(req.body?.next_followup_at);
+  const currentStatus = String(existingResult.data.status || '').toLowerCase();
+  const updates = {
+    updated_at: now,
+    last_followup_at: now,
+    last_contacted_by: req.user?.id || null,
+    last_contacted_at: now
+  };
+
+  if (!currentStatus || currentStatus === 'new') {
+    updates.status = 'contacted';
+  } else if (!ACTIVE_LEAD_STATUSES.includes(currentStatus) && !CLOSED_LEAD_STATUSES.includes(currentStatus)) {
+    updates.status = 'contacted';
+  }
+
+  if (normalizedNextFollowupAt !== undefined) {
+    updates.next_followup_at = normalizedNextFollowupAt;
+  }
+
+  if (req.body?.followup_notes !== undefined) {
+    updates.followup_notes = String(req.body.followup_notes || '').trim() || null;
+  }
+
+  const { data, error } = await supabase
+    .from('sales_leads')
+    .update(updates)
+    .eq('id', existingResult.data.id)
+    .select('*')
+    .maybeSingle();
 
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Lead not found' });
