@@ -2,7 +2,7 @@ const express = require('express');
 
 const { supabase, sendSupabaseError } = require('../supabase');
 const { asyncHandler } = require('../utils/helpers');
-const { JOB_STATUSES, ROLES } = require('../constants');
+const { JOB_STATUSES, ROLES, USER_STATUSES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { mapJobFromRow } = require('../utils/mappers');
@@ -62,10 +62,13 @@ const getDirectorySourceData = async (nowIso) => {
         company_website,
         company_size,
         location,
+        state_name,
+        district_name,
         about,
         logo_url,
         is_verified,
         industry_type,
+        sector_name,
         company_type,
         created_at,
         updated_at,
@@ -83,6 +86,8 @@ const getDirectorySourceData = async (nowIso) => {
         salary_type,
         job_location,
         job_locations,
+        state_name,
+        district_name,
         posting_date,
         experience_level,
         skills,
@@ -92,6 +97,7 @@ const getDirectorySourceData = async (nowIso) => {
         status,
         approval_status,
         category,
+        sector_name,
         is_featured,
         applications_count,
         valid_till,
@@ -133,6 +139,29 @@ const getDirectorySourceData = async (nowIso) => {
     externalJobsResp
   };
 };
+
+const getJoinedUser = (row = {}) => (Array.isArray(row.users) ? row.users[0] : row.users);
+
+const isPublicHrCompanyProfile = (profile = {}) => {
+  const user = getJoinedUser(profile);
+  const companyName = String(profile.company_name || '').trim();
+  const userStatus = String(user?.status || USER_STATUSES.ACTIVE).trim().toLowerCase();
+
+  return Boolean(
+    companyName
+    && user
+    && userStatus === USER_STATUSES.ACTIVE
+    && user.is_hr_approved !== false
+  );
+};
+
+const buildDirectoryFromSourceData = ({ sponsorsResp, profilesResp, portalJobsResp, externalJobsResp }) =>
+  buildCompanyDirectory({
+    sponsoredCompanies: sponsorsResp.data || [],
+    hrProfiles: (profilesResp.data || []).filter(isPublicHrCompanyProfile),
+    portalJobs: portalJobsResp.data || [],
+    externalJobs: externalJobsResp.data || []
+  });
 
 const mapExternalCompanyJob = (job, brandIndex) => {
   const brand = resolveCompanyBrand(brandIndex, job.company_name, {
@@ -196,14 +225,12 @@ router.get('/', asyncHandler(async (req, res) => {
     return;
   }
 
-  const companies = buildCompanyDirectory({
-    sponsoredCompanies: sponsorsResp.data || [],
-    hrProfiles: profilesResp.data || [],
-    portalJobs: portalJobsResp.data || [],
-    externalJobs: externalJobsResp.data || []
+  const listedCompanies = buildDirectoryFromSourceData({
+    sponsorsResp,
+    profilesResp,
+    portalJobsResp,
+    externalJobsResp
   });
-
-  const listedCompanies = companies.filter((company) => company.totalJobs > 0);
 
   const filteredCompanies = search
     ? listedCompanies.filter((company) => {
@@ -212,6 +239,7 @@ router.get('/', asyncHandler(async (req, res) => {
         company.location,
         company.industry,
         company.companyType,
+        company.description,
         company.websiteHost,
         ...(company.categories || [])
       ].join(' ').toLowerCase();
@@ -259,11 +287,11 @@ router.get('/sponsors', asyncHandler(async (req, res) => {
     return;
   }
 
-  const companies = buildCompanyDirectory({
-    sponsoredCompanies: sponsorsResp.data || [],
-    hrProfiles: profilesResp.data || [],
-    portalJobs: portalJobsResp.data || [],
-    externalJobs: externalJobsResp.data || []
+  const companies = buildDirectoryFromSourceData({
+    sponsorsResp,
+    profilesResp,
+    portalJobsResp,
+    externalJobsResp
   });
 
   const sponsoredCompanies = companies
@@ -379,11 +407,11 @@ router.get('/:companySlug', asyncHandler(async (req, res) => {
     return;
   }
 
-  const companies = buildCompanyDirectory({
-    sponsoredCompanies: sponsorsResp.data || [],
-    hrProfiles: profilesResp.data || [],
-    portalJobs: portalJobsResp.data || [],
-    externalJobs: externalJobsResp.data || []
+  const companies = buildDirectoryFromSourceData({
+    sponsorsResp,
+    profilesResp,
+    portalJobsResp,
+    externalJobsResp
   });
 
   const company = companies.find((entry) => entry.slug === companySlug);

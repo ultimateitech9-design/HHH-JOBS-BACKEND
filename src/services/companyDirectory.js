@@ -73,6 +73,13 @@ const toHostname = (value = '') => {
   }
 };
 
+const buildLocationLabel = (...values) => {
+  const parts = values
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  return Array.from(new Set(parts)).join(', ');
+};
+
 const toIso = (value) => {
   if (!value) return null;
   const date = new Date(value);
@@ -245,18 +252,22 @@ const buildCompanyDirectory = ({
     const entry = getOrCreateEntry(directory, companyName);
     if (!entry) continue;
 
+    const structuredLocation = buildLocationLabel(profile.district_name, profile.state_name);
+    const industry = pickPreferredText(profile.sector_name, profile.industry_type);
+
     entry.name = pickBetterCompanyName(entry.name, companyName);
     entry.logoUrl = pickPreferredText(entry.logoUrl, profile.logo_url);
     entry.websiteUrl = pickPreferredText(entry.websiteUrl, profile.company_website);
     entry.websiteHost = pickPreferredText(entry.websiteHost, toHostname(profile.company_website));
-    entry.location = pickPreferredText(entry.location, profile.location);
+    entry.location = pickPreferredText(entry.location, profile.location, structuredLocation);
     entry.description = pickPreferredText(entry.description, profile.about);
     entry.companySize = pickPreferredText(entry.companySize, profile.company_size);
-    entry.industry = pickPreferredText(entry.industry, profile.industry_type);
+    entry.industry = pickPreferredText(entry.industry, industry);
     entry.companyType = pickPreferredText(entry.companyType, profile.company_type);
     entry.portalProfile = true;
     entry.verifiedEmployer = entry.verifiedEmployer || Boolean(profile.is_verified);
     entry.latestActivityAt = updateLatestTimestamp(entry.latestActivityAt, profile.updated_at, profile.created_at);
+    addCategory(entry, industry);
   }
 
   for (const job of portalJobs) {
@@ -264,14 +275,15 @@ const buildCompanyDirectory = ({
     const entry = getOrCreateEntry(directory, companyName);
     if (!entry) continue;
 
+    const structuredLocation = buildLocationLabel(job.district_name, job.state_name);
     entry.name = pickBetterCompanyName(entry.name, companyName);
     entry.logoUrl = pickPreferredText(entry.logoUrl, job.company_logo);
-    entry.location = pickPreferredText(entry.location, job.job_location);
+    entry.location = pickPreferredText(entry.location, job.job_location, structuredLocation);
     entry.portalJobs += 1;
     entry.totalJobs += 1;
     entry.featuredJobs += job.is_featured ? 1 : 0;
     entry.latestActivityAt = updateLatestTimestamp(entry.latestActivityAt, job.updated_at, job.created_at, job.valid_till);
-    addCategory(entry, job.category);
+    addCategory(entry, pickPreferredText(job.sector_name, job.category));
   }
 
   for (const job of externalJobs) {

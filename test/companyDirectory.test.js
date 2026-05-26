@@ -130,6 +130,38 @@ test('buildCompanyDirectorySummary counts premium and live companies correctly',
   });
 });
 
+test('buildCompanyDirectory keeps portal employer profiles visible before open jobs', () => {
+  const companies = buildCompanyDirectory({
+    hrProfiles: [
+      {
+        company_name: 'Raipur Talent Works',
+        company_website: 'https://raipur.example.com',
+        company_size: '11-50',
+        location: '',
+        state_name: 'Chhattisgarh',
+        district_name: 'Raipur',
+        about: '',
+        logo_url: '',
+        is_verified: false,
+        created_at: '2026-05-20T08:00:00.000Z',
+        updated_at: '2026-05-21T08:00:00.000Z',
+        industry_type: '',
+        sector_name: 'Engineering',
+        company_type: 'Private'
+      }
+    ],
+    portalJobs: [],
+    externalJobs: []
+  });
+
+  assert.equal(companies.length, 1);
+  assert.equal(companies[0].name, 'Raipur Talent Works');
+  assert.equal(companies[0].portalProfile, true);
+  assert.equal(companies[0].totalJobs, 0);
+  assert.equal(companies[0].location, 'Raipur, Chhattisgarh');
+  assert.deepEqual(companies[0].categories, ['Engineering']);
+});
+
 test('buildCompanyDirectory keeps sponsor companies routable before they post jobs', () => {
   const companies = buildCompanyDirectory({
     sponsoredCompanies: [
