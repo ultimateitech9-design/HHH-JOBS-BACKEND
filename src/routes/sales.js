@@ -460,16 +460,17 @@ const fetchLiveSalesPaymentById = async ({ id, user = {} } = {}) => {
   return null;
 };
 
-const mapUserToCustomer = (user = {}, subscriptionsByUserId = {}, purchasesByUserId = {}, plansBySlug = {}) => {
+const mapUserToCustomer = (user = {}, subscriptionsByUserId = {}, purchasesByUserId = {}, plansBySlug = {}, profileState = {}) => {
   const subscription = subscriptionsByUserId[user.id] || null;
   const purchase = purchasesByUserId[user.id] || null;
+  const profile = profileState[user.id] || {};
   const planSlug = subscription?.role_plan_slug || purchase?.role_plan_slug || '';
   const plan = plansBySlug[planSlug] || {};
   const customerName = user.name || user.email || 'Account';
   return {
     id: user.id,
     user_id: user.id,
-    company_name: customerName,
+    company_name: profile.companyName || customerName,
     contact_name: customerName,
     email: user.email || '',
     phone: user.mobile || '',
@@ -480,8 +481,14 @@ const mapUserToCustomer = (user = {}, subscriptionsByUserId = {}, purchasesByUse
     audience_role: user.role || subscription?.audience_role || plan.audience_role || '',
     sales_owner_id: subscription?.sales_owner_id || purchase?.sales_owner_id || null,
     subscription_id: subscription?.id || '',
-    zone: '',
-    location: ''
+    zone: profile.zone || '',
+    location: profile.location || '',
+    state_id: profile.stateId || null,
+    district_id: profile.districtId || null,
+    state_name: profile.stateName || '',
+    district_name: profile.districtName || '',
+    sector_id: profile.sectorId || null,
+    sector_name: profile.sectorName || ''
   };
 };
 
@@ -579,6 +586,113 @@ const fetchCommercialPlanStateByUserIds = async (userIds = []) => {
   };
 };
 
+const buildLeadZoneLabel = ({ stateName = '', districtName = '', location = '' } = {}) => {
+  const structured = [stateName, districtName]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .join(' / ');
+  return structured || String(location || '').trim();
+};
+
+const fetchCommercialProfileStateByAccounts = async (accounts = []) => {
+  const grouped = (accounts || []).reduce((acc, account) => {
+    if (!account?.id) return acc;
+    const role = String(account.role || '').toLowerCase();
+    if (!acc[role]) acc[role] = [];
+    acc[role].push(account.id);
+    return acc;
+  }, {});
+
+  const hrIds = uniqueValues(grouped[ROLES.HR] || []);
+  const campusIds = uniqueValues(grouped[ROLES.CAMPUS_CONNECT] || []);
+  const studentIds = uniqueValues(grouped[ROLES.STUDENT] || []);
+
+  const [hrResp, campusResp, studentResp] = await Promise.all([
+    hrIds.length
+      ? supabase
+        .from('hr_profiles')
+        .select('user_id, company_name, location, state_id, district_id, state_name, district_name, sector_id, sector_name, industry_type')
+        .in('user_id', hrIds)
+      : Promise.resolve({ data: [], error: null }),
+    campusIds.length
+      ? supabase
+        .from('colleges')
+        .select('user_id, name, city, state, contact_email, contact_phone, state_id, district_id, state_name, district_name, sector_id, sector_name')
+        .in('user_id', campusIds)
+      : Promise.resolve({ data: [], error: null }),
+    studentIds.length
+      ? supabase
+        .from('student_profiles')
+        .select('user_id, location, preferred_work_location, state_id, district_id, state_name, district_name')
+        .in('user_id', studentIds)
+      : Promise.resolve({ data: [], error: null })
+  ]);
+
+  if (hrResp.error) throw hrResp.error;
+  if (campusResp.error) throw campusResp.error;
+  if (studentResp.error) throw studentResp.error;
+
+  const profilesByUserId = {};
+
+  (hrResp.data || []).forEach((profile) => {
+    const zone = buildLeadZoneLabel({
+      stateName: profile.state_name,
+      districtName: profile.district_name,
+      location: profile.location
+    });
+    profilesByUserId[profile.user_id] = {
+      companyName: profile.company_name || '',
+      location: profile.location || '',
+      zone,
+      stateId: profile.state_id || null,
+      districtId: profile.district_id || null,
+      stateName: profile.state_name || '',
+      districtName: profile.district_name || '',
+      sectorId: profile.sector_id || null,
+      sectorName: profile.sector_name || profile.industry_type || ''
+    };
+  });
+
+  (campusResp.data || []).forEach((college) => {
+    const stateName = college.state_name || college.state || '';
+    const districtName = college.district_name || college.city || '';
+    const location = [districtName, stateName].filter(Boolean).join(', ');
+    profilesByUserId[college.user_id] = {
+      companyName: college.name || '',
+      email: college.contact_email || '',
+      phone: college.contact_phone || '',
+      location,
+      zone: buildLeadZoneLabel({ stateName, districtName, location }),
+      stateId: college.state_id || null,
+      districtId: college.district_id || null,
+      stateName,
+      districtName,
+      sectorId: college.sector_id || null,
+      sectorName: college.sector_name || ''
+    };
+  });
+
+  (studentResp.data || []).forEach((profile) => {
+    const location = profile.location || profile.preferred_work_location || '';
+    profilesByUserId[profile.user_id] = {
+      location,
+      zone: buildLeadZoneLabel({
+        stateName: profile.state_name,
+        districtName: profile.district_name,
+        location
+      }),
+      stateId: profile.state_id || null,
+      districtId: profile.district_id || null,
+      stateName: profile.state_name || '',
+      districtName: profile.district_name || '',
+      sectorId: null,
+      sectorName: ''
+    };
+  });
+
+  return profilesByUserId;
+};
+
 const fetchPlanTakenUserIds = async ({ userIds = [], targetRole = '' } = {}) => {
   const ids = uniqueValues(userIds);
   const normalizedRole = normalizeCommercialAudienceRole(targetRole);
@@ -628,23 +742,26 @@ const fetchPlanTakenUserIds = async ({ userIds = [], targetRole = '' } = {}) => 
   ].filter(Boolean));
 };
 
-const mapPlatformUserToLead = (account = {}, leadState = null, planState = {}) => {
+const mapPlatformUserToLead = (account = {}, leadState = null, planState = {}, profileState = {}) => {
   const subscription = planState.subscriptionsByUserId?.[account.id] || null;
   const rolePurchase = planState.purchasesByUserId?.[account.id] || null;
   const jobPurchase = planState.jobPurchasesByUserId?.[account.id] || null;
   const paidPlan = subscription || rolePurchase || jobPurchase;
+  const profile = profileState?.[account.id] || {};
   const accountName = account.name || account.email || account.mobile || 'Platform account';
   const planSlug = subscription?.role_plan_slug || rolePurchase?.role_plan_slug || jobPurchase?.plan_slug || '';
   const currentStatus = String(leadState?.status || '').toLowerCase();
+  const zone = leadState?.zone || profile.zone || '';
+  const location = leadState?.location || profile.location || '';
 
   return {
     ...(leadState || {}),
     id: leadState?.id || account.id,
     user_id: account.id,
-    company_name: leadState?.company_name || accountName,
+    company_name: leadState?.company_name || profile.companyName || accountName,
     contact_name: leadState?.contact_name || accountName,
-    contact_email: leadState?.contact_email || account.email || '',
-    contact_phone: leadState?.contact_phone || account.mobile || '',
+    contact_email: leadState?.contact_email || profile.email || account.email || '',
+    contact_phone: leadState?.contact_phone || profile.phone || account.mobile || '',
     status: currentStatus || (paidPlan ? 'converted' : 'new'),
     source: leadState?.source || `platform_${account.role || 'account'}`,
     assigned_to: leadState?.assigned_to || null,
@@ -663,8 +780,14 @@ const mapPlatformUserToLead = (account = {}, leadState = null, planState = {}) =
     last_contacted_at: leadState?.last_contacted_at || null,
     plan_interest_slug: leadState?.plan_interest_slug || planSlug || null,
     coupon_code: leadState?.coupon_code || null,
-    zone: leadState?.zone || '',
-    location: leadState?.location || '',
+    zone,
+    location,
+    state_id: leadState?.state_id || profile.stateId || null,
+    district_id: leadState?.district_id || profile.districtId || null,
+    state_name: leadState?.state_name || profile.stateName || null,
+    district_name: leadState?.district_name || profile.districtName || null,
+    sector_id: leadState?.sector_id || profile.sectorId || null,
+    sector_name: leadState?.sector_name || profile.sectorName || null,
     source_purchase_id: leadState?.source_purchase_id || rolePurchase?.id || null,
     source_subscription_id: leadState?.source_subscription_id || subscription?.id || null
   };
@@ -895,14 +1018,15 @@ const fetchLiveSalesLeads = async ({
   if (error) throw error;
 
   const userIds = (accounts || []).map((row) => row.id);
-  const [leadStatesByUserId, planState, summary] = await Promise.all([
+  const [leadStatesByUserId, planState, profileState, summary] = await Promise.all([
     fetchLeadStatesByUserIds(userIds),
     fetchCommercialPlanStateByUserIds(userIds),
+    fetchCommercialProfileStateByAccounts(accounts || []),
     buildLiveLeadSummary({ targetRole, search })
   ]);
 
   const leads = (accounts || [])
-    .map((account) => mapPlatformUserToLead(account, leadStatesByUserId[account.id] || null, planState))
+    .map((account) => mapPlatformUserToLead(account, leadStatesByUserId[account.id] || null, planState, profileState))
     .filter((lead) => leadMatchesLiveFilters(lead, { user, status, onboardingStatus }))
     .map(formatLeadRow);
 
@@ -926,11 +1050,12 @@ const fetchPlatformAccountLeadById = async ({ id, user = {} } = {}) => {
   if (error) throw error;
   if (!account || !COMMERCIAL_AUDIENCE_ROLES.includes(account.role)) return null;
 
-  const [leadStatesByUserId, planState] = await Promise.all([
+  const [leadStatesByUserId, planState, profileState] = await Promise.all([
     fetchLeadStatesByUserIds([account.id]),
-    fetchCommercialPlanStateByUserIds([account.id])
+    fetchCommercialPlanStateByUserIds([account.id]),
+    fetchCommercialProfileStateByAccounts([account])
   ]);
-  const lead = mapPlatformUserToLead(account, leadStatesByUserId[account.id] || null, planState);
+  const lead = mapPlatformUserToLead(account, leadStatesByUserId[account.id] || null, planState, profileState);
   return canAccessLeadState(lead, user) ? formatLeadRow(lead) : null;
 };
 
@@ -969,14 +1094,24 @@ const createLeadStateForPlatformAccount = async ({ userId, user = {} } = {}) => 
   if (accountError) throw accountError;
   if (!account || !COMMERCIAL_AUDIENCE_ROLES.includes(account.role)) return null;
 
+  const profileState = await fetchCommercialProfileStateByAccounts([account]);
+  const profile = profileState[account.id] || {};
   const accountName = account.name || account.email || account.mobile || 'Platform account';
   const payload = {
     user_id: account.id,
-    company_name: accountName,
+    company_name: profile.companyName || accountName,
     contact_name: accountName,
-    contact_email: account.email || null,
-    contact_phone: account.mobile || null,
+    contact_email: profile.email || account.email || null,
+    contact_phone: profile.phone || account.mobile || null,
     target_role: account.role,
+    zone: profile.zone || null,
+    location: profile.location || null,
+    state_id: profile.stateId || null,
+    district_id: profile.districtId || null,
+    state_name: profile.stateName || null,
+    district_name: profile.districtName || null,
+    sector_id: profile.sectorId || null,
+    sector_name: profile.sectorName || null,
     status: 'new',
     onboarding_status: 'prospect',
     source: `platform_${account.role || 'account'}`,
@@ -1059,7 +1194,7 @@ const fetchLiveSalesCustomers = async ({ page = 1, limit = 50, search = '' } = {
   if (error) throw error;
 
   const userIds = (users || []).map((row) => row.id);
-  const [subscriptionResult, purchaseResult] = await Promise.all([
+  const [subscriptionResult, purchaseResult, profileState] = await Promise.all([
     userIds.length
       ? supabase
         .from('role_plan_subscriptions')
@@ -1075,7 +1210,8 @@ const fetchLiveSalesCustomers = async ({ page = 1, limit = 50, search = '' } = {
         .in('user_id', userIds)
         .not('status', 'in', '(failed,cancelled)')
         .order('created_at', { ascending: false })
-      : Promise.resolve({ data: [], error: null })
+      : Promise.resolve({ data: [], error: null }),
+    fetchCommercialProfileStateByAccounts(users || [])
   ]);
   if (subscriptionResult.error) throw subscriptionResult.error;
   if (purchaseResult.error) throw purchaseResult.error;
@@ -1089,7 +1225,7 @@ const fetchLiveSalesCustomers = async ({ page = 1, limit = 50, search = '' } = {
   const plansBySlug = await fetchRolePlansBySlugs(planSlugs);
 
   return {
-    customers: (users || []).map((row) => mapUserToCustomer(row, subscriptionsByUserId, purchasesByUserId, plansBySlug)),
+    customers: (users || []).map((row) => mapUserToCustomer(row, subscriptionsByUserId, purchasesByUserId, plansBySlug, profileState)),
     total: count || 0,
     page: safePage,
     limit: safeLimit,
@@ -1107,7 +1243,7 @@ const fetchLiveSalesCustomerById = async ({ id, user = {} } = {}) => {
   if (error) throw error;
   if (!account || !COMMERCIAL_AUDIENCE_ROLES.includes(account.role)) return null;
 
-  const [subscriptionResult, purchaseResult] = await Promise.all([
+  const [subscriptionResult, purchaseResult, profileState] = await Promise.all([
     supabase
       .from('role_plan_subscriptions')
       .select('id, user_id, audience_role, role_plan_slug, status, amount, created_at, activated_at, sales_owner_id')
@@ -1121,7 +1257,8 @@ const fetchLiveSalesCustomerById = async ({ id, user = {} } = {}) => {
       .eq('user_id', account.id)
       .not('status', 'in', '(failed,cancelled)')
       .order('created_at', { ascending: false })
-      .limit(1)
+      .limit(1),
+    fetchCommercialProfileStateByAccounts([account])
   ]);
   if (subscriptionResult.error) throw subscriptionResult.error;
   if (purchaseResult.error) throw purchaseResult.error;
@@ -1129,7 +1266,7 @@ const fetchLiveSalesCustomerById = async ({ id, user = {} } = {}) => {
   const subscription = (subscriptionResult.data || [])[0] || null;
   const purchase = (purchaseResult.data || [])[0] || null;
   const plansBySlug = await fetchRolePlansBySlugs([subscription?.role_plan_slug, purchase?.role_plan_slug]);
-  return mapUserToCustomer(account, subscription ? { [account.id]: subscription } : {}, purchase ? { [account.id]: purchase } : {}, plansBySlug);
+  return mapUserToCustomer(account, subscription ? { [account.id]: subscription } : {}, purchase ? { [account.id]: purchase } : {}, plansBySlug, profileState);
 };
 
 // =============================================
@@ -1522,8 +1659,26 @@ router.get('/leads/:id', asyncHandler(async (req, res) => {
 }));
 
 router.post('/leads', asyncHandler(async (req, res) => {
-  const { company_name, contact_name, contact_email, contact_phone, source, notes, value, target_role, zone, location } = req.body || {};
+  const {
+    company_name,
+    contact_name,
+    contact_email,
+    contact_phone,
+    source,
+    notes,
+    value,
+    target_role,
+    zone,
+    location,
+    state_id,
+    district_id,
+    state_name,
+    district_name,
+    sector_id,
+    sector_name
+  } = req.body || {};
   if (!company_name) return res.status(400).send({ status: false, message: 'company_name is required' });
+  const structuredZone = buildLeadZoneLabel({ stateName: state_name, districtName: district_name, location: zone || location });
 
   const { data, error } = await supabase
     .from('sales_leads')
@@ -1540,8 +1695,14 @@ router.post('/leads', asyncHandler(async (req, res) => {
       assigned_at: new Date().toISOString(),
       assignment_source: 'manual',
       target_role: target_role ? String(target_role).trim().toLowerCase() : null,
-      zone: zone ? String(zone).trim() : null,
+      zone: structuredZone || null,
       location: location ? String(location).trim() : null,
+      state_id: isValidUuid(state_id) ? state_id : null,
+      district_id: isValidUuid(district_id) ? district_id : null,
+      state_name: state_name ? String(state_name).trim() : null,
+      district_name: district_name ? String(district_name).trim() : null,
+      sector_id: isValidUuid(sector_id) ? sector_id : null,
+      sector_name: sector_name ? String(sector_name).trim() : null,
       status: 'new'
     })
     .select('*')
@@ -1566,7 +1727,13 @@ router.patch('/leads/:id', asyncHandler(async (req, res) => {
     plan_interest_slug,
     coupon_code,
     zone,
-    location
+    location,
+    state_id,
+    district_id,
+    state_name,
+    district_name,
+    sector_id,
+    sector_name
   } = req.body || {};
   const updates = { updated_at: new Date().toISOString() };
   if (status) updates.status = status;
@@ -1582,6 +1749,19 @@ router.patch('/leads/:id', asyncHandler(async (req, res) => {
   if (coupon_code !== undefined) updates.coupon_code = coupon_code ? String(coupon_code).trim().toUpperCase() : null;
   if (zone !== undefined) updates.zone = zone ? String(zone).trim() : null;
   if (location !== undefined) updates.location = location ? String(location).trim() : null;
+  if (state_id !== undefined) updates.state_id = isValidUuid(state_id) ? state_id : null;
+  if (district_id !== undefined) updates.district_id = isValidUuid(district_id) ? district_id : null;
+  if (state_name !== undefined) updates.state_name = state_name ? String(state_name).trim() : null;
+  if (district_name !== undefined) updates.district_name = district_name ? String(district_name).trim() : null;
+  if (sector_id !== undefined) updates.sector_id = isValidUuid(sector_id) ? sector_id : null;
+  if (sector_name !== undefined) updates.sector_name = sector_name ? String(sector_name).trim() : null;
+  if (zone === undefined && (state_name !== undefined || district_name !== undefined || location !== undefined)) {
+    updates.zone = buildLeadZoneLabel({
+      stateName: state_name,
+      districtName: district_name,
+      location
+    }) || null;
+  }
   updates.last_contacted_by = req.user?.id || null;
   updates.last_contacted_at = new Date().toISOString();
 
@@ -1988,7 +2168,7 @@ router.get('/funnel', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/reports', asyncHandler(async (req, res) => {
   const leadQuery = applySalesOwnershipScope(
-    supabase.from('sales_leads').select('source, status, value, assigned_to, assigned_name, zone, location'),
+    supabase.from('sales_leads').select('source, status, value, assigned_to, assigned_name, zone, location, state_name, district_name'),
     req.user
   );
   const [leadsResult, orders, customerSummary] = await Promise.all([
@@ -2054,13 +2234,21 @@ router.get('/reports', asyncHandler(async (req, res) => {
 
   const zoneMap = {};
   leads.forEach((lead) => {
-    const label = lead.zone || lead.location || 'Unassigned';
+    const label = buildLeadZoneLabel({
+      stateName: lead.state_name,
+      districtName: lead.district_name,
+      location: lead.zone || lead.location
+    }) || 'Unassigned';
     zoneMap[label] = zoneMap[label] || { zone: label, leads: 0, converted: 0, revenue: 0 };
     zoneMap[label].leads += 1;
     if (lead.status === 'converted') zoneMap[label].converted += 1;
   });
   orders.filter((order) => order.status === 'paid').forEach((order) => {
-    const label = order.zone || order.location || 'Unassigned';
+    const label = buildLeadZoneLabel({
+      stateName: order.state_name,
+      districtName: order.district_name,
+      location: order.zone || order.location
+    }) || 'Unassigned';
     zoneMap[label] = zoneMap[label] || { zone: label, leads: 0, converted: 0, revenue: 0 };
     zoneMap[label].revenue += Number(order.amount || 0);
   });

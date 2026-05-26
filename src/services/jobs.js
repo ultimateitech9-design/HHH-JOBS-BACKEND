@@ -1,6 +1,6 @@
 const { supabase, sendSupabaseError } = require('../supabase');
 const { JOB_STATUSES, JOB_APPROVAL_STATUSES, ROLES } = require('../constants');
-const { normalizeEmail, stripUndefined, toArray } = require('../utils/helpers');
+const { normalizeEmail, stripUndefined, toArray, isValidUuid } = require('../utils/helpers');
 const { mapJobFromRow } = require('../utils/mappers');
 const { notifyUsersByRoles } = require('./notifications');
 const { notifyCompanySubscribersForJob } = require('./companySubscriptions');
@@ -149,8 +149,29 @@ const extractLocationsFromBody = (body = {}) => {
   return [...new Set(list.map((item) => String(item || '').trim()).filter(Boolean))];
 };
 
+const optionalUuid = (value) => (isValidUuid(value) ? value : null);
+const optionalText = (value) => {
+  const text = String(value ?? '').trim();
+  return text || null;
+};
+
+const buildLocationLabel = ({ districtName = '', stateName = '', fallback = '' } = {}) => {
+  const structured = [districtName, stateName]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .join(', ');
+  return structured || optionalText(fallback) || undefined;
+};
+
 const buildJobPayload = (body = {}) => {
   const locations = extractLocationsFromBody(body);
+  const stateName = optionalText(body.stateName ?? body.state_name);
+  const districtName = optionalText(body.districtName ?? body.district_name);
+  const primaryLocation = locations[0] || buildLocationLabel({
+    districtName,
+    stateName,
+    fallback: body.jobLocation ?? body.job_location
+  });
 
   return {
     job_title: body.jobTitle ?? body.job_title,
@@ -158,14 +179,20 @@ const buildJobPayload = (body = {}) => {
     min_price: body.minPrice ?? body.min_price,
     max_price: body.maxPrice ?? body.max_price,
     salary_type: body.salaryType ?? body.salary_type,
-    job_location: locations[0] || (body.jobLocation ?? body.job_location),
-    job_locations: locations.length > 0 ? locations : undefined,
+    job_location: primaryLocation,
+    job_locations: primaryLocation ? [primaryLocation] : undefined,
     posting_date: body.postingDate ?? body.posting_date ?? null,
     experience_level: body.experienceLevel ?? body.experience_level,
     skills: body.skills ?? [],
     company_logo: body.companyLogo ?? body.company_logo,
     employment_type: body.employmentType ?? body.employment_type,
-    category: body.category,
+    category: body.category ?? body.sectorName ?? body.sector_name,
+    sector_id: optionalUuid(body.sectorId ?? body.sector_id),
+    sector_name: optionalText(body.sectorName ?? body.sector_name ?? body.category),
+    state_id: optionalUuid(body.stateId ?? body.state_id),
+    district_id: optionalUuid(body.districtId ?? body.district_id),
+    state_name: stateName,
+    district_name: districtName,
     is_featured: body.isFeatured ?? body.is_featured,
     description: body.description,
     status: body.status ?? undefined,

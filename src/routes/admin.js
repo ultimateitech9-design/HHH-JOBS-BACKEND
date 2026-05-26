@@ -784,6 +784,44 @@ router.delete('/industries/:id', asyncHandler(async (req, res) => {
   res.send({ status: true, deletedCount: data?.length || 0 });
 }));
 
+// --- Sectors ---
+router.get('/sectors', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase.from('master_sectors').select('*').order('name', { ascending: true });
+  if (error) { sendSupabaseError(res, error); return; }
+  res.send({ status: true, sectors: data || [] });
+}));
+
+router.post('/sectors', asyncHandler(async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name) { res.status(400).send({ status: false, message: 'Sector name is required' }); return; }
+
+  const { data, error } = await supabase.from('master_sectors')
+    .insert({ name, created_by: req.user.id, is_active: req.body?.isActive !== false })
+    .select('*').single();
+
+  if (error) { sendSupabaseError(res, error); return; }
+  res.status(201).send({ status: true, sector: data });
+}));
+
+router.patch('/sectors/:id', asyncHandler(async (req, res) => {
+  const updateDoc = {};
+  if (req.body?.name !== undefined) updateDoc.name = String(req.body.name).trim();
+  if (req.body?.isActive !== undefined) updateDoc.is_active = Boolean(req.body.isActive);
+
+  const { data, error } = await supabase.from('master_sectors')
+    .update(updateDoc).eq('id', req.params.id).select('*').maybeSingle();
+
+  if (error) { sendSupabaseError(res, error); return; }
+  if (!data) { res.status(404).send({ status: false, message: 'Sector not found' }); return; }
+  res.send({ status: true, sector: data });
+}));
+
+router.delete('/sectors/:id', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase.from('master_sectors').delete().eq('id', req.params.id).select('id');
+  if (error) { sendSupabaseError(res, error); return; }
+  res.send({ status: true, deletedCount: data?.length || 0 });
+}));
+
 // --- Skills ---
 router.get('/skills', asyncHandler(async (req, res) => {
   const industryId = String(req.query.industryId || '').trim();

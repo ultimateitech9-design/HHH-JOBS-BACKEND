@@ -53,6 +53,25 @@ const toOptionalNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const toOptionalUuid = (value) => {
+  const text = String(value ?? '').trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
+    ? text
+    : null;
+};
+
+const hasAnyKey = (object = {}, keys = []) => (
+  keys.some((key) => Object.prototype.hasOwnProperty.call(object, key))
+);
+
+const buildStructuredLocation = ({ districtName = '', stateName = '', fallback = '' } = {}) => (
+  [districtName, stateName]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .join(', ')
+  || toOptionalText(fallback)
+);
+
 const sanitizeMeta = (value) => (
   value && typeof value === 'object' && !Array.isArray(value)
     ? value
@@ -138,21 +157,44 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
   const basePayload = { user_id: userId };
 
   if (profileRole === ROLES.HR) {
+    const sectorName = toOptionalText(reqBody?.sectorName ?? reqBody?.sector_name ?? reqBody?.industryType ?? reqBody?.industry_type);
+    const stateName = toOptionalText(reqBody?.stateName ?? reqBody?.state_name);
+    const districtName = toOptionalText(reqBody?.districtName ?? reqBody?.district_name);
     return {
       ...basePayload,
       company_name: toOptionalText(reqBody?.companyName ?? reqBody?.company_name),
-      location: toOptionalText(reqBody?.location),
-      about: toOptionalText(reqBody?.about)
+      company_website: toOptionalText(reqBody?.companyWebsite ?? reqBody?.company_website),
+      company_size: toOptionalText(reqBody?.companySize ?? reqBody?.company_size),
+      industry_type: sectorName,
+      founded_year: toOptionalText(reqBody?.foundedYear ?? reqBody?.founded_year),
+      company_type: toOptionalText(reqBody?.companyType ?? reqBody?.company_type),
+      location: buildStructuredLocation({ districtName, stateName, fallback: reqBody?.location }),
+      state_id: toOptionalUuid(reqBody?.stateId ?? reqBody?.state_id),
+      district_id: toOptionalUuid(reqBody?.districtId ?? reqBody?.district_id),
+      state_name: stateName,
+      district_name: districtName,
+      sector_id: toOptionalUuid(reqBody?.sectorId ?? reqBody?.sector_id),
+      sector_name: sectorName,
+      about: toOptionalText(reqBody?.about),
+      logo_url: toOptionalText(reqBody?.logoUrl ?? reqBody?.logo_url)
     };
   }
 
   if (profileRole === ROLES.CAMPUS_CONNECT) {
     const fallbackName = toOptionalText(reqBody?.name) || toOptionalText(reqBody?.collegeName) || 'Campus Connect';
+    const stateName = toOptionalText(reqBody?.stateName ?? reqBody?.state_name ?? reqBody?.state);
+    const districtName = toOptionalText(reqBody?.districtName ?? reqBody?.district_name ?? reqBody?.city);
     return {
       ...basePayload,
       name: fallbackName,
-      city: toOptionalText(reqBody?.city),
-      state: toOptionalText(reqBody?.state),
+      city: districtName,
+      state: stateName,
+      state_id: toOptionalUuid(reqBody?.stateId ?? reqBody?.state_id),
+      district_id: toOptionalUuid(reqBody?.districtId ?? reqBody?.district_id),
+      state_name: stateName,
+      district_name: districtName,
+      sector_id: toOptionalUuid(reqBody?.sectorId ?? reqBody?.sector_id),
+      sector_name: toOptionalText(reqBody?.sectorName ?? reqBody?.sector_name),
       affiliation: toOptionalText(reqBody?.affiliation),
       established_year: toOptionalNumber(reqBody?.establishedYear ?? reqBody?.established_year),
       website: toOptionalText(reqBody?.website),
@@ -165,10 +207,28 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
   }
 
   if (profileRole === ROLES.STUDENT) {
-    return {
+    const studentPayload = {
       ...basePayload,
       date_of_birth: toOptionalText(reqBody?.dateOfBirth ?? reqBody?.date_of_birth)
     };
+
+    if (hasAnyKey(reqBody, ['stateId', 'state_id'])) {
+      studentPayload.state_id = toOptionalUuid(reqBody?.stateId ?? reqBody?.state_id);
+    }
+
+    if (hasAnyKey(reqBody, ['districtId', 'district_id'])) {
+      studentPayload.district_id = toOptionalUuid(reqBody?.districtId ?? reqBody?.district_id);
+    }
+
+    if (hasAnyKey(reqBody, ['stateName', 'state_name'])) {
+      studentPayload.state_name = toOptionalText(reqBody?.stateName ?? reqBody?.state_name);
+    }
+
+    if (hasAnyKey(reqBody, ['districtName', 'district_name'])) {
+      studentPayload.district_name = toOptionalText(reqBody?.districtName ?? reqBody?.district_name);
+    }
+
+    return studentPayload;
   }
 
   if (profileRole === ROLES.ADMIN) {

@@ -85,6 +85,71 @@ router.get('/meta/locations', automationProtection, publicJobsReadLimiter, setCa
   res.send({ status: true, locations: data || [] });
 }));
 
+router.get('/meta/sectors', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+  if (!supabase) {
+    res.send({ status: true, sectors: [] });
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from('master_sectors')
+    .select('id, name, is_active')
+    .eq('is_active', true)
+    .order('name', { ascending: true });
+
+  if (error) {
+    sendSupabaseError(res, error);
+    return;
+  }
+
+  res.send({ status: true, sectors: data || [] });
+}));
+
+router.get('/meta/states', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+  if (!supabase) {
+    res.send({ status: true, states: [] });
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from('master_states')
+    .select('id, name, code, is_active')
+    .eq('is_active', true)
+    .order('name', { ascending: true });
+
+  if (error) {
+    sendSupabaseError(res, error);
+    return;
+  }
+
+  res.send({ status: true, states: data || [] });
+}));
+
+router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+  if (!supabase) {
+    res.send({ status: true, districts: [] });
+    return;
+  }
+
+  const stateId = String(req.query.stateId || req.query.state_id || '').trim();
+  let query = supabase
+    .from('master_districts')
+    .select('id, state_id, name, is_active')
+    .eq('is_active', true)
+    .order('name', { ascending: true });
+
+  if (stateId) query = query.eq('state_id', stateId);
+
+  const { data, error } = await query;
+
+  if (error) {
+    sendSupabaseError(res, error);
+    return;
+  }
+
+  res.send({ status: true, districts: data || [] });
+}));
+
 router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!supabase) {
     res.status(503).send({

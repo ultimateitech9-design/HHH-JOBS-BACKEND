@@ -78,6 +78,14 @@ const normalizeAudienceRole = (value = '') => {
   return SUPPORTED_AUDIENCE_ROLES.has(normalized) ? normalized : '';
 };
 
+const buildZoneLabel = ({ stateName = '', districtName = '', location = '' } = {}) => {
+  const structured = [stateName, districtName]
+    .map((item) => normalizeText(item))
+    .filter(Boolean)
+    .join(' / ');
+  return structured || normalizeText(location);
+};
+
 const normalizeBillingCycle = (value = '') => {
   const normalized = normalizeLower(value);
   if (['monthly', 'quarterly', 'annual', 'one_time'].includes(normalized)) return normalized;
@@ -535,52 +543,83 @@ const resolveCommercialProfile = async ({ userId, role = '', fallbackName = '', 
 
   if (normalizedRole === ROLES.HR) {
     const [profileResp, userResp] = await Promise.all([
-      supabase.from('hr_profiles').select('company_name, location').eq('user_id', userId).maybeSingle(),
+      supabase.from('hr_profiles').select('company_name, location, state_id, district_id, state_name, district_name, sector_id, sector_name, industry_type').eq('user_id', userId).maybeSingle(),
       supabase.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
     ]);
     const user = userResp.data || {};
     const profile = profileResp.data || {};
+    const zone = buildZoneLabel({
+      stateName: profile.state_name,
+      districtName: profile.district_name,
+      location: profile.location
+    });
     return {
       companyName: profile.company_name || user.name || fallbackName || 'HR Account',
       contactName: user.name || fallbackName || 'HR Contact',
       email: user.email || fallbackEmail || '',
       phone: user.mobile || fallbackMobile || '',
       location: profile.location || '',
-      zone: profile.location || ''
+      zone,
+      stateId: profile.state_id || null,
+      districtId: profile.district_id || null,
+      stateName: profile.state_name || '',
+      districtName: profile.district_name || '',
+      sectorId: profile.sector_id || null,
+      sectorName: profile.sector_name || profile.industry_type || ''
     };
   }
 
   if (normalizedRole === ROLES.CAMPUS_CONNECT) {
     const [collegeResp, userResp] = await Promise.all([
-      supabase.from('colleges').select('name, contact_email, contact_phone, city, state').eq('user_id', userId).maybeSingle(),
+      supabase.from('colleges').select('name, contact_email, contact_phone, city, state, state_id, district_id, state_name, district_name, sector_id, sector_name').eq('user_id', userId).maybeSingle(),
       supabase.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
     ]);
     const user = userResp.data || {};
     const college = collegeResp.data || {};
+    const stateName = college.state_name || college.state || '';
+    const districtName = college.district_name || college.city || '';
+    const location = [districtName, stateName].filter(Boolean).join(', ');
     return {
       companyName: college.name || user.name || fallbackName || 'Campus Account',
       contactName: user.name || fallbackName || 'Campus Contact',
       email: college.contact_email || user.email || fallbackEmail || '',
       phone: college.contact_phone || user.mobile || fallbackMobile || '',
-      location: [college.city, college.state].filter(Boolean).join(', '),
-      zone: college.state || college.city || ''
+      location,
+      zone: buildZoneLabel({ stateName, districtName, location }),
+      stateId: college.state_id || null,
+      districtId: college.district_id || null,
+      stateName,
+      districtName,
+      sectorId: college.sector_id || null,
+      sectorName: college.sector_name || ''
     };
   }
 
   const [profileResp, userResp] = await Promise.all([
-    supabase.from('student_profiles').select('location, preferred_work_location').eq('user_id', userId).maybeSingle(),
+    supabase.from('student_profiles').select('location, preferred_work_location, state_id, district_id, state_name, district_name').eq('user_id', userId).maybeSingle(),
     supabase.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
   ]);
   const user = userResp.data || {};
   const studentProfile = profileResp.data || {};
   const studentLocation = studentProfile.location || studentProfile.preferred_work_location || '';
+  const zone = buildZoneLabel({
+    stateName: studentProfile.state_name,
+    districtName: studentProfile.district_name,
+    location: studentLocation
+  });
   return {
     companyName: user.name || fallbackName || 'Student Account',
     contactName: user.name || fallbackName || 'Student',
     email: user.email || fallbackEmail || '',
     phone: user.mobile || fallbackMobile || '',
     location: studentLocation,
-    zone: studentLocation
+    zone,
+    stateId: studentProfile.state_id || null,
+    districtId: studentProfile.district_id || null,
+    stateName: studentProfile.state_name || '',
+    districtName: studentProfile.district_name || '',
+    sectorId: null,
+    sectorName: ''
   };
 };
 
@@ -645,6 +684,12 @@ const upsertCommercialLeadForUser = async ({ userId, role = '', name = '', email
     contact_phone: normalizeText(profile.phone || mobile) || null,
     location: normalizeText(profile.location) || null,
     zone: normalizeText(profile.zone) || null,
+    state_id: profile.stateId || null,
+    district_id: profile.districtId || null,
+    state_name: normalizeText(profile.stateName) || null,
+    district_name: normalizeText(profile.districtName) || null,
+    sector_id: profile.sectorId || null,
+    sector_name: normalizeText(profile.sectorName) || null,
     source: `self_signup_${normalizedRole}`,
     status: existingLead ? undefined : 'new',
     onboarding_status: existingLead ? undefined : 'prospect',
@@ -718,7 +763,7 @@ const syncSalesCustomer = async ({ userId, role = '', plan = null, subscriptionI
     : roundMoney(Math.max(Number(existing?.total_spent || 0), Number(amount || 0)));
   const { data: leadOwner } = await supabase
     .from('sales_leads')
-    .select('assigned_to, zone, location')
+    .select('assigned_to, zone, location, state_id, district_id, state_name, district_name, sector_id, sector_name')
     .eq('user_id', userId)
     .maybeSingle();
   const payload = {
@@ -734,7 +779,13 @@ const syncSalesCustomer = async ({ userId, role = '', plan = null, subscriptionI
     audience_role: normalizeAudienceRole(role) || existing?.audience_role || null,
     sales_owner_id: salesOwnerId || existing?.sales_owner_id || leadOwner?.assigned_to || null,
     zone: leadOwner?.zone || existing?.zone || profile.zone || null,
-    location: leadOwner?.location || existing?.location || profile.location || null
+    location: leadOwner?.location || existing?.location || profile.location || null,
+    state_id: leadOwner?.state_id || existing?.state_id || profile.stateId || null,
+    district_id: leadOwner?.district_id || existing?.district_id || profile.districtId || null,
+    state_name: leadOwner?.state_name || existing?.state_name || profile.stateName || null,
+    district_name: leadOwner?.district_name || existing?.district_name || profile.districtName || null,
+    sector_id: leadOwner?.sector_id || existing?.sector_id || profile.sectorId || null,
+    sector_name: leadOwner?.sector_name || existing?.sector_name || profile.sectorName || null
   };
 
   const response = existing
@@ -847,7 +898,7 @@ const createSalesOrder = async ({ purchase = null, plan = null, profile = null }
   const { data: leadOwner } = purchase?.user_id
     ? await supabase
       .from('sales_leads')
-      .select('assigned_to, target_role, zone, location')
+      .select('assigned_to, target_role, zone, location, state_id, district_id, state_name, district_name, sector_id, sector_name')
       .eq('user_id', purchase.user_id)
       .maybeSingle()
     : { data: null };
@@ -867,6 +918,12 @@ const createSalesOrder = async ({ purchase = null, plan = null, profile = null }
       audience_role: purchase?.audience_role || leadOwner?.target_role || null,
       zone: leadOwner?.zone || profile?.zone || null,
       location: leadOwner?.location || profile?.location || null,
+      state_id: leadOwner?.state_id || profile?.stateId || null,
+      district_id: leadOwner?.district_id || profile?.districtId || null,
+      state_name: leadOwner?.state_name || profile?.stateName || null,
+      district_name: leadOwner?.district_name || profile?.districtName || null,
+      sector_id: leadOwner?.sector_id || profile?.sectorId || null,
+      sector_name: leadOwner?.sector_name || profile?.sectorName || null,
       items: [{
         role_plan_slug: purchase?.role_plan_slug,
         quantity: purchase?.quantity || 1

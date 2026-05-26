@@ -94,6 +94,13 @@ const listRegisteredHrCompanies = async () => {
       user_id,
       company_name,
       logo_url,
+      state_id,
+      district_id,
+      state_name,
+      district_name,
+      sector_id,
+      sector_name,
+      industry_type,
       created_at,
       updated_at,
       users!inner(id, name, email, role, status, is_hr_approved)
@@ -123,6 +130,12 @@ const listRegisteredHrCompanies = async () => {
         hrName: user.name || '',
         hrEmail: user.email || '',
         logoUrl: profile.logo_url || '',
+        stateId: profile.state_id || null,
+        districtId: profile.district_id || null,
+        stateName: profile.state_name || '',
+        districtName: profile.district_name || '',
+        sectorId: profile.sector_id || null,
+        sectorName: profile.sector_name || profile.industry_type || '',
         createdAt: profile.created_at || null,
         updatedAt: profile.updated_at || profile.created_at || null
       });
@@ -183,6 +196,9 @@ const getDataEntryJobTitle = (title = '', entryData = {}) =>
 const prepareDataEntryHrJob = async ({ title = '', entryData = {}, registeredCompany }) => {
   const jobTitle = getDataEntryJobTitle(title, entryData);
   const jobLocation = String(entryData.location || entryData.jobLocation || entryData.job_location || '').trim();
+  const stateName = String(entryData.stateName || entryData.state_name || registeredCompany?.stateName || '').trim();
+  const districtName = String(entryData.districtName || entryData.district_name || registeredCompany?.districtName || '').trim();
+  const sectorName = String(entryData.sectorName || entryData.sector_name || registeredCompany?.sectorName || '').trim();
   const description = String(entryData.description || '').trim();
   const maxPrice = readEntrySalaryValue(entryData.salaryMax ?? entryData.maxPrice ?? entryData.max_price);
   const minPrice = readEntrySalaryValue(entryData.salaryMin ?? entryData.minPrice ?? entryData.min_price);
@@ -234,6 +250,13 @@ const prepareDataEntryHrJob = async ({ title = '', entryData = {}, registeredCom
       description,
       posted_by: normalizeEmail(registeredCompany.hrEmail),
       created_by: registeredCompany.hrUserId,
+      state_id: entryData.stateId || entryData.state_id || registeredCompany.stateId || null,
+      district_id: entryData.districtId || entryData.district_id || registeredCompany.districtId || null,
+      state_name: stateName || null,
+      district_name: districtName || null,
+      sector_id: entryData.sectorId || entryData.sector_id || registeredCompany.sectorId || null,
+      sector_name: sectorName || null,
+      category: sectorName || null,
       status: JOB_STATUSES.OPEN,
       approval_status: JOB_APPROVAL_STATUSES.APPROVED,
       is_paid: false,
@@ -255,6 +278,13 @@ const prepareDataEntryHrJob = async ({ title = '', entryData = {}, registeredCom
       created_by: registeredCompany.hrUserId,
       job_location: planValidation.jobPlanFields.job_location,
       job_locations: planValidation.jobPlanFields.job_locations,
+      state_id: entryData.stateId || entryData.state_id || registeredCompany.stateId || null,
+      district_id: entryData.districtId || entryData.district_id || registeredCompany.districtId || null,
+      state_name: stateName || null,
+      district_name: districtName || null,
+      sector_id: entryData.sectorId || entryData.sector_id || registeredCompany.sectorId || null,
+      sector_name: sectorName || null,
+      category: sectorName || null,
       approval_status: JOB_APPROVAL_STATUSES.APPROVED,
       approval_note: null
     }

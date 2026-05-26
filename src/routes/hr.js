@@ -150,15 +150,25 @@ router.put('/profile', asyncHandler(async (req, res) => {
     return;
   }
 
+  const stateName = String(req.body?.stateName || '').trim();
+  const districtName = String(req.body?.districtName || '').trim();
+  const structuredLocation = [districtName, stateName].filter(Boolean).join(', ');
+
   const payload = {
     user_id: targetUserId,
     company_name: req.body?.companyName,
     company_website: req.body?.companyWebsite,
     company_size: req.body?.companySize,
-    industry_type: req.body?.industryType,
+    industry_type: req.body?.sectorName || req.body?.industryType,
     founded_year: req.body?.foundedYear,
     company_type: req.body?.companyType,
-    location: req.body?.location,
+    location: req.body?.location || structuredLocation,
+    state_id: isValidUuid(req.body?.stateId) ? req.body.stateId : null,
+    district_id: isValidUuid(req.body?.districtId) ? req.body.districtId : null,
+    state_name: stateName || null,
+    district_name: districtName || null,
+    sector_id: isValidUuid(req.body?.sectorId) ? req.body.sectorId : null,
+    sector_name: req.body?.sectorName || req.body?.industryType || null,
     about: req.body?.about,
     logo_url: req.body?.logoUrl
   };

@@ -21,6 +21,15 @@ const CHAT_PORTAL_ROLES = [
   ROLES.AUDIT
 ];
 
+const INTERNAL_OPS_ROLES = [
+  ROLES.SUPPORT,
+  ROLES.SALES,
+  ROLES.ACCOUNTS,
+  ROLES.DATAENTRY,
+  ROLES.PLATFORM,
+  ROLES.AUDIT
+];
+
 router.use(requireAuth, requireActiveUser, requireRole(...CHAT_PORTAL_ROLES));
 
 const canChatWith = (currentRole, otherRole) => {
@@ -28,16 +37,16 @@ const canChatWith = (currentRole, otherRole) => {
   if (currentRole === ROLES.ADMIN) return true;
   if (otherRole === ROLES.ADMIN) return true;
   if (currentRole === ROLES.SUPPORT) {
-    return [ROLES.STUDENT, ROLES.HR, ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT].includes(otherRole);
+    return [ROLES.STUDENT, ROLES.HR, ROLES.ADMIN, ROLES.SUPER_ADMIN, ...INTERNAL_OPS_ROLES].includes(otherRole);
+  }
+  if (INTERNAL_OPS_ROLES.includes(currentRole)) {
+    return INTERNAL_OPS_ROLES.includes(otherRole);
   }
   if (currentRole === ROLES.HR) {
     return [ROLES.STUDENT, ROLES.SUPPORT, ROLES.HR].includes(otherRole);
   }
   if (currentRole === ROLES.STUDENT) {
     return [ROLES.HR, ROLES.SUPPORT, ROLES.STUDENT].includes(otherRole);
-  }
-  if ([ROLES.SALES, ROLES.ACCOUNTS, ROLES.DATAENTRY, ROLES.PLATFORM, ROLES.AUDIT].includes(currentRole)) {
-    return [currentRole, ROLES.SUPPORT, ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(otherRole);
   }
   return false;
 };
