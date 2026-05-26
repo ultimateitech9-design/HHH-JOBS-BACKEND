@@ -3,7 +3,7 @@ const { ROLES } = require('../constants');
 const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
-const { asyncHandler } = require('../utils/helpers');
+const { asyncHandler, isValidUuid } = require('../utils/helpers');
 const {
   syncCommercialLeadsFromUsers,
   syncCommercialCustomersFromSubscriptions
@@ -453,6 +453,368 @@ const indexLatestByUserId = (rows = []) => rows.reduce((acc, row) => {
   return acc;
 }, {});
 
+const indexLatestByField = (rows = [], field) => rows.reduce((acc, row) => {
+  const key = row?.[field];
+  if (!key || acc[key]) return acc;
+  acc[key] = row;
+  return acc;
+}, {});
+
+const normalizeCommercialAudienceRole = (value = '') => {
+  const role = String(value || '').trim().toLowerCase();
+  return COMMERCIAL_AUDIENCE_ROLES.includes(role) ? role : '';
+};
+
+const applyCommercialUserFilters = (query, { targetRole = '', search = '' } = {}) => {
+  const normalizedRole = normalizeCommercialAudienceRole(targetRole);
+  let scopedQuery = normalizedRole
+    ? query.eq('role', normalizedRole)
+    : query.in('role', COMMERCIAL_AUDIENCE_ROLES);
+
+  const normalizedSearch = String(search || '').trim();
+  if (normalizedSearch) {
+    const safeSearch = normalizedSearch.replace(/[,().]/g, '');
+    scopedQuery = scopedQuery.or(`name.ilike.%${safeSearch}%,email.ilike.%${safeSearch}%,mobile.ilike.%${safeSearch}%`);
+  }
+
+  return scopedQuery;
+};
+
+const canAccessLeadState = (lead = {}, user = {}) => (
+  isSalesManager(user) ||
+  !lead.assigned_to ||
+  lead.assigned_to === user.id
+);
+
+const fetchLeadStatesByUserIds = async (userIds = []) => {
+  const ids = uniqueValues(userIds);
+  if (ids.length === 0) return {};
+
+  const { data, error } = await supabase
+    .from('sales_leads')
+    .select('*')
+    .in('user_id', ids)
+    .order('updated_at', { ascending: false });
+  if (error) throw error;
+
+  return indexLatestByUserId(data || []);
+};
+
+const fetchCommercialPlanStateByUserIds = async (userIds = []) => {
+  const ids = uniqueValues(userIds);
+  if (ids.length === 0) {
+    return {
+      subscriptionsByUserId: {},
+      purchasesByUserId: {},
+      jobPurchasesByUserId: {}
+    };
+  }
+
+  const [subscriptionResult, purchaseResult, jobPurchaseResult] = await Promise.all([
+    supabase
+      .from('role_plan_subscriptions')
+      .select('id, user_id, audience_role, role_plan_slug, status, amount, created_at, activated_at, sales_owner_id')
+      .in('user_id', ids)
+      .in('status', ACTIVE_CUSTOMER_STATUSES)
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('role_plan_purchases')
+      .select('id, user_id, audience_role, role_plan_slug, total_amount, status, created_at, paid_at, sales_owner_id')
+      .in('user_id', ids)
+      .eq('status', 'paid')
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('job_plan_purchases')
+      .select('id, hr_id, plan_slug, total_amount, status, created_at, paid_at')
+      .in('hr_id', ids)
+      .eq('status', 'paid')
+      .order('created_at', { ascending: false })
+  ]);
+  if (subscriptionResult.error) throw subscriptionResult.error;
+  if (purchaseResult.error) throw purchaseResult.error;
+  if (jobPurchaseResult.error) throw jobPurchaseResult.error;
+
+  return {
+    subscriptionsByUserId: indexLatestByUserId(subscriptionResult.data || []),
+    purchasesByUserId: indexLatestByUserId(purchaseResult.data || []),
+    jobPurchasesByUserId: indexLatestByField(jobPurchaseResult.data || [], 'hr_id')
+  };
+};
+
+const fetchPlanTakenUserIds = async ({ userIds = [], targetRole = '' } = {}) => {
+  const ids = uniqueValues(userIds);
+  const normalizedRole = normalizeCommercialAudienceRole(targetRole);
+
+  const withCommercialPlanFilters = (query) => {
+    let scopedQuery = normalizedRole
+      ? query.eq('audience_role', normalizedRole)
+      : query.in('audience_role', COMMERCIAL_AUDIENCE_ROLES);
+    if (ids.length > 0) scopedQuery = scopedQuery.in('user_id', ids);
+    return scopedQuery.limit(100000);
+  };
+
+  const roleSubscriptionQuery = withCommercialPlanFilters(
+    supabase
+      .from('role_plan_subscriptions')
+      .select('user_id')
+      .in('status', ACTIVE_CUSTOMER_STATUSES)
+  );
+  const rolePurchaseQuery = withCommercialPlanFilters(
+    supabase
+      .from('role_plan_purchases')
+      .select('user_id')
+      .eq('status', 'paid')
+  );
+
+  let jobPurchaseQuery = supabase
+    .from('job_plan_purchases')
+    .select('hr_id')
+    .eq('status', 'paid')
+    .limit(100000);
+  if (ids.length > 0) jobPurchaseQuery = jobPurchaseQuery.in('hr_id', ids);
+
+  const includeHrJobPurchases = !normalizedRole || normalizedRole === ROLES.HR;
+  const [subscriptionResult, purchaseResult, jobPurchaseResult] = await Promise.all([
+    roleSubscriptionQuery,
+    rolePurchaseQuery,
+    includeHrJobPurchases ? jobPurchaseQuery : Promise.resolve({ data: [], error: null })
+  ]);
+  if (subscriptionResult.error) throw subscriptionResult.error;
+  if (purchaseResult.error) throw purchaseResult.error;
+  if (jobPurchaseResult.error) throw jobPurchaseResult.error;
+
+  return new Set([
+    ...(subscriptionResult.data || []).map((row) => row.user_id),
+    ...(purchaseResult.data || []).map((row) => row.user_id),
+    ...(jobPurchaseResult.data || []).map((row) => row.hr_id)
+  ].filter(Boolean));
+};
+
+const mapPlatformUserToLead = (account = {}, leadState = null, planState = {}) => {
+  const subscription = planState.subscriptionsByUserId?.[account.id] || null;
+  const rolePurchase = planState.purchasesByUserId?.[account.id] || null;
+  const jobPurchase = planState.jobPurchasesByUserId?.[account.id] || null;
+  const paidPlan = subscription || rolePurchase || jobPurchase;
+  const accountName = account.name || account.email || account.mobile || 'Platform account';
+  const planSlug = subscription?.role_plan_slug || rolePurchase?.role_plan_slug || jobPurchase?.plan_slug || '';
+  const currentStatus = String(leadState?.status || '').toLowerCase();
+
+  return {
+    ...(leadState || {}),
+    id: leadState?.id || account.id,
+    user_id: account.id,
+    company_name: leadState?.company_name || accountName,
+    contact_name: leadState?.contact_name || accountName,
+    contact_email: leadState?.contact_email || account.email || '',
+    contact_phone: leadState?.contact_phone || account.mobile || '',
+    status: currentStatus || (paidPlan ? 'converted' : 'new'),
+    source: leadState?.source || `platform_${account.role || 'account'}`,
+    assigned_to: leadState?.assigned_to || null,
+    assigned_name: leadState?.assigned_name || null,
+    assigned_at: leadState?.assigned_at || null,
+    assignment_source: leadState?.assignment_source || null,
+    value: Number(leadState?.value || 0),
+    created_at: leadState?.created_at || account.created_at || null,
+    updated_at: leadState?.updated_at || null,
+    target_role: leadState?.target_role || account.role || '',
+    onboarding_status: leadState?.onboarding_status || (paidPlan ? 'active' : 'prospect'),
+    next_followup_at: leadState?.next_followup_at || null,
+    last_followup_at: leadState?.last_followup_at || null,
+    followup_notes: leadState?.followup_notes || null,
+    last_contacted_by: leadState?.last_contacted_by || null,
+    last_contacted_at: leadState?.last_contacted_at || null,
+    plan_interest_slug: leadState?.plan_interest_slug || planSlug || null,
+    coupon_code: leadState?.coupon_code || null,
+    zone: leadState?.zone || '',
+    location: leadState?.location || '',
+    source_purchase_id: leadState?.source_purchase_id || rolePurchase?.id || null,
+    source_subscription_id: leadState?.source_subscription_id || subscription?.id || null
+  };
+};
+
+const buildLiveLeadSummary = async ({ targetRole = '', search = '' } = {}) => {
+  const totalLeads = await countRows('users', (query) => applyCommercialUserFilters(query, { targetRole, search }));
+  let planTakenUserIds;
+
+  if (String(search || '').trim()) {
+    const { data: matchingUsers, error } = await applyCommercialUserFilters(
+      supabase
+        .from('users')
+        .select('id')
+        .limit(100000),
+      { targetRole, search }
+    );
+    if (error) throw error;
+    planTakenUserIds = await fetchPlanTakenUserIds({
+      userIds: (matchingUsers || []).map((row) => row.id),
+      targetRole
+    });
+  } else {
+    planTakenUserIds = await fetchPlanTakenUserIds({ targetRole });
+  }
+
+  const valueResult = await applyLeadListFilters(
+    supabase
+      .from('sales_leads')
+      .select('value')
+      .limit(10000),
+    { user: { role: ROLES.SUPER_ADMIN }, targetRole, search }
+  );
+  if (valueResult.error) throw valueResult.error;
+
+  return {
+    totalLeads,
+    planTaken: planTakenUserIds.size,
+    planPending: Math.max(0, totalLeads - planTakenUserIds.size),
+    expectedValue: (valueResult.data || []).reduce((sum, row) => sum + Number(row.value || 0), 0)
+  };
+};
+
+const leadMatchesLiveFilters = (lead = {}, { user = {}, status = '', onboardingStatus = '' } = {}) => {
+  if (!canAccessLeadState(lead, user)) return false;
+  if (['new', 'contacted', 'qualified', 'proposal', 'converted', 'lost'].includes(status) && String(lead.status || '').toLowerCase() !== status) return false;
+  if (['prospect', 'negotiation', 'active', 'onboarding', 'churn_risk', 'closed'].includes(onboardingStatus) && String(lead.onboarding_status || '').toLowerCase() !== onboardingStatus) return false;
+  return true;
+};
+
+const fetchLiveSalesLeads = async ({
+  user = {},
+  status = '',
+  targetRole = '',
+  onboardingStatus = '',
+  search = '',
+  page = 1,
+  limit = 100
+} = {}) => {
+  const safePage = Math.max(1, parseInt(page || '1', 10));
+  const safeLimit = Math.min(100, Math.max(1, parseInt(limit || '100', 10)));
+  const offset = (safePage - 1) * safeLimit;
+
+  let query = supabase
+    .from('users')
+    .select('id, name, email, mobile, role, status, created_at', { count: 'exact' })
+    .order('created_at', { ascending: false })
+    .range(offset, offset + safeLimit - 1);
+  query = applyCommercialUserFilters(query, { targetRole, search });
+
+  const { data: accounts, error, count } = await query;
+  if (error) throw error;
+
+  const userIds = (accounts || []).map((row) => row.id);
+  const [leadStatesByUserId, planState, summary] = await Promise.all([
+    fetchLeadStatesByUserIds(userIds),
+    fetchCommercialPlanStateByUserIds(userIds),
+    buildLiveLeadSummary({ targetRole, search })
+  ]);
+
+  const leads = (accounts || [])
+    .map((account) => mapPlatformUserToLead(account, leadStatesByUserId[account.id] || null, planState))
+    .filter((lead) => leadMatchesLiveFilters(lead, { user, status, onboardingStatus }))
+    .map(formatLeadRow);
+
+  return {
+    leads,
+    total: count || 0,
+    page: safePage,
+    limit: safeLimit,
+    summary
+  };
+};
+
+const fetchPlatformAccountLeadById = async ({ id, user = {} } = {}) => {
+  if (!isValidUuid(id)) return null;
+
+  const { data: account, error } = await supabase
+    .from('users')
+    .select('id, name, email, mobile, role, status, created_at')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  if (!account || !COMMERCIAL_AUDIENCE_ROLES.includes(account.role)) return null;
+
+  const [leadStatesByUserId, planState] = await Promise.all([
+    fetchLeadStatesByUserIds([account.id]),
+    fetchCommercialPlanStateByUserIds([account.id])
+  ]);
+  const lead = mapPlatformUserToLead(account, leadStatesByUserId[account.id] || null, planState);
+  return canAccessLeadState(lead, user) ? formatLeadRow(lead) : null;
+};
+
+const fetchSalesLeadStateByIdOrUserId = async ({ id, user = {} } = {}) => {
+  if (!isValidUuid(id)) return null;
+
+  const byLeadIdResult = await supabase
+    .from('sales_leads')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (byLeadIdResult.error) throw byLeadIdResult.error;
+  if (byLeadIdResult.data) {
+    return canAccessLeadState(byLeadIdResult.data, user) ? byLeadIdResult.data : null;
+  }
+
+  const byUserIdResult = await supabase
+    .from('sales_leads')
+    .select('*')
+    .eq('user_id', id)
+    .maybeSingle();
+  if (byUserIdResult.error) throw byUserIdResult.error;
+  if (!byUserIdResult.data) return null;
+
+  return canAccessLeadState(byUserIdResult.data, user) ? byUserIdResult.data : null;
+};
+
+const createLeadStateForPlatformAccount = async ({ userId, user = {} } = {}) => {
+  if (!isValidUuid(userId)) return null;
+
+  const { data: account, error: accountError } = await supabase
+    .from('users')
+    .select('id, name, email, mobile, role, status, created_at')
+    .eq('id', userId)
+    .maybeSingle();
+  if (accountError) throw accountError;
+  if (!account || !COMMERCIAL_AUDIENCE_ROLES.includes(account.role)) return null;
+
+  const accountName = account.name || account.email || account.mobile || 'Platform account';
+  const payload = {
+    user_id: account.id,
+    company_name: accountName,
+    contact_name: accountName,
+    contact_email: account.email || null,
+    contact_phone: account.mobile || null,
+    target_role: account.role,
+    status: 'new',
+    onboarding_status: 'prospect',
+    source: `platform_${account.role || 'account'}`,
+    assigned_to: isSalesManager(user) ? null : user.id,
+    assigned_name: isSalesManager(user) ? null : (user.name || user.email || 'Sales'),
+    assigned_at: isSalesManager(user) ? null : new Date().toISOString(),
+    assignment_source: isSalesManager(user) ? null : 'sales_call'
+  };
+
+  const { data, error } = await supabase
+    .from('sales_leads')
+    .insert(payload)
+    .select('*')
+    .maybeSingle();
+  if (!error) return data;
+  if (error.code !== '23505') throw error;
+
+  const { data: existingLead, error: existingError } = await supabase
+    .from('sales_leads')
+    .select('*')
+    .eq('user_id', account.id)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (existingLead && !canAccessLeadState(existingLead, user)) {
+    const conflict = new Error('Lead is already owned by another sales person.');
+    conflict.statusCode = 409;
+    throw conflict;
+  }
+
+  return existingLead || null;
+};
+
 const fetchCustomerAccountSummary = async () => {
   const [totalAccounts, activeAccounts, purchaseRows] = await Promise.all([
     countRows('users', (q) => q.in('role', COMMERCIAL_AUDIENCE_ROLES)),
@@ -581,18 +943,11 @@ router.get('/overview', asyncHandler(async (req, res) => {
     return;
   }
 
-  const scope = (q, ownerColumn = 'assigned_to') => (isSalesManager(req.user) ? q : q.eq(ownerColumn, req.user.id));
   const [
-    totalLeads,
-    newLeads,
-    openLeads,
-    convertedLeads,
+    leadSummary,
     salesAgents
   ] = await Promise.all([
-    countRows('sales_leads', (q) => scope(q)),
-    countRows('sales_leads', (q) => scope(q).eq('status', 'new')),
-    countRows('sales_leads', (q) => scope(q).in('status', ACTIVE_LEAD_STATUSES)),
-    countRows('sales_leads', (q) => scope(q).eq('status', 'converted')),
+    buildLiveLeadSummary(),
     countRows('users', (q) => q.eq('role', ROLES.SALES))
   ]);
 
@@ -615,10 +970,10 @@ router.get('/overview', asyncHandler(async (req, res) => {
   res.send({
     status: true,
     overview: formatSalesOverview({
-      totalLeads,
-      newLeads,
-      openLeads,
-      convertedLeads,
+      totalLeads: leadSummary.totalLeads,
+      newLeads: leadSummary.planPending,
+      openLeads: leadSummary.planPending,
+      convertedLeads: leadSummary.planTaken,
       totalOrders: productionOrders.length,
       paidPayments: paidRows.length,
       pendingPayments: pendingRows.length,
@@ -860,36 +1215,45 @@ router.get('/leads', asyncHandler(async (req, res) => {
   const search = String(req.query.search || '').trim();
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
-  const offset = (page - 1) * limit;
 
-  let query = supabase
-    .from('sales_leads')
-    .select('id, company_name, contact_name, contact_email, contact_phone, status, source, assigned_to, assigned_name, assigned_at, assignment_source, value, created_at, target_role, onboarding_status, next_followup_at, last_followup_at, followup_notes, last_contacted_at, plan_interest_slug, coupon_code, zone, location, source_purchase_id, source_subscription_id', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
-  query = applyLeadListFilters(query, { user: req.user, status, targetRole, onboardingStatus, search });
+  try {
+    const result = await fetchLiveSalesLeads({
+      user: req.user,
+      status,
+      targetRole,
+      onboardingStatus,
+      search,
+      page,
+      limit
+    });
 
-  const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
-
-  const total = count || 0;
-  const summary = await buildLeadSummary({ user: req.user, status, targetRole, onboardingStatus, search }, total);
-
-  res.send({ status: true, leads: (data || []).map(formatLeadRow), total, page, limit, summary });
+    res.send({ status: true, ...result });
+  } catch (error) {
+    sendSupabaseError(res, error);
+  }
 }));
 
 router.get('/leads/:id', asyncHandler(async (req, res) => {
-  let query = supabase
-    .from('sales_leads')
-    .select('*')
-    .eq('id', req.params.id);
-  query = applySalesOwnershipScope(query, req.user);
-  const { data, error } = await query.maybeSingle();
+  try {
+    const leadState = await fetchSalesLeadStateByIdOrUserId({ id: req.params.id, user: req.user });
+    if (leadState?.user_id) {
+      const mergedLead = await fetchPlatformAccountLeadById({ id: leadState.user_id, user: req.user });
+      if (mergedLead) {
+        res.send({ status: true, lead: mergedLead });
+        return;
+      }
+    }
+    if (leadState) {
+      res.send({ status: true, lead: formatLeadRow(leadState) });
+      return;
+    }
 
-  if (error) { sendSupabaseError(res, error); return; }
-  if (!data) return res.status(404).send({ status: false, message: 'Lead not found' });
-
-  res.send({ status: true, lead: formatLeadRow(data) });
+    const platformLead = await fetchPlatformAccountLeadById({ id: req.params.id, user: req.user });
+    if (!platformLead) return res.status(404).send({ status: false, message: 'Lead not found' });
+    res.send({ status: true, lead: platformLead });
+  } catch (error) {
+    sendSupabaseError(res, error);
+  }
 }));
 
 router.post('/leads', asyncHandler(async (req, res) => {
@@ -970,19 +1334,26 @@ router.patch('/leads/:id', asyncHandler(async (req, res) => {
 }));
 
 router.post('/leads/:id/call', asyncHandler(async (req, res) => {
-  let existingQuery = supabase
-    .from('sales_leads')
-    .select('*')
-    .eq('id', req.params.id);
-  existingQuery = applySalesOwnershipScope(existingQuery, req.user);
-  const existingResult = await existingQuery.maybeSingle();
+  let existingLead;
+  try {
+    existingLead = await fetchSalesLeadStateByIdOrUserId({ id: req.params.id, user: req.user });
+    if (!existingLead) {
+      existingLead = await createLeadStateForPlatformAccount({ userId: req.params.id, user: req.user });
+    }
+  } catch (error) {
+    if (error.statusCode) {
+      res.status(error.statusCode).send({ status: false, message: error.message });
+      return;
+    }
+    sendSupabaseError(res, error);
+    return;
+  }
 
-  if (existingResult.error) { sendSupabaseError(res, existingResult.error); return; }
-  if (!existingResult.data) return res.status(404).send({ status: false, message: 'Lead not found' });
+  if (!existingLead) return res.status(404).send({ status: false, message: 'Lead not found' });
 
   const now = new Date().toISOString();
   const normalizedNextFollowupAt = normalizeCallFollowupTimestamp(req.body?.next_followup_at);
-  const currentStatus = String(existingResult.data.status || '').toLowerCase();
+  const currentStatus = String(existingLead.status || '').toLowerCase();
   const updates = {
     updated_at: now,
     last_followup_at: now,
@@ -990,6 +1361,13 @@ router.post('/leads/:id/call', asyncHandler(async (req, res) => {
     last_contacted_at: now,
     next_followup_at: normalizedNextFollowupAt
   };
+
+  if (!existingLead.assigned_to && !isSalesManager(req.user)) {
+    updates.assigned_to = req.user.id;
+    updates.assigned_name = req.user.name || req.user.email || 'Sales';
+    updates.assigned_at = now;
+    updates.assignment_source = 'sales_call';
+  }
 
   if (!currentStatus || currentStatus === 'new') {
     updates.status = 'contacted';
@@ -1004,7 +1382,7 @@ router.post('/leads/:id/call', asyncHandler(async (req, res) => {
   const { data, error } = await supabase
     .from('sales_leads')
     .update(updates)
-    .eq('id', existingResult.data.id)
+    .eq('id', existingLead.id)
     .select('*')
     .maybeSingle();
 
