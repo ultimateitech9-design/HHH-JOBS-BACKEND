@@ -701,7 +701,7 @@ const updateLeadForCommercialEvent = async ({
   return data || null;
 };
 
-const syncSalesCustomer = async ({ userId, role = '', plan = null, subscriptionId = null, amount = 0, salesOwnerId = null } = {}) => {
+const syncSalesCustomer = async ({ userId, role = '', plan = null, subscriptionId = null, amount = 0, salesOwnerId = null, accumulateSpend = true } = {}) => {
   if (!isValidUuid(userId)) return null;
 
   const profile = await resolveCommercialProfile({ userId, role });
@@ -713,7 +713,9 @@ const syncSalesCustomer = async ({ userId, role = '', plan = null, subscriptionI
 
   if (existingError) throw existingError;
 
-  const totalSpent = roundMoney(Number(existing?.total_spent || 0) + Number(amount || 0));
+  const totalSpent = accumulateSpend
+    ? roundMoney(Number(existing?.total_spent || 0) + Number(amount || 0))
+    : roundMoney(Math.max(Number(existing?.total_spent || 0), Number(amount || 0)));
   const { data: leadOwner } = await supabase
     .from('sales_leads')
     .select('assigned_to, zone, location')
@@ -2521,6 +2523,101 @@ const listRolePlanPurchases = async ({ userId = null, status = '', audienceRole 
   return data || [];
 };
 
+const buildSalesAssignmentState = async () => {
+  const { data: agents, error: agentError } = await supabase
+    .from('users')
+    .select('id, name, email')
+    .eq('role', ROLES.SALES)
+    .order('created_at', { ascending: true });
+
+  if (agentError) throw agentError;
+  const salesAgents = (agents || []).filter((agent) => agent.id);
+  if (salesAgents.length === 0) return { agents: [], loads: new Map() };
+
+  const { data: leads, error: leadError } = await supabase
+    .from('sales_leads')
+    .select('assigned_to, status')
+    .in('assigned_to', salesAgents.map((agent) => agent.id));
+
+  if (leadError) throw leadError;
+  const activeStatuses = new Set(['new', 'contacted', 'qualified', 'proposal']);
+  const loads = new Map(salesAgents.map((agent) => [agent.id, 0]));
+  (leads || []).forEach((lead) => {
+    if (lead.assigned_to && activeStatuses.has(normalizeLower(lead.status))) {
+      loads.set(lead.assigned_to, (loads.get(lead.assigned_to) || 0) + 1);
+    }
+  });
+
+  return { agents: salesAgents, loads };
+};
+
+const pickSalesOwner = (assignmentState = {}) => {
+  const agents = assignmentState.agents || [];
+  if (agents.length === 0) return null;
+
+  const owner = [...agents].sort((left, right) => {
+    const byLoad = (assignmentState.loads.get(left.id) || 0) - (assignmentState.loads.get(right.id) || 0);
+    if (byLoad !== 0) return byLoad;
+    return String(left.name || left.email || '').localeCompare(String(right.name || right.email || ''));
+  })[0];
+  assignmentState.loads.set(owner.id, (assignmentState.loads.get(owner.id) || 0) + 1);
+  return owner;
+};
+
+const assignUnassignedCommercialLeads = async ({ roles = [], assignmentState = null } = {}) => {
+  const normalizedRoles = [...new Set((Array.isArray(roles) ? roles : [roles])
+    .map((role) => normalizeAudienceRole(role))
+    .filter(Boolean))];
+  if (normalizedRoles.length === 0) return 0;
+
+  const state = assignmentState || await buildSalesAssignmentState();
+  if ((state.agents || []).length === 0) return 0;
+
+  let assignedCount = 0;
+  let hasMore = true;
+  while (hasMore) {
+    const { data: rows, error } = await supabase
+      .from('sales_leads')
+      .select('id')
+      .in('target_role', normalizedRoles)
+      .is('assigned_to', null)
+      .in('status', ['new', 'contacted', 'qualified', 'proposal'])
+      .limit(500);
+
+    if (error) throw error;
+    const leads = rows || [];
+    hasMore = leads.length > 0;
+    if (!hasMore) break;
+
+    const idsByOwner = leads.reduce((acc, lead) => {
+      const owner = pickSalesOwner(state);
+      if (!owner?.id) return acc;
+      const ownerKey = `${owner.id}::${owner.name || owner.email || 'Sales'}`;
+      acc[ownerKey] = acc[ownerKey] || [];
+      acc[ownerKey].push(lead.id);
+      return acc;
+    }, {});
+
+    for (const [ownerKey, ids] of Object.entries(idsByOwner)) {
+      const [ownerId, ownerName] = ownerKey.split('::');
+      const { error: updateError } = await supabase
+        .from('sales_leads')
+        .update({
+          assigned_to: ownerId,
+          assigned_name: ownerName,
+          assigned_at: new Date().toISOString(),
+          assignment_source: 'bulk_unassigned_repair'
+        })
+        .in('id', ids);
+
+      if (updateError) throw updateError;
+      assignedCount += ids.length;
+    }
+  }
+
+  return assignedCount;
+};
+
 const syncCommercialLeadsFromUsers = async ({ roles = [ROLES.HR, ROLES.CAMPUS_CONNECT] } = {}) => {
   const normalizedRoles = [...new Set((Array.isArray(roles) ? roles : [roles])
     .map((role) => normalizeAudienceRole(role))
@@ -2538,19 +2635,79 @@ const syncCommercialLeadsFromUsers = async ({ roles = [ROLES.HR, ROLES.CAMPUS_CO
 
   const eligibleUsers = (users || []).filter((user) => String(user?.status || '').toLowerCase() !== 'banned');
   const synced = [];
-  const chunkSize = 10;
+  const chunkSize = 500;
+  const assignmentState = await buildSalesAssignmentState();
 
   for (let index = 0; index < eligibleUsers.length; index += chunkSize) {
     const chunk = eligibleUsers.slice(index, index + chunkSize);
-    const chunkResults = await Promise.all(chunk.map((user) => upsertCommercialLeadForUser({
-      userId: user.id,
-      role: user.role,
-      name: user.name,
-      email: user.email,
-      mobile: user.mobile
-    })));
+    const payload = chunk.map((user) => {
+      const owner = pickSalesOwner(assignmentState);
+      const normalizedRole = normalizeAudienceRole(user.role);
+      const label = user.name || user.email || 'Account';
+      return {
+        user_id: user.id,
+        target_role: normalizedRole,
+        company_name: label,
+        contact_name: label,
+        contact_email: normalizeText(user.email).toLowerCase() || null,
+        contact_phone: normalizeText(user.mobile) || null,
+        source: `self_signup_${normalizedRole}`,
+        status: 'new',
+        onboarding_status: 'prospect',
+        assigned_to: owner?.id || null,
+        assigned_name: owner?.name || owner?.email || null,
+        assigned_at: new Date().toISOString(),
+        assignment_source: owner ? 'bulk_least_loaded_auto' : 'bulk_unassigned'
+      };
+    });
+
+    const { data: chunkResults, error: chunkError } = await supabase
+      .from('sales_leads')
+      .upsert(payload, { onConflict: 'user_id', ignoreDuplicates: true })
+      .select('*');
+
+    if (chunkError) throw chunkError;
 
     synced.push(...chunkResults.filter(Boolean));
+  }
+
+  synced.assignedExistingCount = await assignUnassignedCommercialLeads({ roles: normalizedRoles, assignmentState });
+
+  return synced;
+};
+
+const syncCommercialCustomersFromSubscriptions = async ({ roles = [ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT] } = {}) => {
+  const normalizedRoles = [...new Set((Array.isArray(roles) ? roles : [roles])
+    .map((role) => normalizeAudienceRole(role))
+    .filter(Boolean))];
+  if (normalizedRoles.length === 0) return [];
+
+  const { data: subscriptions, error } = await supabase
+    .from('role_plan_subscriptions')
+    .select('id, user_id, audience_role, role_plan_slug, status, amount, currency')
+    .in('audience_role', normalizedRoles)
+    .in('status', ['active', 'trialing']);
+
+  if (error) throw error;
+
+  const synced = [];
+  for (const subscription of subscriptions || []) {
+    if (!isValidUuid(subscription.user_id)) continue;
+    const lead = await upsertCommercialLeadForUser({
+      userId: subscription.user_id,
+      role: subscription.audience_role
+    });
+
+    const customer = await syncSalesCustomer({
+      userId: subscription.user_id,
+      role: subscription.audience_role,
+      plan: { name: subscription.role_plan_slug || 'Role Plan' },
+      subscriptionId: subscription.id,
+      amount: Number(subscription.amount || 0),
+      salesOwnerId: lead?.assigned_to || null,
+      accumulateSpend: false
+    });
+    if (customer) synced.push(customer);
   }
 
   return synced;
@@ -2614,5 +2771,6 @@ module.exports = {
   getCurrentRolePlanSubscription,
   upsertCommercialLeadForUser,
   updateLeadForCommercialEvent,
-  syncCommercialLeadsFromUsers
+  syncCommercialLeadsFromUsers,
+  syncCommercialCustomersFromSubscriptions
 };

@@ -4,7 +4,10 @@ const { supabase, countRows, sendSupabaseError } = require('../supabase');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
-const { syncCommercialLeadsFromUsers } = require('../services/commercial');
+const {
+  syncCommercialLeadsFromUsers,
+  syncCommercialCustomersFromSubscriptions
+} = require('../services/commercial');
 
 const router = express.Router();
 
@@ -576,19 +579,25 @@ router.patch('/leads/:id', asyncHandler(async (req, res) => {
 }));
 
 router.post('/leads/sync-commercial', asyncHandler(async (req, res) => {
-  if (![ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user?.role)) {
-    res.status(403).send({ status: false, message: 'Only admin can sync commercial leads' });
+  if (![ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SALES].includes(req.user?.role)) {
+    res.status(403).send({ status: false, message: 'Only sales or admin can sync commercial leads' });
     return;
   }
 
   try {
-    const synced = await syncCommercialLeadsFromUsers({
-      roles: Array.isArray(req.body?.roles) && req.body.roles.length > 0
-        ? req.body.roles
-        : [ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT]
-    });
+    const roles = Array.isArray(req.body?.roles) && req.body.roles.length > 0
+      ? req.body.roles
+      : [ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT];
+    const syncedLeads = await syncCommercialLeadsFromUsers({ roles });
+    const syncedCustomers = await syncCommercialCustomersFromSubscriptions({ roles });
 
-    res.send({ status: true, syncedCount: synced.length, leads: synced.map(formatLeadRow) });
+    res.send({
+      status: true,
+      syncedCount: syncedLeads.length,
+      assignedExistingCount: syncedLeads.assignedExistingCount || 0,
+      customerSyncedCount: syncedCustomers.length,
+      leads: syncedLeads.map(formatLeadRow)
+    });
   } catch (error) {
     sendSupabaseError(res, error);
   }
