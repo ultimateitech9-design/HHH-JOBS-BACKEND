@@ -303,13 +303,32 @@ set state_id = coalesce(c.state_id, l.state_id),
 from public.sales_leads l
 where c.user_id = l.user_id;
 
+with order_geo as (
+  select distinct on (o.id)
+         o.id as order_id,
+         l.state_id,
+         l.district_id,
+         l.state_name,
+         l.district_name
+  from public.sales_orders o
+  join public.sales_leads l on (
+    (o.customer_id is not null and l.user_id = o.customer_id)
+    or (
+      nullif(trim(coalesce(o.customer_email, '')), '') is not null
+      and lower(trim(coalesce(l.contact_email, ''))) = lower(trim(o.customer_email))
+    )
+  )
+  order by o.id,
+           case when o.customer_id is not null and l.user_id = o.customer_id then 0 else 1 end,
+           l.updated_at desc nulls last
+)
 update public.sales_orders o
-set state_id = coalesce(o.state_id, l.state_id),
-    district_id = coalesce(o.district_id, l.district_id),
-    state_name = coalesce(nullif(trim(o.state_name), ''), l.state_name),
-    district_name = coalesce(nullif(trim(o.district_name), ''), l.district_name)
-from public.sales_leads l
-where o.user_id = l.user_id;
+set state_id = coalesce(o.state_id, g.state_id),
+    district_id = coalesce(o.district_id, g.district_id),
+    state_name = coalesce(nullif(trim(o.state_name), ''), g.state_name),
+    district_name = coalesce(nullif(trim(o.district_name), ''), g.district_name)
+from order_geo g
+where o.id = g.order_id;
 
 -- Ask real users to complete missing geography. This is idempotent and avoids
 -- spamming unread reminders for the same role/profile field.
