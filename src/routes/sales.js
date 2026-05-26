@@ -29,7 +29,21 @@ const formatSalesOverview = ({
   salesAgents = 0,
   refunds = 0,
   monthlySales = [],
-  revenueTrend = []
+  revenueTrend = [],
+  conversionRate = 0,
+  managedLeads = 0,
+  contactedLeads = 0,
+  untouchedLeads = 0,
+  followupDueToday = 0,
+  overdueFollowups = 0,
+  upcomingFollowups = 0,
+  pendingPaymentValue = 0,
+  refundValue = 0,
+  averageOrderValue = 0,
+  workQueue = [],
+  audienceBreakdown = [],
+  paymentSummary = {},
+  recentActivity = []
 } = {}) => ({
   totalLeads,
   newLeads,
@@ -45,6 +59,20 @@ const formatSalesOverview = ({
   totalRevenue,
   salesAgents,
   refunds,
+  conversionRate,
+  managedLeads,
+  contactedLeads,
+  untouchedLeads,
+  followupDueToday,
+  overdueFollowups,
+  upcomingFollowups,
+  pendingPaymentValue,
+  refundValue,
+  averageOrderValue,
+  workQueue,
+  audienceBreakdown,
+  paymentSummary,
+  recentActivity,
   stats: {
     totalRevenue,
     monthlyRevenue: monthRevenue,
@@ -59,7 +87,17 @@ const formatSalesOverview = ({
     totalLeads,
     totalCustomers,
     salesAgents,
-    refunds
+    refunds,
+    conversionRate,
+    managedLeads,
+    contactedLeads,
+    untouchedLeads,
+    followupDueToday,
+    overdueFollowups,
+    upcomingFollowups,
+    pendingPaymentValue,
+    refundValue,
+    averageOrderValue
   },
   monthlySales,
   revenueTrend
@@ -670,6 +708,162 @@ const buildLiveLeadSummary = async ({ targetRole = '', search = '' } = {}) => {
   };
 };
 
+const formatAudienceRoleLabel = (role = '') => {
+  if (role === ROLES.HR) return 'HR';
+  if (role === ROLES.CAMPUS_CONNECT) return 'Campus';
+  if (role === ROLES.STUDENT) return 'Student';
+  return String(role || 'Account').replace(/_/g, ' ');
+};
+
+const buildCommercialAudienceBreakdown = async () => Promise.all(COMMERCIAL_AUDIENCE_ROLES.map(async (role) => {
+  const [total, planTakenUserIds] = await Promise.all([
+    countRows('users', (query) => query.eq('role', role)),
+    fetchPlanTakenUserIds({ targetRole: role })
+  ]);
+  const planTaken = planTakenUserIds.size;
+  const planPending = Math.max(0, total - planTaken);
+  return {
+    role,
+    label: formatAudienceRoleLabel(role),
+    total,
+    planTaken,
+    planPending,
+    conversionRate: total > 0 ? Math.round((planTaken / total) * 100) : 0
+  };
+}));
+
+const buildSalesFollowupSummary = async (user = {}) => {
+  let query = supabase
+    .from('sales_leads')
+    .select('id, user_id, company_name, contact_name, contact_phone, contact_email, status, assigned_to, assigned_name, target_role, next_followup_at, last_followup_at, last_contacted_at, updated_at, created_at')
+    .order('updated_at', { ascending: false })
+    .limit(100000);
+  query = applySalesOwnershipScope(query, user);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const now = new Date();
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const tomorrowStart = new Date(todayStart);
+  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+
+  const rows = data || [];
+  const activeRows = rows.filter((lead) => !CLOSED_LEAD_STATUSES.includes(String(lead.status || '').toLowerCase()));
+  const contactedRows = rows.filter((lead) => lead.last_contacted_at || String(lead.status || '').toLowerCase() === 'contacted');
+  const rowsWithFollowup = activeRows.filter((lead) => lead.next_followup_at);
+  const followupDueTodayRows = rowsWithFollowup.filter((lead) => {
+    const date = new Date(lead.next_followup_at);
+    return date >= todayStart && date < tomorrowStart;
+  });
+  const overdueRows = rowsWithFollowup.filter((lead) => new Date(lead.next_followup_at) < now);
+  const upcomingRows = rowsWithFollowup.filter((lead) => new Date(lead.next_followup_at) >= tomorrowStart);
+
+  const recentCalls = contactedRows
+    .filter((lead) => lead.last_contacted_at)
+    .sort((left, right) => new Date(right.last_contacted_at || 0) - new Date(left.last_contacted_at || 0))
+    .slice(0, 5)
+    .map((lead) => ({
+      type: 'call',
+      id: lead.id,
+      label: lead.contact_name || lead.company_name || lead.contact_phone || 'Lead',
+      detail: `${formatAudienceRoleLabel(lead.target_role)} lead called`,
+      timestamp: lead.last_contacted_at,
+      owner: lead.assigned_name || 'Unassigned'
+    }));
+
+  return {
+    managedLeads: rows.length,
+    contactedLeads: contactedRows.length,
+    followupDueToday: followupDueTodayRows.length,
+    overdueFollowups: overdueRows.length,
+    upcomingFollowups: upcomingRows.length,
+    recentCalls
+  };
+};
+
+const fetchOverviewPaymentSummary = async (user = {}) => {
+  let roleQuery = supabase
+    .from('role_plan_purchases')
+    .select('id, user_id, audience_role, role_plan_slug, total_amount, status, provider, reference_id, created_at, paid_at, sales_owner_id')
+    .not('status', 'in', '(failed,cancelled)')
+    .order('created_at', { ascending: false })
+    .limit(100000);
+  if (!isSalesManager(user)) roleQuery = roleQuery.eq('sales_owner_id', user.id);
+
+  const jobQuery = isSalesManager(user)
+    ? supabase
+      .from('job_plan_purchases')
+      .select('id, hr_id, plan_slug, total_amount, status, provider, reference_id, created_at, paid_at')
+      .not('status', 'in', '(failed,cancelled)')
+      .order('created_at', { ascending: false })
+      .limit(100000)
+    : Promise.resolve({ data: [], error: null });
+
+  const [roleResult, jobResult] = await Promise.all([roleQuery, jobQuery]);
+  if (roleResult.error) throw roleResult.error;
+  if (jobResult.error) throw jobResult.error;
+
+  const rolePayments = (roleResult.data || []).map((payment) => ({
+    id: payment.id,
+    source: 'role_plan',
+    status: String(payment.status || '').toLowerCase(),
+    amount: Number(payment.total_amount || 0),
+    created_at: payment.created_at || payment.paid_at || null,
+    customer_id: payment.user_id,
+    plan: payment.role_plan_slug || 'Role plan',
+    reference: payment.reference_id || payment.id
+  }));
+  const jobPayments = (jobResult.data || []).map((payment) => ({
+    id: payment.id,
+    source: 'job_plan',
+    status: String(payment.status || '').toLowerCase(),
+    amount: Number(payment.total_amount || 0),
+    created_at: payment.created_at || payment.paid_at || null,
+    customer_id: payment.hr_id,
+    plan: payment.plan_slug || 'Job package',
+    reference: payment.reference_id || payment.id
+  }));
+  const payments = [...rolePayments, ...jobPayments].filter((payment) => !isNonProductionSalesRecord(payment));
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const paidRows = payments.filter((payment) => payment.status === 'paid');
+  const pendingRows = payments.filter((payment) => payment.status === 'pending');
+  const refundedRows = payments.filter((payment) => payment.status === 'refunded');
+  const totalRevenue = paidRows.reduce((sum, payment) => sum + payment.amount, 0);
+  const pendingValue = pendingRows.reduce((sum, payment) => sum + payment.amount, 0);
+  const refundValue = refundedRows.reduce((sum, payment) => sum + payment.amount, 0);
+  const monthlyRevenue = paidRows
+    .filter((payment) => payment.created_at && payment.created_at >= monthStart)
+    .reduce((sum, payment) => sum + payment.amount, 0);
+  const recentPayments = payments
+    .sort((left, right) => new Date(right.created_at || 0) - new Date(left.created_at || 0))
+    .slice(0, 5)
+    .map((payment) => ({
+      type: 'payment',
+      id: payment.id,
+      label: payment.reference,
+      detail: `${payment.status} ${payment.plan}`,
+      amount: payment.amount,
+      timestamp: payment.created_at
+    }));
+
+  return {
+    totalOrders: payments.length,
+    paidPayments: paidRows.length,
+    pendingPayments: pendingRows.length,
+    refunds: refundedRows.length,
+    totalRevenue,
+    monthlyRevenue,
+    pendingValue,
+    refundValue,
+    averageOrderValue: paidRows.length > 0 ? Math.round(totalRevenue / paidRows.length) : 0,
+    recentPayments,
+    rows: payments
+  };
+};
+
 const leadMatchesLiveFilters = (lead = {}, { user = {}, status = '', onboardingStatus = '' } = {}) => {
   if (!canAccessLeadState(lead, user)) return false;
   if (['new', 'contacted', 'qualified', 'proposal', 'converted', 'lost'].includes(status) && String(lead.status || '').toLowerCase() !== status) return false;
@@ -816,18 +1010,25 @@ const createLeadStateForPlatformAccount = async ({ userId, user = {} } = {}) => 
 };
 
 const fetchCustomerAccountSummary = async () => {
-  const [totalAccounts, activeAccounts, purchaseRows] = await Promise.all([
+  const [totalAccounts, activeAccountIds, purchaseRows, jobPurchaseRows] = await Promise.all([
     countRows('users', (q) => q.in('role', COMMERCIAL_AUDIENCE_ROLES)),
-    countRows('role_plan_subscriptions', (q) => q.in('status', ACTIVE_CUSTOMER_STATUSES)),
+    fetchPlanTakenUserIds(),
     supabase
       .from('role_plan_purchases')
+      .select('total_amount, status')
+      .in('status', ['paid', 'refunded']),
+    supabase
+      .from('job_plan_purchases')
       .select('total_amount, status')
       .in('status', ['paid', 'refunded'])
   ]);
   if (purchaseRows.error) throw purchaseRows.error;
-  const lifetimeValue = (purchaseRows.data || [])
+  if (jobPurchaseRows.error) throw jobPurchaseRows.error;
+  const paidPurchases = [...(purchaseRows.data || []), ...(jobPurchaseRows.data || [])];
+  const lifetimeValue = paidPurchases
     .filter((purchase) => String(purchase.status || '').toLowerCase() === 'paid')
     .reduce((sum, purchase) => sum + Number(purchase.total_amount || 0), 0);
+  const activeAccounts = activeAccountIds.size;
   return {
     totalAccounts,
     activeAccounts,
@@ -945,27 +1146,67 @@ router.get('/overview', asyncHandler(async (req, res) => {
 
   const [
     leadSummary,
+    followupSummary,
+    audienceBreakdown,
+    paymentSummary,
     salesAgents
   ] = await Promise.all([
     buildLiveLeadSummary(),
+    buildSalesFollowupSummary(req.user),
+    buildCommercialAudienceBreakdown(),
+    fetchOverviewPaymentSummary(req.user),
     countRows('users', (q) => q.eq('role', ROLES.SALES))
   ]);
 
-  const [productionOrders, customerSummary] = await Promise.all([
-    fetchLiveSalesPayments({ user: req.user, limit: 1000 }),
-    fetchCustomerAccountSummary()
-  ]);
-
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-  const monthRevenue = productionOrders
-    .filter((r) => String(r.status || '').toLowerCase() === 'paid' && r.created_at >= monthStart)
-    .reduce((sum, r) => sum + Number(r.amount || 0), 0);
-  const paidRows = productionOrders.filter((r) => String(r.status || '').toLowerCase() === 'paid');
-  const pendingRows = productionOrders.filter((r) => String(r.status || '').toLowerCase() === 'pending');
-  const totalRevenue = paidRows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+  const untouchedLeads = Math.max(0, leadSummary.planPending - followupSummary.managedLeads);
+  const conversionRate = leadSummary.totalLeads > 0 ? Math.round((leadSummary.planTaken / leadSummary.totalLeads) * 100) : 0;
+  const workQueue = [
+    {
+      key: 'plan_pending',
+      label: 'Plan pending accounts',
+      value: leadSummary.planPending,
+      helper: 'Commercial users without an active/paid plan',
+      path: '/portal/sales/leads'
+    },
+    {
+      key: 'untouched',
+      label: 'Not contacted yet',
+      value: untouchedLeads,
+      helper: 'Pending-plan accounts without sales activity',
+      path: '/portal/sales/leads'
+    },
+    {
+      key: 'due_today',
+      label: 'Follow-ups due today',
+      value: followupSummary.followupDueToday,
+      helper: 'Calls already scheduled for today',
+      path: '/portal/sales/leads'
+    },
+    {
+      key: 'overdue',
+      label: 'Overdue follow-ups',
+      value: followupSummary.overdueFollowups,
+      helper: 'Scheduled call time has passed',
+      path: '/portal/sales/leads',
+      tone: followupSummary.overdueFollowups > 0 ? 'danger' : 'success'
+    }
+  ];
+  const recentActivity = [
+    ...followupSummary.recentCalls,
+    ...paymentSummary.recentPayments
+  ]
+    .filter((item) => item.timestamp)
+    .sort((left, right) => new Date(right.timestamp || 0) - new Date(left.timestamp || 0))
+    .slice(0, 8);
+  const paidRows = paymentSummary.rows
+    .filter((payment) => payment.status === 'paid')
+    .map((payment) => ({ amount: payment.amount, created_at: payment.created_at }));
   const monthlySales = buildMonthlySeries(paidRows);
-  const revenueTrend = buildRevenueTrend(productionOrders);
+  const revenueTrend = buildRevenueTrend(paymentSummary.rows.map((payment) => ({
+    amount: payment.amount,
+    status: payment.status,
+    created_at: payment.created_at
+  })));
 
   res.send({
     status: true,
@@ -974,16 +1215,40 @@ router.get('/overview', asyncHandler(async (req, res) => {
       newLeads: leadSummary.planPending,
       openLeads: leadSummary.planPending,
       convertedLeads: leadSummary.planTaken,
-      totalOrders: productionOrders.length,
-      paidPayments: paidRows.length,
-      pendingPayments: pendingRows.length,
-      totalCustomers: customerSummary.totalAccounts,
-      activeCustomers: customerSummary.activeAccounts,
-      planPendingCustomers: customerSummary.inactiveAccounts,
-      monthRevenue,
-      totalRevenue,
+      totalOrders: paymentSummary.totalOrders,
+      paidPayments: paymentSummary.paidPayments,
+      pendingPayments: paymentSummary.pendingPayments,
+      totalCustomers: leadSummary.totalLeads,
+      activeCustomers: leadSummary.planTaken,
+      planPendingCustomers: leadSummary.planPending,
+      monthRevenue: paymentSummary.monthlyRevenue,
+      totalRevenue: paymentSummary.totalRevenue,
       salesAgents,
-      refunds: productionOrders.filter((r) => String(r.status || '').toLowerCase() === 'refunded').length,
+      refunds: paymentSummary.refunds,
+      conversionRate,
+      managedLeads: followupSummary.managedLeads,
+      contactedLeads: followupSummary.contactedLeads,
+      untouchedLeads,
+      followupDueToday: followupSummary.followupDueToday,
+      overdueFollowups: followupSummary.overdueFollowups,
+      upcomingFollowups: followupSummary.upcomingFollowups,
+      pendingPaymentValue: paymentSummary.pendingValue,
+      refundValue: paymentSummary.refundValue,
+      averageOrderValue: paymentSummary.averageOrderValue,
+      workQueue,
+      audienceBreakdown,
+      paymentSummary: {
+        totalOrders: paymentSummary.totalOrders,
+        paidPayments: paymentSummary.paidPayments,
+        pendingPayments: paymentSummary.pendingPayments,
+        refunds: paymentSummary.refunds,
+        totalRevenue: paymentSummary.totalRevenue,
+        monthlyRevenue: paymentSummary.monthlyRevenue,
+        pendingValue: paymentSummary.pendingValue,
+        refundValue: paymentSummary.refundValue,
+        averageOrderValue: paymentSummary.averageOrderValue
+      },
+      recentActivity,
       monthlySales,
       revenueTrend
     })
