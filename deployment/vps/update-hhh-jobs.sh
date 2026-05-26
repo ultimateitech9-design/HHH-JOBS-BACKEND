@@ -39,6 +39,15 @@ ensure_env_if_missing() {
   fi
 }
 
+reset_frontend_build_artifacts() {
+  # The VPS frontend repo also runs `npm run build`, which rewrites tracked
+  # dist assets. Reset only those generated files so deploy pulls never fail.
+  if git ls-files --error-unmatch dist/index.html >/dev/null 2>&1; then
+    git restore --staged --worktree -- dist 2>/dev/null || true
+  fi
+  git clean -fd -- dist 2>/dev/null || true
+}
+
 wait_for_backend() {
   local health_url="http://127.0.0.1:${BACKEND_PORT}/health"
   local attempts="${BACKEND_HEALTH_ATTEMPTS:-30}"
@@ -88,6 +97,7 @@ check_auth_login() {
 echo "===== UPDATE FRONTEND ====="
 cd "$FRONTEND_SRC"
 git fetch origin
+reset_frontend_build_artifacts
 git pull --ff-only origin main
 upsert_env .env VITE_API_BASE_URL "$API_URL"
 upsert_env .env VITE_DEPLOYED_API_BASE_URL "$API_URL"
