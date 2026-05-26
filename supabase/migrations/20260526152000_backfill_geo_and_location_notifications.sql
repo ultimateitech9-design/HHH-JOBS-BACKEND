@@ -387,7 +387,7 @@ select u.id,
        'Complete your job location',
        'Add your state, city/district, and preferred work location so nearby jobs and alerts become accurate.',
        '/portal/student/profile',
-       jsonb_build_object('profileField', 'geography', 'role', u.role)
+       jsonb_build_object('profileField', 'geography', 'role', u.role::text)
 from public.users u
 left join public.student_profiles s on s.user_id = u.id
 where u.role in ('student', 'retired_employee')
@@ -402,7 +402,7 @@ where u.role in ('student', 'retired_employee')
     where n.user_id = u.id
       and n.type = 'profile_location_required'
       and n.meta->>'profileField' = 'geography'
-      and n.meta->>'role' = u.role
+      and n.meta->>'role' = u.role::text
       and n.is_read = false
   );
 
