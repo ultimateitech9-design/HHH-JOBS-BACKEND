@@ -180,6 +180,227 @@ const isNonProductionSalesRecord = (row = {}) => {
 
 const productionSalesRows = (rows = []) => rows.filter((row) => !isNonProductionSalesRecord(row));
 
+const VALID_PAYMENT_STATUSES = ['pending', 'paid', 'failed', 'refunded', 'cancelled'];
+const ACTIVE_CUSTOMER_STATUSES = ['active', 'trialing'];
+
+const uniqueValues = (values = []) => [...new Set(values.filter(Boolean))];
+
+const fetchUsersByIds = async (ids = []) => {
+  const userIds = uniqueValues(ids);
+  if (userIds.length === 0) return {};
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, email, mobile')
+    .in('id', userIds);
+  if (error) throw error;
+  return Object.fromEntries((data || []).map((user) => [user.id, user]));
+};
+
+const fetchRolePlansBySlugs = async (slugs = []) => {
+  const planSlugs = uniqueValues(slugs);
+  if (planSlugs.length === 0) return {};
+  const { data, error } = await supabase
+    .from('role_plans')
+    .select('slug, name, audience_role')
+    .in('slug', planSlugs);
+  if (error) throw error;
+  return Object.fromEntries((data || []).map((plan) => [plan.slug, plan]));
+};
+
+const fetchJobPlansBySlugs = async (slugs = []) => {
+  const planSlugs = uniqueValues(slugs);
+  if (planSlugs.length === 0) return {};
+  const { data, error } = await supabase
+    .from('job_posting_plans')
+    .select('slug, name')
+    .in('slug', planSlugs);
+  if (error) throw error;
+  return Object.fromEntries((data || []).map((plan) => [plan.slug, plan]));
+};
+
+const mapRolePlanPurchaseToPayment = (purchase = {}, usersById = {}, plansBySlug = {}) => {
+  const user = usersById[purchase.user_id] || {};
+  const plan = plansBySlug[purchase.role_plan_slug] || {};
+  const customerName = user.name || user.email || 'Account';
+  return {
+    id: purchase.id,
+    order_number: purchase.reference_id || `ROLE-${String(purchase.id || '').slice(0, 8).toUpperCase()}`,
+    customer_id: purchase.user_id,
+    customer_name: customerName,
+    customer_email: user.email || null,
+    plan: plan.name || purchase.role_plan_slug || 'Role Plan',
+    amount: Number(purchase.total_amount || 0),
+    status: purchase.status || 'pending',
+    payment_method: purchase.provider || 'platform',
+    created_at: purchase.created_at || purchase.paid_at || null,
+    sales_owner_id: purchase.sales_owner_id || null,
+    audience_role: purchase.audience_role || plan.audience_role || '',
+    zone: purchase.zone || '',
+    location: purchase.location || '',
+    source: 'role_plan_purchase'
+  };
+};
+
+const mapJobPlanPurchaseToPayment = (purchase = {}, usersById = {}, plansBySlug = {}) => {
+  const user = usersById[purchase.hr_id] || {};
+  const plan = plansBySlug[purchase.plan_slug] || {};
+  const customerName = user.name || user.email || 'HR Account';
+  return {
+    id: purchase.id,
+    order_number: purchase.reference_id || `JOB-${String(purchase.id || '').slice(0, 8).toUpperCase()}`,
+    customer_id: purchase.hr_id,
+    customer_name: customerName,
+    customer_email: user.email || null,
+    plan: plan.name || purchase.plan_slug || 'Job Package',
+    amount: Number(purchase.total_amount || 0),
+    status: purchase.status || 'pending',
+    payment_method: purchase.provider || 'platform',
+    created_at: purchase.created_at || purchase.paid_at || null,
+    sales_owner_id: null,
+    audience_role: ROLES.HR,
+    zone: '',
+    location: '',
+    source: 'job_plan_purchase'
+  };
+};
+
+const fetchLiveSalesPayments = async ({ user = {}, status = '', limit = 500 } = {}) => {
+  const normalizedStatus = String(status || '').toLowerCase();
+  const maxRows = Math.min(1000, Math.max(1, Number(limit || 500)));
+
+  let roleQuery = supabase
+    .from('role_plan_purchases')
+    .select('id, user_id, audience_role, role_plan_slug, total_amount, status, provider, reference_id, created_at, paid_at, sales_owner_id')
+    .order('created_at', { ascending: false })
+    .limit(maxRows);
+  if (VALID_PAYMENT_STATUSES.includes(normalizedStatus)) roleQuery = roleQuery.eq('status', normalizedStatus);
+  if (!isSalesManager(user)) roleQuery = roleQuery.eq('sales_owner_id', user.id);
+
+  let jobQuery = supabase
+    .from('job_plan_purchases')
+    .select('id, hr_id, plan_slug, total_amount, status, provider, reference_id, created_at, paid_at')
+    .order('created_at', { ascending: false })
+    .limit(maxRows);
+  if (VALID_PAYMENT_STATUSES.includes(normalizedStatus)) jobQuery = jobQuery.eq('status', normalizedStatus);
+  if (!isSalesManager(user)) jobQuery = jobQuery.limit(0);
+
+  const [roleResult, jobResult] = await Promise.all([roleQuery, jobQuery]);
+  if (roleResult.error) throw roleResult.error;
+  if (jobResult.error) throw jobResult.error;
+
+  const roleRows = roleResult.data || [];
+  const jobRows = jobResult.data || [];
+  const [roleUsersById, jobUsersById, rolePlansBySlug, jobPlansBySlug] = await Promise.all([
+    fetchUsersByIds(roleRows.map((row) => row.user_id)),
+    fetchUsersByIds(jobRows.map((row) => row.hr_id)),
+    fetchRolePlansBySlugs(roleRows.map((row) => row.role_plan_slug)),
+    fetchJobPlansBySlugs(jobRows.map((row) => row.plan_slug))
+  ]);
+
+  return [
+    ...roleRows.map((row) => mapRolePlanPurchaseToPayment(row, roleUsersById, rolePlansBySlug)),
+    ...jobRows.map((row) => mapJobPlanPurchaseToPayment(row, jobUsersById, jobPlansBySlug))
+  ]
+    .filter((row) => !isNonProductionSalesRecord(row))
+    .sort((left, right) => new Date(right.created_at || 0) - new Date(left.created_at || 0));
+};
+
+const fetchLiveSalesPaymentById = async ({ id, user = {} } = {}) => {
+  if (!id) return null;
+  const [roleResult, jobResult] = await Promise.all([
+    supabase
+      .from('role_plan_purchases')
+      .select('id, user_id, audience_role, role_plan_slug, total_amount, status, provider, reference_id, created_at, paid_at, sales_owner_id')
+      .eq('id', id)
+      .maybeSingle(),
+    isSalesManager(user)
+      ? supabase
+        .from('job_plan_purchases')
+        .select('id, hr_id, plan_slug, total_amount, status, provider, reference_id, created_at, paid_at')
+        .eq('id', id)
+        .maybeSingle()
+      : Promise.resolve({ data: null, error: null })
+  ]);
+  if (roleResult.error) throw roleResult.error;
+  if (jobResult.error) throw jobResult.error;
+
+  if (roleResult.data && (isSalesManager(user) || roleResult.data.sales_owner_id === user.id)) {
+    const [usersById, plansBySlug] = await Promise.all([
+      fetchUsersByIds([roleResult.data.user_id]),
+      fetchRolePlansBySlugs([roleResult.data.role_plan_slug])
+    ]);
+    return mapRolePlanPurchaseToPayment(roleResult.data, usersById, plansBySlug);
+  }
+  if (jobResult.data) {
+    const [usersById, plansBySlug] = await Promise.all([
+      fetchUsersByIds([jobResult.data.hr_id]),
+      fetchJobPlansBySlugs([jobResult.data.plan_slug])
+    ]);
+    return mapJobPlanPurchaseToPayment(jobResult.data, usersById, plansBySlug);
+  }
+  return null;
+};
+
+const mapSubscriptionToCustomer = (subscription = {}, usersById = {}, plansBySlug = {}) => {
+  const user = usersById[subscription.user_id] || {};
+  const plan = plansBySlug[subscription.role_plan_slug] || {};
+  const customerName = user.name || user.email || 'Account';
+  return {
+    id: subscription.id,
+    user_id: subscription.user_id,
+    company_name: customerName,
+    contact_name: customerName,
+    email: user.email || '',
+    phone: user.mobile || '',
+    plan: plan.name || subscription.role_plan_slug || 'Role Plan',
+    status: subscription.status || 'active',
+    total_spent: Number(subscription.amount || 0),
+    created_at: subscription.created_at || subscription.activated_at || null,
+    audience_role: subscription.audience_role || plan.audience_role || '',
+    sales_owner_id: subscription.sales_owner_id || null,
+    subscription_id: subscription.id,
+    zone: '',
+    location: ''
+  };
+};
+
+const fetchLiveSalesCustomers = async ({ user = {}, limit = 500 } = {}) => {
+  let query = supabase
+    .from('role_plan_subscriptions')
+    .select('id, user_id, audience_role, role_plan_slug, status, amount, created_at, activated_at, sales_owner_id')
+    .in('status', ACTIVE_CUSTOMER_STATUSES)
+    .order('created_at', { ascending: false })
+    .limit(Math.min(1000, Math.max(1, Number(limit || 500))));
+  if (!isSalesManager(user)) query = query.eq('sales_owner_id', user.id);
+
+  const { data, error } = await query;
+  if (error) throw error;
+  const rows = data || [];
+  const [usersById, plansBySlug] = await Promise.all([
+    fetchUsersByIds(rows.map((row) => row.user_id)),
+    fetchRolePlansBySlugs(rows.map((row) => row.role_plan_slug))
+  ]);
+  return rows.map((row) => mapSubscriptionToCustomer(row, usersById, plansBySlug));
+};
+
+const fetchLiveSalesCustomerById = async ({ id, user = {} } = {}) => {
+  if (!id) return null;
+  let query = supabase
+    .from('role_plan_subscriptions')
+    .select('id, user_id, audience_role, role_plan_slug, status, amount, created_at, activated_at, sales_owner_id')
+    .eq('id', id)
+    .maybeSingle();
+  if (!isSalesManager(user)) query = query.eq('sales_owner_id', user.id);
+  const { data, error } = await query;
+  if (error) throw error;
+  if (!data) return null;
+  const [usersById, plansBySlug] = await Promise.all([
+    fetchUsersByIds([data.user_id]),
+    fetchRolePlansBySlugs([data.role_plan_slug])
+  ]);
+  return mapSubscriptionToCustomer(data, usersById, plansBySlug);
+};
+
 // =============================================
 // Overview
 // =============================================
@@ -197,25 +418,18 @@ router.get('/overview', asyncHandler(async (req, res) => {
     totalLeads,
     newLeads,
     convertedLeads,
-    totalCustomers,
-    activeCustomers,
     salesAgents
   ] = await Promise.all([
     countRows('sales_leads', (q) => scope(q)),
     countRows('sales_leads', (q) => scope(q).eq('status', 'new')),
     countRows('sales_leads', (q) => scope(q).eq('status', 'converted')),
-    countRows('sales_customers', (q) => scope(q, 'sales_owner_id')),
-    countRows('sales_customers', (q) => scope(q, 'sales_owner_id').eq('status', 'active')),
     countRows('users', (q) => q.eq('role', ROLES.SALES))
   ]);
 
-  let revenueQuery = supabase
-    .from('sales_orders')
-    .select('id, order_number, customer_name, customer_email, plan, notes, amount, status, created_at')
-    .in('status', ['paid', 'refunded', 'pending', 'failed', 'cancelled']);
-  revenueQuery = isSalesManager(req.user) ? revenueQuery : revenueQuery.eq('sales_owner_id', req.user.id);
-  const { data: revenueRows } = await revenueQuery;
-  const productionOrders = productionSalesRows(revenueRows || []);
+  const [productionOrders, liveCustomers] = await Promise.all([
+    fetchLiveSalesPayments({ user: req.user, limit: 1000 }),
+    fetchLiveSalesCustomers({ user: req.user, limit: 1000 })
+  ]);
 
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
@@ -234,8 +448,8 @@ router.get('/overview', asyncHandler(async (req, res) => {
       newLeads,
       convertedLeads,
       totalOrders: productionOrders.length,
-      totalCustomers,
-      activeCustomers,
+      totalCustomers: liveCustomers.length,
+      activeCustomers: liveCustomers.filter((customer) => ACTIVE_CUSTOMER_STATUSES.includes(String(customer.status || '').toLowerCase())).length,
       monthRevenue,
       totalRevenue,
       salesAgents,
@@ -403,31 +617,12 @@ router.get('/orders', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
-    .from('sales_orders')
-    .select('id, order_number, customer_name, customer_email, plan, amount, status, payment_method, created_at, sales_owner_id, audience_role, zone, location', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
-  if (!isSalesManager(req.user)) query = query.eq('sales_owner_id', req.user.id);
-
-  if (['pending', 'paid', 'failed', 'refunded', 'cancelled'].includes(status)) query = query.eq('status', status);
-
-  const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
-
-  const orders = productionSalesRows(data || []);
-  res.send({ status: true, orders, total: Math.min(count || orders.length, orders.length), page, limit });
+  const orders = await fetchLiveSalesPayments({ user: req.user, status, limit: 1000 });
+  res.send({ status: true, orders: orders.slice(offset, offset + limit), total: orders.length, page, limit });
 }));
 
 router.get('/orders/:id', asyncHandler(async (req, res) => {
-  let query = supabase
-    .from('sales_orders')
-    .select('*')
-    .eq('id', req.params.id);
-  if (!isSalesManager(req.user)) query = query.eq('sales_owner_id', req.user.id);
-  const { data, error } = await query.maybeSingle();
-
-  if (error) { sendSupabaseError(res, error); return; }
+  const data = await fetchLiveSalesPaymentById({ id: req.params.id, user: req.user });
   if (!data || isNonProductionSalesRecord(data)) return res.status(404).send({ status: false, message: 'Order not found' });
 
   res.send({ status: true, order: data });
@@ -666,33 +861,24 @@ router.get('/customers', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
-    .from('sales_customers')
-    .select('id, company_name, contact_name, email, phone, plan, status, total_spent, created_at, audience_role, sales_owner_id, subscription_id, zone, location', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
-  if (!isSalesManager(req.user)) query = query.eq('sales_owner_id', req.user.id);
+  const allCustomers = await fetchLiveSalesCustomers({ user: req.user, limit: 1000 });
+  const normalizedSearch = search.toLowerCase();
+  const customers = normalizedSearch
+    ? allCustomers.filter((customer) => [
+      customer.company_name,
+      customer.contact_name,
+      customer.email,
+      customer.phone,
+      customer.plan,
+      customer.audience_role
+    ].some((value) => String(value || '').toLowerCase().includes(normalizedSearch)))
+    : allCustomers;
 
-  if (search) {
-    const safeSearch = search.replace(/[,().]/g, '');
-    query = query.or(`company_name.ilike.%${safeSearch}%,contact_name.ilike.%${safeSearch}%,email.ilike.%${safeSearch}%`);
-  }
-
-  const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
-
-  res.send({ status: true, customers: data || [], total: count || 0, page, limit });
+  res.send({ status: true, customers: customers.slice(offset, offset + limit), total: customers.length, page, limit });
 }));
 
 router.get('/customers/:id', asyncHandler(async (req, res) => {
-  let query = supabase
-    .from('sales_customers')
-    .select('*')
-    .eq('id', req.params.id);
-  if (!isSalesManager(req.user)) query = query.eq('sales_owner_id', req.user.id);
-  const { data, error } = await query.maybeSingle();
-
-  if (error) { sendSupabaseError(res, error); return; }
+  const data = await fetchLiveSalesCustomerById({ id: req.params.id, user: req.user });
   if (!data) return res.status(404).send({ status: false, message: 'Customer not found' });
 
   res.send({ status: true, customer: data });
@@ -923,16 +1109,8 @@ router.patch('/coupons/:id', asyncHandler(async (req, res) => {
 // Refunds
 // =============================================
 router.get('/refunds', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('sales_orders')
-    .select('id, order_number, customer_name, customer_email, amount, created_at')
-    .eq('status', 'refunded')
-    .order('created_at', { ascending: false })
-    .limit(100);
-
-  if (error) { sendSupabaseError(res, error); return; }
-
-  res.send({ status: true, refunds: productionSalesRows(data || []) });
+  const refunds = await fetchLiveSalesPayments({ user: req.user, status: 'refunded', limit: 100 });
+  res.send({ status: true, refunds });
 }));
 
 // =============================================
@@ -951,11 +1129,7 @@ router.get('/funnel', asyncHandler(async (req, res) => {
     count: counts[i].count || 0
   }));
 
-  const { data: revenueRows } = await supabase
-    .from('sales_orders')
-    .select('id, order_number, customer_name, customer_email, plan, notes, amount, status');
-
-  const productionOrders = productionSalesRows(revenueRows || []);
+  const productionOrders = await fetchLiveSalesPayments({ user: req.user, limit: 1000 });
   const totalRevenue = productionOrders.filter((r) => r.status === 'paid').reduce((s, r) => s + Number(r.amount || 0), 0);
   const totalLeads = funnel.reduce((s, f) => s + f.count, 0);
   const convertedCount = funnel.find((f) => f.stage === 'converted')?.count || 0;
@@ -972,19 +1146,15 @@ router.get('/reports', asyncHandler(async (req, res) => {
     supabase.from('sales_leads').select('source, status, value, assigned_to, assigned_name, zone, location'),
     req.user
   );
-  let orderQuery = supabase.from('sales_orders').select('id, order_number, customer_name, customer_email, plan, notes, amount, status, created_at, sales_owner_id, zone, location');
-  if (!isSalesManager(req.user)) orderQuery = orderQuery.eq('sales_owner_id', req.user.id);
-  const [leadsResult, ordersResult, totalCustomers] = await Promise.all([
+  const [leadsResult, orders, liveCustomers] = await Promise.all([
     leadQuery,
-    orderQuery,
-    countRows('sales_customers', (q) => (isSalesManager(req.user) ? q : q.eq('sales_owner_id', req.user.id)))
+    fetchLiveSalesPayments({ user: req.user, limit: 1000 }),
+    fetchLiveSalesCustomers({ user: req.user, limit: 1000 })
   ]);
 
   if (leadsResult.error) { sendSupabaseError(res, leadsResult.error); return; }
-  if (ordersResult.error) { sendSupabaseError(res, ordersResult.error); return; }
 
   const leads = leadsResult.data || [];
-  const orders = productionSalesRows(ordersResult.data || []);
   const totalLeads = leads.length;
   const convertedLeads = leads.filter((lead) => lead.status === 'converted').length;
   const totalOrders = orders.length;
@@ -1076,7 +1246,7 @@ router.get('/reports', asyncHandler(async (req, res) => {
       conversionRate,
       totalOrders,
       paidOrders,
-      totalCustomers,
+      totalCustomers: liveCustomers.length,
       totalRevenue,
       topSources,
       conversion,
