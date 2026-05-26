@@ -143,6 +143,50 @@ const formatLeadRow = (lead = {}) => ({
 const isSalesManager = (user = {}) => [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(user?.role);
 const ACTIVE_LEAD_STATUSES = ['new', 'contacted', 'qualified', 'proposal'];
 
+const applyLeadListFilters = (query, {
+  user = {},
+  status = '',
+  targetRole = '',
+  onboardingStatus = '',
+  search = ''
+} = {}) => {
+  let scopedQuery = applySalesOwnershipScope(query, user);
+
+  if (['new', 'contacted', 'qualified', 'proposal', 'converted', 'lost'].includes(status)) scopedQuery = scopedQuery.eq('status', status);
+  if ([ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT].includes(targetRole)) scopedQuery = scopedQuery.eq('target_role', targetRole);
+  if (['prospect', 'negotiation', 'active', 'onboarding', 'churn_risk', 'closed'].includes(onboardingStatus)) scopedQuery = scopedQuery.eq('onboarding_status', onboardingStatus);
+  if (search) {
+    const safeSearch = search.replace(/[,().]/g, '');
+    scopedQuery = scopedQuery.or(`company_name.ilike.%${safeSearch}%,contact_name.ilike.%${safeSearch}%,contact_email.ilike.%${safeSearch}%,contact_phone.ilike.%${safeSearch}%`);
+  }
+
+  return scopedQuery;
+};
+
+const buildLeadSummary = async (filters = {}, totalLeads = 0) => {
+  const valueResult = await applyLeadListFilters(
+    supabase
+      .from('sales_leads')
+      .select('status, onboarding_status, value')
+      .limit(10000),
+    filters
+  );
+  if (valueResult.error) throw valueResult.error;
+
+  const expectedValue = (valueResult.data || []).reduce((sum, row) => sum + Number(row.value || 0), 0);
+  const planTaken = (valueResult.data || []).filter((row) => (
+    String(row.status || '').toLowerCase() === 'converted' ||
+    String(row.onboarding_status || '').toLowerCase() === 'active'
+  )).length;
+
+  return {
+    totalLeads,
+    planTaken,
+    planPending: Math.max(0, totalLeads - planTaken),
+    expectedValue
+  };
+};
+
 const applySalesOwnershipScope = (query, user = {}) => {
   if (isSalesManager(user)) return query;
   return query.eq('assigned_to', user.id);
@@ -796,23 +840,18 @@ router.get('/leads', asyncHandler(async (req, res) => {
 
   let query = supabase
     .from('sales_leads')
-    .select('id, company_name, contact_name, contact_email, contact_phone, status, source, assigned_to, assigned_name, assigned_at, assignment_source, value, created_at, target_role, onboarding_status, next_followup_at, last_followup_at, plan_interest_slug, coupon_code, zone, location, source_purchase_id, source_subscription_id', { count: 'exact' })
+    .select('id, company_name, contact_name, contact_email, contact_phone, status, source, assigned_to, assigned_name, assigned_at, assignment_source, value, created_at, target_role, onboarding_status, next_followup_at, last_followup_at, followup_notes, last_contacted_at, plan_interest_slug, coupon_code, zone, location, source_purchase_id, source_subscription_id', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
-  query = applySalesOwnershipScope(query, req.user);
-
-  if (['new', 'contacted', 'qualified', 'proposal', 'converted', 'lost'].includes(status)) query = query.eq('status', status);
-  if ([ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT].includes(targetRole)) query = query.eq('target_role', targetRole);
-  if (['prospect', 'negotiation', 'active', 'onboarding', 'churn_risk', 'closed'].includes(onboardingStatus)) query = query.eq('onboarding_status', onboardingStatus);
-  if (search) {
-    const safeSearch = search.replace(/[,().]/g, '');
-    query = query.or(`company_name.ilike.%${safeSearch}%,contact_name.ilike.%${safeSearch}%,contact_email.ilike.%${safeSearch}%`);
-  }
+  query = applyLeadListFilters(query, { user: req.user, status, targetRole, onboardingStatus, search });
 
   const { data, error, count } = await query;
   if (error) { sendSupabaseError(res, error); return; }
 
-  res.send({ status: true, leads: (data || []).map(formatLeadRow), total: count || 0, page, limit });
+  const total = count || 0;
+  const summary = await buildLeadSummary({ user: req.user, status, targetRole, onboardingStatus, search }, total);
+
+  res.send({ status: true, leads: (data || []).map(formatLeadRow), total, page, limit, summary });
 }));
 
 router.get('/leads/:id', asyncHandler(async (req, res) => {
