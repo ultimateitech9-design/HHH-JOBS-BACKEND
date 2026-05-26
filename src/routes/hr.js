@@ -362,28 +362,31 @@ router.patch('/applications/:id/status', requireApprovedHr, asyncHandler(async (
   await createNotification({
     userId: application.applicant_id,
     type: 'application_status',
-    title: `Application status updated: ${status}`,
-    message: `${job.job_title} status is now ${status}.`,
+    title: `Application status updated: ${formatPipelineStatus(status)}`,
+    message: `${job.job_title} status is now ${formatPipelineStatus(status)}.`,
     link: '/student',
     meta: { applicationId: data.id, jobId: job.id, status }
   });
 
-  // Email the applicant about the status change (respects notification preferences)
-  await notifyUser({
-    userId: application.applicant_id,
-    channels: ['email'],
-    notification: {
-      type: 'application_status',
-      title: `Application status updated: ${status}`,
-      message: `${job.job_title} status is now ${status}.`,
-      link: '/portal/student/applications',
-      meta: { applicationId: data.id, jobId: job.id, status }
-    },
-    emailPayload: {
-      to: null,
-      subject: `Your application is now ${status}: ${job.job_title}`,
-      html: `<p>Your application status for <b>${job.job_title}</b> is now <b>${status}</b>.</p><p><a href="https://hhh-jobs.com/portal/student/applications">View application</a></p>`
-    }
+  const { data: applicantUser } = await supabase
+    .from('users')
+    .select('name, email')
+    .eq('id', application.applicant_id)
+    .maybeSingle();
+
+  await sendStudentAndHrActionEmails({
+    studentUserId: application.applicant_id,
+    hrUserId: req.user.id,
+    type: 'application_status',
+    actionLabel: formatPipelineStatus(status),
+    roleTitle: job.job_title,
+    companyName: job.company_name || req.user.name || 'HHH Jobs',
+    candidateName: applicantUser?.name || applicantUser?.email || 'this candidate',
+    studentLink: '/portal/student/applications',
+    hrLink: `/portal/hr/jobs/${job.id}/applicants`,
+    studentDetailLines: hrNotes ? [`HR note: ${hrNotes}`] : [],
+    hrDetailLines: [`Application ID: ${data.id}`],
+    meta: { applicationId: data.id, jobId: job.id, status }
   });
 
   res.send({ status: true, application: mapApplicationFromRow(data) });
@@ -987,6 +990,29 @@ router.post('/shortlisted', requireApprovedHr, asyncHandler(async (req, res) => 
 
   if (error) { sendSupabaseError(res, error); return; }
 
+  const [{ data: studentUser }, { data: hrProfile }] = await Promise.all([
+    supabase.from('users').select('name, email').eq('id', studentId).maybeSingle(),
+    supabase.from('hr_profiles').select('company_name').eq('user_id', req.user.id).maybeSingle()
+  ]);
+
+  await sendStudentAndHrActionEmails({
+    studentUserId: studentId,
+    hrUserId: req.user.id,
+    type: 'candidate_shortlisted',
+    actionLabel: 'Shortlisted',
+    roleTitle: 'Candidate Database',
+    companyName: hrProfile?.company_name || req.user.name || 'HHH Jobs',
+    candidateName: studentUser?.name || studentUser?.email || 'this candidate',
+    studentLink: '/portal/student/profile',
+    hrLink: '/portal/hr/shortlisted',
+    studentDetailLines: notes ? [`HR note: ${notes}`] : [],
+    hrDetailLines: [
+      tags.length ? `Tags: ${tags.join(', ')}` : '',
+      notes ? `Note: ${notes}` : ''
+    ].filter(Boolean),
+    meta: { studentId, shortlistedId: data.id }
+  });
+
   res.status(201).send({ status: true, shortlisted: data });
 }));
 
@@ -1450,6 +1476,47 @@ router.post('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
     }
   })));
 
+  await Promise.allSettled(createdInterviews.map((item) => sendHrActionEmail({
+    userId: item.candidate_id,
+    type: 'interview_scheduled',
+    title: 'Interview scheduled',
+    message: `Your interview for ${schedulingTitleBase} is scheduled on ${new Date(item.scheduled_at).toLocaleString('en-IN', { timeZone: timezone })}.`,
+    link: '/portal/student/interviews',
+    meta: {
+      interviewId: item.id,
+      roomInterviewId: anchorInterview.id,
+      applicationId: item.application_id || null,
+      campusApplicationId: item.campus_application_id || null,
+      jobId: item.job_id || null,
+      campusDriveId: item.campus_drive_id || null
+    },
+    emailPayload: buildActionEmailPayload({
+      subject: `Interview scheduled: ${schedulingTitleBase}`,
+      preview: `Your interview for ${schedulingTitleBase} at ${schedulingCompanyName || 'HHH Jobs'} has been scheduled.`,
+      detailLines: [
+        `When: ${new Date(item.scheduled_at).toLocaleString('en-IN', { timeZone: timezone })}`,
+        item.round_label ? `Round: ${item.round_label}` : '',
+        item.mode ? `Mode: ${item.mode}` : ''
+      ].filter(Boolean),
+      ctaLabel: 'Open interview',
+      ctaUrl: buildPortalUrl('/portal/student/interviews')
+    })
+  })));
+
+  await sendHrActionSummaryEmail({
+    hrUserId: req.user.id,
+    type: 'interview_scheduled',
+    title: `Interview scheduled: ${schedulingTitleBase}`,
+    message: `You scheduled ${createdInterviews.length} interview${createdInterviews.length === 1 ? '' : 's'} for ${schedulingTitleBase}.`,
+    link: '/portal/hr/interviews',
+    detailLines: [
+      schedulingCompanyName ? `Company: ${schedulingCompanyName}` : '',
+      `When: ${new Date(anchorInterview.scheduled_at).toLocaleString('en-IN', { timeZone: timezone })}`,
+      roundLabel ? `Round: ${roundLabel}` : ''
+    ].filter(Boolean),
+    meta: { roomInterviewId: anchorInterview.id, sourceType }
+  });
+
   res.status(201).send({
     status: true,
     interview: anchorInterview,
@@ -1580,6 +1647,45 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
     }
   })));
 
+  const updatedTimezone = nextTimezone || existing.timezone || 'Asia/Kolkata';
+  await Promise.allSettled((data || []).map((item) => sendHrActionEmail({
+    userId: item.candidate_id,
+    type: 'interview_updated',
+    title: 'Interview updated',
+    message: 'Your interview schedule was updated. Please check the interview details.',
+    link: '/portal/student/interviews',
+    meta: {
+      interviewId: item.id,
+      roomInterviewId,
+      applicationId: item.application_id || null,
+      campusApplicationId: item.campus_application_id || null
+    },
+    emailPayload: buildActionEmailPayload({
+      subject: `Interview updated: ${item.title || existing.title || item.round_label || 'Interview'}`,
+      preview: 'Your interview schedule was updated by HR.',
+      detailLines: [
+        `When: ${new Date(item.scheduled_at).toLocaleString('en-IN', { timeZone: updatedTimezone })}`,
+        item.status ? `Status: ${formatPipelineStatus(item.status)}` : '',
+        item.round_label ? `Round: ${item.round_label}` : ''
+      ].filter(Boolean),
+      ctaLabel: 'Open interview',
+      ctaUrl: buildPortalUrl('/portal/student/interviews')
+    })
+  })));
+
+  await sendHrActionSummaryEmail({
+    hrUserId: req.user.id,
+    type: 'interview_updated',
+    title: 'Interview updated',
+    message: `You updated ${data?.length || 0} interview${(data?.length || 0) === 1 ? '' : 's'}.`,
+    link: '/portal/hr/interviews',
+    detailLines: [
+      `When: ${new Date(nextScheduledAt).toLocaleString('en-IN', { timeZone: updatedTimezone })}`,
+      updateDoc.status ? `Status: ${formatPipelineStatus(updateDoc.status)}` : ''
+    ].filter(Boolean),
+    meta: { roomInterviewId }
+  });
+
   const hostInterview = (data || []).find((item) => item.id === roomInterviewId) || existing;
   res.send({ status: true, interview: hostInterview, interviews: data || [] });
 }));
@@ -1682,13 +1788,14 @@ router.post('/jobs/:id/applicants/bulk', requireApprovedHr, asyncHandler(async (
   if (error) { sendSupabaseError(res, error); return; }
 
   const updated = data || [];
+  const newStatusLabel = formatPipelineStatus(newStatus);
   await Promise.allSettled(
     updated.map((app) =>
       createNotification({
         userId: app.applicant_id,
         type: 'application_status',
-        title: `Application status updated: ${newStatus}`,
-        message: `${job.job_title} — your application is now ${newStatus}.`,
+        title: `Application status updated: ${newStatusLabel}`,
+        message: `${job.job_title} - your application is now ${newStatusLabel}.`,
         link: '/student',
         meta: { applicationId: app.id, jobId, status: newStatus }
       })
@@ -1702,23 +1809,33 @@ router.post('/jobs/:id/applicants/bulk', requireApprovedHr, asyncHandler(async (
         channels: ['email'],
         notification: {
           type: 'application_status',
-          title: `Application status updated: ${newStatus}`,
-          message: `${job.job_title} — your application is now ${newStatus}.`,
+          title: `Application status updated: ${newStatusLabel}`,
+          message: `${job.job_title} - your application is now ${newStatusLabel}.`,
           link: '/portal/student/applications',
           meta: { applicationId: app.id, jobId, status: newStatus }
         },
         emailPayload: {
-          subject: `Your application is now ${newStatus}: ${job.job_title}`,
+          subject: `Your application is now ${newStatusLabel}: ${job.job_title}`,
           text: [
-            `Your application for ${job.job_title} is now ${newStatus}.`,
+            `Your application for ${job.job_title} is now ${newStatusLabel}.`,
             '',
-            'View application: https://hhh-jobs.com/portal/student/applications'
+            `View application: ${buildPortalUrl('/portal/student/applications')}`
           ].join('\n'),
-          html: `<p>Your application for <strong>${job.job_title}</strong> is now <strong>${newStatus}</strong>.</p><p><a href="https://hhh-jobs.com/portal/student/applications">View application</a></p>`
+          html: `<p>Your application for <strong>${escapeEmailHtml(job.job_title)}</strong> is now <strong>${escapeEmailHtml(newStatusLabel)}</strong>.</p><p><a href="${escapeEmailHtml(buildPortalUrl('/portal/student/applications'))}">View application</a></p>`
         }
       })
     )
   );
+
+  await sendHrActionSummaryEmail({
+    hrUserId: req.user.id,
+    type: 'application_status',
+    title: `Bulk action completed: ${newStatusLabel}`,
+    message: `You marked ${updated.length} applicant${updated.length === 1 ? '' : 's'} as ${newStatusLabel} for ${job.job_title}.`,
+    link: `/portal/hr/jobs/${jobId}/applicants`,
+    detailLines: [`Job: ${job.job_title}`],
+    meta: { jobId, status: newStatus, applicationIds: updated.map((app) => app.id) }
+  });
 
   res.send({ status: true, updatedCount: updated.length, newStatus });
 }));
@@ -1799,6 +1916,150 @@ const buildConnectionEmailPayload = ({
     ${ctaLabel && ctaUrl ? `<p><a href="${ctaUrl}">${ctaLabel}</a></p>` : ''}
   `.trim()
 });
+
+const escapeEmailHtml = (value = '') =>
+  String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[char]));
+
+const PIPELINE_STATUS_LABELS = {
+  applied: 'Applied',
+  shortlisted: 'Shortlisted',
+  interview_scheduled: 'Interview Scheduled',
+  interviewed: 'Interviewed',
+  offered: 'Offer Given',
+  rejected: 'Rejected',
+  hired: 'Hired',
+  selected: 'Selected',
+  withdrawn: 'Withdrawn'
+};
+
+const formatPipelineStatus = (status = '') =>
+  PIPELINE_STATUS_LABELS[String(status || '').toLowerCase()]
+  || String(status || 'Updated').replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+const buildActionEmailPayload = ({
+  subject,
+  preview,
+  detailLines = [],
+  ctaLabel,
+  ctaUrl
+} = {}) => {
+  const cleanLines = detailLines.filter(Boolean).map(String);
+  return {
+    subject,
+    text: [
+      preview || '',
+      ...cleanLines,
+      '',
+      ctaLabel && ctaUrl ? `${ctaLabel}: ${ctaUrl}` : ''
+    ].filter(Boolean).join('\n'),
+    html: `
+      <p>${escapeEmailHtml(preview || '')}</p>
+      ${cleanLines.map((line) => `<p>${escapeEmailHtml(line)}</p>`).join('')}
+      ${ctaLabel && ctaUrl ? `<p><a href="${escapeEmailHtml(ctaUrl)}">${escapeEmailHtml(ctaLabel)}</a></p>` : ''}
+    `.trim()
+  };
+};
+
+const sendHrActionEmail = ({ userId, type, title, message, link, meta = {}, emailPayload } = {}) => {
+  if (!userId) return Promise.resolve(null);
+  return notifyUser({
+    userId,
+    channels: ['email'],
+    notification: { type, title, message, link, meta },
+    emailPayload
+  });
+};
+
+const sendStudentAndHrActionEmails = async ({
+  studentUserId,
+  hrUserId,
+  type = 'hr_candidate_action',
+  actionLabel,
+  roleTitle,
+  companyName = 'HHH Jobs',
+  candidateName = 'this candidate',
+  studentLink = '/portal/student/applications',
+  hrLink = '/portal/hr/dashboard',
+  studentDetailLines = [],
+  hrDetailLines = [],
+  meta = {}
+} = {}) => {
+  const studentUrl = buildPortalUrl(studentLink);
+  const hrUrl = buildPortalUrl(hrLink);
+  const displayAction = actionLabel || 'Updated';
+  const displayRole = roleTitle || 'your profile';
+  const displayCompany = companyName || 'HHH Jobs';
+  const studentMessage = `${displayCompany} marked you as ${displayAction} for ${displayRole}.`;
+  const hrMessage = `You marked ${candidateName || 'this candidate'} as ${displayAction} for ${displayRole}.`;
+
+  await Promise.allSettled([
+    sendHrActionEmail({
+      userId: studentUserId,
+      type,
+      title: `${displayAction}: ${displayRole}`,
+      message: studentMessage,
+      link: studentLink,
+      meta,
+      emailPayload: buildActionEmailPayload({
+        subject: `${displayAction}: ${displayRole}`,
+        preview: studentMessage,
+        detailLines: studentDetailLines,
+        ctaLabel: 'Open HHH Jobs',
+        ctaUrl: studentUrl
+      })
+    }),
+    sendHrActionEmail({
+      userId: hrUserId,
+      type,
+      title: `You marked a candidate ${displayAction}`,
+      message: hrMessage,
+      link: hrLink,
+      meta,
+      emailPayload: buildActionEmailPayload({
+        subject: `You marked ${candidateName || 'a candidate'} ${displayAction}`,
+        preview: hrMessage,
+        detailLines: hrDetailLines,
+        ctaLabel: 'Open HR dashboard',
+        ctaUrl: hrUrl
+      })
+    })
+  ]);
+};
+
+const sendHrActionSummaryEmail = async ({
+  hrUserId,
+  type = 'hr_candidate_action',
+  title,
+  message,
+  link = '/portal/hr/dashboard',
+  detailLines = [],
+  meta = {}
+} = {}) => {
+  if (!hrUserId) return;
+  await Promise.allSettled([
+    sendHrActionEmail({
+      userId: hrUserId,
+      type,
+      title,
+      message,
+      link,
+      meta,
+      emailPayload: buildActionEmailPayload({
+        subject: title,
+        preview: message,
+        detailLines,
+        ctaLabel: 'Open HR dashboard',
+        ctaUrl: buildPortalUrl(link)
+      })
+    })
+  ]);
+};
 
 const listCollegeDirectoryForHr = async ({ companyUserId }) => {
   const [collegesResponse, connectionsResponse] = await Promise.all([
@@ -2702,6 +2963,21 @@ router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler
       }
     });
   }
+
+  const campusCandidateName = updated.applicant_email || 'this student';
+  await sendHrActionSummaryEmail({
+    hrUserId: req.user.id,
+    type: 'campus_drive_status',
+    title: `Campus status updated: ${formatPipelineStatus(nextStatus)}`,
+    message: `You marked ${campusCandidateName} as ${formatPipelineStatus(nextStatus)} for ${drive.job_title}.`,
+    link: '/portal/hr/campus-drives',
+    detailLines: [
+      `Company: ${companyName}`,
+      nextRound ? `Round: ${nextRound}` : '',
+      nextNotes ? `Notes: ${nextNotes}` : ''
+    ].filter(Boolean),
+    meta: { driveId, applicationId: updated.id, status: nextStatus }
+  });
 
   // Notify the CRD (college admin) about company's result update
   const collegeOwnerId = drive.college?.user_id;
