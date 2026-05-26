@@ -143,13 +143,24 @@ const formatLeadRow = (lead = {}) => ({
 const isSalesManager = (user = {}) => [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(user?.role);
 const ACTIVE_LEAD_STATUSES = ['new', 'contacted', 'qualified', 'proposal'];
 const CLOSED_LEAD_STATUSES = ['converted', 'lost'];
+const FOLLOWUP_MIN_LEAD_TIME_MS = 60 * 1000;
 
-const normalizeOptionalTimestamp = (value) => {
-  if (value === undefined) return undefined;
-  if (value === null || value === '') return null;
+const getDefaultNextFollowupAt = () => {
+  const date = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  date.setMinutes(0, 0, 0);
+  return date.toISOString();
+};
+
+const normalizeCallFollowupTimestamp = (value) => {
+  if (value === undefined || value === null || value === '') return getDefaultNextFollowupAt();
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     const error = new Error('Invalid follow-up date/time');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (date.getTime() <= Date.now() + FOLLOWUP_MIN_LEAD_TIME_MS) {
+    const error = new Error('Follow-up date/time must be in the future');
     error.statusCode = 400;
     throw error;
   }
@@ -970,23 +981,20 @@ router.post('/leads/:id/call', asyncHandler(async (req, res) => {
   if (!existingResult.data) return res.status(404).send({ status: false, message: 'Lead not found' });
 
   const now = new Date().toISOString();
-  const normalizedNextFollowupAt = normalizeOptionalTimestamp(req.body?.next_followup_at);
+  const normalizedNextFollowupAt = normalizeCallFollowupTimestamp(req.body?.next_followup_at);
   const currentStatus = String(existingResult.data.status || '').toLowerCase();
   const updates = {
     updated_at: now,
     last_followup_at: now,
     last_contacted_by: req.user?.id || null,
-    last_contacted_at: now
+    last_contacted_at: now,
+    next_followup_at: normalizedNextFollowupAt
   };
 
   if (!currentStatus || currentStatus === 'new') {
     updates.status = 'contacted';
   } else if (!ACTIVE_LEAD_STATUSES.includes(currentStatus) && !CLOSED_LEAD_STATUSES.includes(currentStatus)) {
     updates.status = 'contacted';
-  }
-
-  if (normalizedNextFollowupAt !== undefined) {
-    updates.next_followup_at = normalizedNextFollowupAt;
   }
 
   if (req.body?.followup_notes !== undefined) {
