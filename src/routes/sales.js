@@ -152,6 +152,34 @@ const summarizeByKey = (rows = [], key, fallback = 'Unassigned') => Object.value
   return acc;
 }, {})).sort((left, right) => right.revenue - left.revenue || right.converted - left.converted || right.leads - left.leads);
 
+const NON_PRODUCTION_MARKERS = [
+  'local-e2e',
+  'local e2e',
+  'e2e fixture',
+  'demo data',
+  'dummy',
+  'sample record'
+];
+
+const isNonProductionSalesRecord = (row = {}) => {
+  const fields = [
+    row.id,
+    row.order_number,
+    row.customer_name,
+    row.customer_email,
+    row.company_name,
+    row.contact_name,
+    row.contact_email,
+    row.notes,
+    row.source,
+    row.plan
+  ];
+  const haystack = fields.map((value) => String(value || '').toLowerCase()).join(' ');
+  return NON_PRODUCTION_MARKERS.some((marker) => haystack.includes(marker));
+};
+
+const productionSalesRows = (rows = []) => rows.filter((row) => !isNonProductionSalesRecord(row));
+
 // =============================================
 // Overview
 // =============================================
@@ -169,38 +197,35 @@ router.get('/overview', asyncHandler(async (req, res) => {
     totalLeads,
     newLeads,
     convertedLeads,
-    totalOrders,
     totalCustomers,
     activeCustomers,
-    salesAgents,
-    refunds
+    salesAgents
   ] = await Promise.all([
     countRows('sales_leads', (q) => scope(q)),
     countRows('sales_leads', (q) => scope(q).eq('status', 'new')),
     countRows('sales_leads', (q) => scope(q).eq('status', 'converted')),
-    countRows('sales_orders', (q) => scope(q, 'sales_owner_id')),
     countRows('sales_customers', (q) => scope(q, 'sales_owner_id')),
     countRows('sales_customers', (q) => scope(q, 'sales_owner_id').eq('status', 'active')),
-    countRows('users', (q) => q.eq('role', ROLES.SALES)),
-    countRows('sales_orders', (q) => scope(q, 'sales_owner_id').eq('status', 'refunded'))
+    countRows('users', (q) => q.eq('role', ROLES.SALES))
   ]);
 
   let revenueQuery = supabase
     .from('sales_orders')
-    .select('amount, status, created_at')
-    .in('status', ['paid', 'refunded']);
+    .select('id, order_number, customer_name, customer_email, plan, notes, amount, status, created_at')
+    .in('status', ['paid', 'refunded', 'pending', 'failed', 'cancelled']);
   revenueQuery = isSalesManager(req.user) ? revenueQuery : revenueQuery.eq('sales_owner_id', req.user.id);
   const { data: revenueRows } = await revenueQuery;
+  const productionOrders = productionSalesRows(revenueRows || []);
 
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-  const monthRevenue = (revenueRows || [])
+  const monthRevenue = productionOrders
     .filter((r) => String(r.status || '').toLowerCase() === 'paid' && r.created_at >= monthStart)
     .reduce((sum, r) => sum + Number(r.amount || 0), 0);
-  const paidRows = (revenueRows || []).filter((r) => String(r.status || '').toLowerCase() === 'paid');
+  const paidRows = productionOrders.filter((r) => String(r.status || '').toLowerCase() === 'paid');
   const totalRevenue = paidRows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
   const monthlySales = buildMonthlySeries(paidRows);
-  const revenueTrend = buildRevenueTrend(revenueRows || []);
+  const revenueTrend = buildRevenueTrend(productionOrders);
 
   res.send({
     status: true,
@@ -208,13 +233,13 @@ router.get('/overview', asyncHandler(async (req, res) => {
       totalLeads,
       newLeads,
       convertedLeads,
-      totalOrders,
+      totalOrders: productionOrders.length,
       totalCustomers,
       activeCustomers,
       monthRevenue,
       totalRevenue,
       salesAgents,
-      refunds,
+      refunds: productionOrders.filter((r) => String(r.status || '').toLowerCase() === 'refunded').length,
       monthlySales,
       revenueTrend
     })
@@ -390,7 +415,8 @@ router.get('/orders', asyncHandler(async (req, res) => {
   const { data, error, count } = await query;
   if (error) { sendSupabaseError(res, error); return; }
 
-  res.send({ status: true, orders: data || [], total: count || 0, page, limit });
+  const orders = productionSalesRows(data || []);
+  res.send({ status: true, orders, total: Math.min(count || orders.length, orders.length), page, limit });
 }));
 
 router.get('/orders/:id', asyncHandler(async (req, res) => {
@@ -402,7 +428,7 @@ router.get('/orders/:id', asyncHandler(async (req, res) => {
   const { data, error } = await query.maybeSingle();
 
   if (error) { sendSupabaseError(res, error); return; }
-  if (!data) return res.status(404).send({ status: false, message: 'Order not found' });
+  if (!data || isNonProductionSalesRecord(data)) return res.status(404).send({ status: false, message: 'Order not found' });
 
   res.send({ status: true, order: data });
 }));
@@ -906,7 +932,7 @@ router.get('/refunds', asyncHandler(async (req, res) => {
 
   if (error) { sendSupabaseError(res, error); return; }
 
-  res.send({ status: true, refunds: data || [] });
+  res.send({ status: true, refunds: productionSalesRows(data || []) });
 }));
 
 // =============================================
@@ -927,9 +953,10 @@ router.get('/funnel', asyncHandler(async (req, res) => {
 
   const { data: revenueRows } = await supabase
     .from('sales_orders')
-    .select('amount, status');
+    .select('id, order_number, customer_name, customer_email, plan, notes, amount, status');
 
-  const totalRevenue = (revenueRows || []).filter((r) => r.status === 'paid').reduce((s, r) => s + Number(r.amount || 0), 0);
+  const productionOrders = productionSalesRows(revenueRows || []);
+  const totalRevenue = productionOrders.filter((r) => r.status === 'paid').reduce((s, r) => s + Number(r.amount || 0), 0);
   const totalLeads = funnel.reduce((s, f) => s + f.count, 0);
   const convertedCount = funnel.find((f) => f.stage === 'converted')?.count || 0;
   const conversionRate = totalLeads > 0 ? Math.round((convertedCount / totalLeads) * 100) : 0;
@@ -945,7 +972,7 @@ router.get('/reports', asyncHandler(async (req, res) => {
     supabase.from('sales_leads').select('source, status, value, assigned_to, assigned_name, zone, location'),
     req.user
   );
-  let orderQuery = supabase.from('sales_orders').select('amount, status, created_at, sales_owner_id, zone, location');
+  let orderQuery = supabase.from('sales_orders').select('id, order_number, customer_name, customer_email, plan, notes, amount, status, created_at, sales_owner_id, zone, location');
   if (!isSalesManager(req.user)) orderQuery = orderQuery.eq('sales_owner_id', req.user.id);
   const [leadsResult, ordersResult, totalCustomers] = await Promise.all([
     leadQuery,
@@ -957,7 +984,7 @@ router.get('/reports', asyncHandler(async (req, res) => {
   if (ordersResult.error) { sendSupabaseError(res, ordersResult.error); return; }
 
   const leads = leadsResult.data || [];
-  const orders = ordersResult.data || [];
+  const orders = productionSalesRows(ordersResult.data || []);
   const totalLeads = leads.length;
   const convertedLeads = leads.filter((lead) => lead.status === 'converted').length;
   const totalOrders = orders.length;
