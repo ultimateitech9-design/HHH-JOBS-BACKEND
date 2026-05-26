@@ -16,6 +16,7 @@ const {
 const {
   buildCompanyDirectory,
   buildCompanyDirectorySummary,
+  enrichPortalJobsWithHrProfiles,
   normalizeCompanyKey
 } = require('../services/companyDirectory');
 
@@ -64,15 +65,19 @@ const getDirectorySourceData = async (nowIso) => {
       .from('hr_profiles')
       .select(`
         id,
+        user_id,
         company_name,
         company_website,
         company_size,
         location,
+        state_id,
+        district_id,
         state_name,
         district_name,
         about,
         logo_url,
         is_verified,
+        sector_id,
         industry_type,
         sector_name,
         company_type,
@@ -85,6 +90,7 @@ const getDirectorySourceData = async (nowIso) => {
       .from('jobs')
       .select(`
         id,
+        created_by,
         job_title,
         company_name,
         min_price,
@@ -92,6 +98,8 @@ const getDirectorySourceData = async (nowIso) => {
         salary_type,
         job_location,
         job_locations,
+        state_id,
+        district_id,
         state_name,
         district_name,
         posting_date,
@@ -103,6 +111,7 @@ const getDirectorySourceData = async (nowIso) => {
         status,
         approval_status,
         category,
+        sector_id,
         sector_name,
         is_featured,
         applications_count,
@@ -158,13 +167,28 @@ const isPublicHrCompanyProfile = (profile = {}) => {
   );
 };
 
-const buildDirectoryFromSourceData = ({ sponsorsResp, profilesResp, portalJobsResp, externalJobsResp }) =>
-  buildCompanyDirectory({
-    sponsoredCompanies: sponsorsResp.data || [],
-    hrProfiles: (profilesResp.data || []).filter(isPublicHrCompanyProfile),
+const buildVisibleHrProfiles = (profilesResp) => (profilesResp.data || []).filter(isPublicHrCompanyProfile);
+
+const buildVisiblePortalJobs = ({ profilesResp, portalJobsResp }) =>
+  enrichPortalJobsWithHrProfiles({
     portalJobs: portalJobsResp.data || [],
+    hrProfiles: buildVisibleHrProfiles(profilesResp)
+  });
+
+const buildDirectoryFromSourceData = ({ sponsorsResp, profilesResp, portalJobsResp, externalJobsResp }) => {
+  const hrProfiles = buildVisibleHrProfiles(profilesResp);
+  const portalJobs = enrichPortalJobsWithHrProfiles({
+    portalJobs: portalJobsResp.data || [],
+    hrProfiles
+  });
+
+  return buildCompanyDirectory({
+    sponsoredCompanies: sponsorsResp.data || [],
+    hrProfiles,
+    portalJobs,
     externalJobs: externalJobsResp.data || []
   });
+};
 
 const mapExternalCompanyJob = (job, brandIndex) => {
   const brand = resolveCompanyBrand(brandIndex, job.company_name, {
@@ -432,7 +456,8 @@ router.get('/:companySlug', asyncHandler(async (req, res) => {
     hrProfiles: profilesResp.data || []
   });
   const companyKey = normalizeCompanyKey(company.name);
-  const portalJobs = (portalJobsResp.data || [])
+  const visiblePortalJobs = buildVisiblePortalJobs({ profilesResp, portalJobsResp });
+  const portalJobs = visiblePortalJobs
     .filter((job) => normalizeCompanyKey(job.company_name) === companyKey)
     .map((job) => {
       const brand = resolveCompanyBrand(brandIndex, job.company_name, {

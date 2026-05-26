@@ -144,6 +144,49 @@ const getOrCreateEntry = (directory, companyName) => {
   return directory[key];
 };
 
+const getProfileUserId = (profile = {}) => {
+  const user = Array.isArray(profile.users) ? profile.users[0] : profile.users;
+  return String(profile.user_id || user?.id || '').trim();
+};
+
+const buildHrProfileByUserId = (hrProfiles = []) => {
+  const profilesByUserId = new Map();
+
+  for (const profile of hrProfiles || []) {
+    const userId = getProfileUserId(profile);
+    const companyName = String(profile.company_name || '').trim();
+    if (!userId || !companyName) continue;
+    profilesByUserId.set(userId, profile);
+  }
+
+  return profilesByUserId;
+};
+
+const enrichPortalJobsWithHrProfiles = ({ portalJobs = [], hrProfiles = [] } = {}) => {
+  const profilesByUserId = buildHrProfileByUserId(hrProfiles);
+
+  return (portalJobs || []).map((job) => {
+    const profile = profilesByUserId.get(String(job.created_by || '').trim());
+    if (!profile) return job;
+
+    const structuredLocation = buildLocationLabel(profile.district_name, profile.state_name);
+    const profileLocation = pickPreferredText(profile.location, structuredLocation);
+
+    return {
+      ...job,
+      company_name: pickPreferredText(profile.company_name, job.company_name),
+      company_logo: pickPreferredText(job.company_logo, profile.logo_url),
+      job_location: pickPreferredText(job.job_location, profileLocation),
+      state_id: job.state_id || profile.state_id || null,
+      district_id: job.district_id || profile.district_id || null,
+      state_name: pickPreferredText(job.state_name, profile.state_name),
+      district_name: pickPreferredText(job.district_name, profile.district_name),
+      sector_id: job.sector_id || profile.sector_id || null,
+      sector_name: pickPreferredText(job.sector_name, profile.sector_name, profile.industry_type)
+    };
+  });
+};
+
 const finalizeEntry = (entry) => {
   const categories = Object.entries(entry.categoryCounts)
     .sort((left, right) => {
@@ -331,6 +374,7 @@ const buildCompanyDirectorySummary = (companies = []) => ({
 });
 
 module.exports = {
+  enrichPortalJobsWithHrProfiles,
   normalizeCompanyKey,
   toCompanySlug,
   buildCompanyDirectory,
