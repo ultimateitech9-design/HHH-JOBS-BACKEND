@@ -1,6 +1,6 @@
 const { ROLES } = require('../constants');
 const { supabase } = require('../supabase');
-const { maskEmail, maskMobile } = require('../utils/helpers');
+const { isValidUuid, maskEmail, maskMobile } = require('../utils/helpers');
 
 const DEFAULT_TEMPLATES = [
   {
@@ -579,10 +579,10 @@ const buildCandidatePresentation = ({
 }) => {
   const { user = {}, profile = {}, crm = {}, education = {} } = candidate;
   const hasAcceptedInterest = crm.interestStatus === 'accepted';
-  const canBrowseFullProfile = Boolean(access.hasPaidAccess && access.candidateProfileUnlocked !== false);
-  const canUnlockContact = Boolean(access.hasPaidAccess && hasAcceptedInterest);
+  const canBrowseFullProfile = Boolean(access.forceFullProfile || (access.hasPaidAccess && access.candidateProfileUnlocked !== false));
+  const canUnlockContact = Boolean(access.forceContactAccess || (access.hasPaidAccess && hasAcceptedInterest));
   const hasResume = Boolean(profile.resume_url || profile.resume_text);
-  const canViewResume = canBrowseFullProfile;
+  const canViewResume = Boolean(access.forceResumeAccess || canBrowseFullProfile);
   const visibleSkills = canBrowseFullProfile ? collectSkills(profile) : collectSkills(profile).slice(0, 4);
   const verification = getCandidateVerification(profile);
   const visibleLinks = canBrowseFullProfile
@@ -1218,10 +1218,94 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
   if (error && !isOptionalSchemaError(error)) throw error;
 
   const rows = error ? [] : (data || []);
-  const studentIds = [...new Set(rows.map((item) => item.student_user_id))];
+  const applicationRows = [];
+  const campusRows = [];
+
+  const jobsResp = await supabase
+    .from('jobs')
+    .select('id, job_title, company_name, contact_details_visible')
+    .eq('created_by', hrUser.id);
+
+  if (jobsResp.error && !isOptionalSchemaError(jobsResp.error)) throw jobsResp.error;
+
+  const jobs = jobsResp.error ? [] : (jobsResp.data || []);
+  const jobIds = jobs.map((job) => job.id).filter(Boolean);
+  const jobMap = Object.fromEntries(jobs.map((job) => [job.id, job]));
+
+  if (jobIds.length > 0) {
+    const appsResp = await supabase
+      .from('applications')
+      .select('id, job_id, applicant_id, applicant_email, resume_url, status, status_updated_at, hr_notes, created_at, updated_at')
+      .in('job_id', jobIds)
+      .eq('status', 'shortlisted')
+      .order('status_updated_at', { ascending: false, nullsFirst: false });
+
+    if (appsResp.error && !isOptionalSchemaError(appsResp.error)) throw appsResp.error;
+    if (!appsResp.error) applicationRows.push(...(appsResp.data || []));
+  }
+
+  const hrProfileResp = await supabase
+    .from('hr_profiles')
+    .select('company_name')
+    .eq('user_id', hrUser.id)
+    .maybeSingle();
+
+  if (hrProfileResp.error && !isOptionalSchemaError(hrProfileResp.error)) throw hrProfileResp.error;
+
+  const companyName = normalizeText(hrProfileResp.data?.company_name);
+  if (companyName) {
+    const connectionsResp = await supabase
+      .from('campus_connections')
+      .select('college_id')
+      .eq('company_user_id', hrUser.id)
+      .eq('status', 'accepted');
+
+    if (connectionsResp.error && !isOptionalSchemaError(connectionsResp.error)) throw connectionsResp.error;
+
+    const connectedCollegeIds = connectionsResp.error ? [] : (connectionsResp.data || []).map((item) => item.college_id).filter(Boolean);
+
+    if (connectedCollegeIds.length > 0) {
+      const drivesResp = await supabase
+        .from('campus_drives')
+        .select('id, college_id, company_name, job_title, college:colleges!campus_drives_college_id_fkey(id, name)')
+        .in('college_id', connectedCollegeIds)
+        .ilike('company_name', companyName);
+
+      if (drivesResp.error && !isOptionalSchemaError(drivesResp.error)) throw drivesResp.error;
+
+      const drives = drivesResp.error ? [] : (drivesResp.data || []);
+      const driveIds = drives.map((drive) => drive.id).filter(Boolean);
+      const driveMap = Object.fromEntries(drives.map((drive) => [drive.id, drive]));
+
+      if (driveIds.length > 0) {
+        const campusResp = await supabase
+          .from('campus_drive_applications')
+          .select('id, drive_id, campus_student_id, student_user_id, applicant_email, status, current_round, notes, applied_at, created_at, reviewed_at, decision_at, resume_url')
+          .in('drive_id', driveIds)
+          .eq('status', 'shortlisted')
+          .order('reviewed_at', { ascending: false, nullsFirst: false });
+
+        if (campusResp.error && !isOptionalSchemaError(campusResp.error)) throw campusResp.error;
+        if (!campusResp.error) {
+          campusRows.push(...(campusResp.data || []).map((item) => ({
+            ...item,
+            drive: driveMap[item.drive_id] || null
+          })));
+        }
+      }
+    }
+  }
+
+  const studentIds = [...new Set([
+    ...rows.map((item) => item.student_user_id),
+    ...applicationRows.map((item) => item.applicant_id),
+    ...campusRows.map((item) => item.student_user_id).filter((item) => isValidUuid(item))
+  ].filter(Boolean))];
+  const campusStudentIds = [...new Set(campusRows.map((item) => item.campus_student_id).filter(Boolean))];
   let usersMap = {};
   let profilesMap = {};
   let interestMap = {};
+  let campusStudentMap = {};
 
   if (studentIds.length > 0) {
     const [users, profilesResp, interestsResp] = await Promise.all([
@@ -1257,29 +1341,168 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
     interestMap = Object.fromEntries(resolveOptionalResponse(interestsResp, []).map((item) => [item.student_user_id, item.status]));
   }
 
+  if (campusStudentIds.length > 0) {
+    const campusStudentsResp = await fetchRowsByIdsInChunks({
+      table: 'campus_students',
+      select: 'id, name, email, phone, degree, branch, graduation_year, cgpa, is_placed',
+      ids: campusStudentIds
+    }).then((data) => ({ data, error: null })).catch((error) => ({ data: null, error }));
+
+    campusStudentMap = Object.fromEntries(resolveOptionalResponse(campusStudentsResp, []).map((item) => [item.id, item]));
+  }
+
+  const presentCandidate = ({ studentId, user, profile = {}, education, crm = {}, sourceAccess = access }) =>
+    buildCandidatePresentation({
+      candidate: {
+        user: user || { id: studentId },
+        profile,
+        education: education || toEducationInsight(profile || {}),
+        crm
+      },
+      access: sourceAccess
+    });
+
+  const crmEntries = rows.map((item) => ({
+    ...item,
+    sourceType: 'candidate_db',
+    sourceLabel: 'Candidate DB',
+    sourceRoute: '/portal/hr/candidates',
+    candidate: presentCandidate({
+      studentId: item.student_user_id,
+      user: usersMap[item.student_user_id] || { id: item.student_user_id },
+      profile: profilesMap[item.student_user_id] || {},
+      crm: {
+        interestStatus: interestMap[item.student_user_id] || null,
+        isShortlisted: true,
+        tags: item.tags || [],
+        notes: item.notes || ''
+      }
+    })
+  }));
+
+  const knownCrmStudentIds = new Set(crmEntries.map((item) => item.student_user_id).filter(Boolean));
+
+  const jobEntries = applicationRows
+    .filter((item) => !knownCrmStudentIds.has(item.applicant_id))
+    .map((item) => {
+      const job = jobMap[item.job_id] || {};
+      const user = usersMap[item.applicant_id] || { id: item.applicant_id, email: item.applicant_email };
+      const profile = profilesMap[item.applicant_id] || {};
+      const canViewContacts = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(hrUser.role) || Boolean(job.contact_details_visible);
+      return {
+        id: `job-${item.id}`,
+        sourceType: 'job_application',
+        sourceLabel: 'Job Shortlisted',
+        sourceRoute: item.job_id ? `/portal/hr/jobs/${item.job_id}/applicants?applicationId=${item.id}` : '/portal/hr/applications?status=shortlisted',
+        student_user_id: item.applicant_id || `job-${item.id}`,
+        application_id: item.id,
+        job_id: item.job_id,
+        status: item.status || 'shortlisted',
+        tags: ['job'],
+        notes: item.hr_notes || `Shortlisted for ${job.job_title || 'job application'}`,
+        updated_at: item.status_updated_at || item.updated_at || item.created_at,
+        candidate: presentCandidate({
+          studentId: item.applicant_id,
+          user: {
+            ...user,
+            email: canViewContacts ? user.email : maskEmail(user.email || item.applicant_email || ''),
+            mobile: canViewContacts ? user.mobile : maskMobile(user.mobile || '')
+          },
+          profile: {
+            ...profile,
+            headline: profile.headline || job.job_title || 'Job shortlisted',
+            resume_url: item.resume_url || profile.resume_url || ''
+          },
+          crm: {
+            interestStatus: interestMap[item.applicant_id] || null,
+            isShortlisted: true,
+            tags: ['job'],
+            notes: item.hr_notes || ''
+          },
+          sourceAccess: {
+            ...access,
+            forceFullProfile: true,
+            forceContactAccess: canViewContacts,
+            forceResumeAccess: true
+          }
+        })
+      };
+    });
+
+  const knownJobStudentIds = new Set(jobEntries.map((item) => item.student_user_id).filter((item) => isValidUuid(item)));
+
+  const campusEntries = campusRows
+    .filter((item) => !knownCrmStudentIds.has(item.student_user_id) && !knownJobStudentIds.has(item.student_user_id))
+    .map((item) => {
+      const drive = item.drive || {};
+      const campusStudent = campusStudentMap[item.campus_student_id] || {};
+      const user = item.student_user_id ? usersMap[item.student_user_id] : null;
+      const profile = item.student_user_id ? (profilesMap[item.student_user_id] || {}) : {};
+      const syntheticId = item.student_user_id || `campus-${item.id}`;
+      const candidateUser = user || {
+        id: syntheticId,
+        name: campusStudent.name || item.applicant_email || 'Campus applicant',
+        email: item.applicant_email || campusStudent.email || '',
+        mobile: campusStudent.phone || ''
+      };
+
+      return {
+        id: `campus-${item.id}`,
+        sourceType: 'campus_drive',
+        sourceLabel: 'Campus Shortlisted',
+        sourceRoute: `/portal/hr/campus-drives?driveId=${encodeURIComponent(item.drive_id || '')}&applicationId=${encodeURIComponent(item.id || '')}`,
+        student_user_id: syntheticId,
+        application_id: item.id,
+        drive_id: item.drive_id,
+        status: item.status || 'shortlisted',
+        tags: ['campus'],
+        notes: item.notes || `Shortlisted for ${drive.job_title || 'campus drive'}`,
+        updated_at: item.reviewed_at || item.decision_at || item.applied_at || item.created_at,
+        candidate: presentCandidate({
+          studentId: syntheticId,
+          user: candidateUser,
+          profile: {
+            ...profile,
+            headline: profile.headline || drive.job_title || 'Campus shortlisted',
+            location: profile.location || drive.college?.name || '',
+            resume_url: item.resume_url || profile.resume_url || ''
+          },
+          education: {
+            college: drive.college?.name || campusStudent.college || '-',
+            degree: campusStudent.degree || '',
+            branch: campusStudent.branch || '',
+            batchYear: campusStudent.graduation_year || '',
+            cgpa: campusStudent.cgpa ?? ''
+          },
+          crm: {
+            interestStatus: item.student_user_id ? (interestMap[item.student_user_id] || null) : null,
+            isShortlisted: true,
+            tags: ['campus'],
+            notes: item.notes || ''
+          },
+          sourceAccess: {
+            ...access,
+            forceFullProfile: true,
+            forceContactAccess: true,
+            forceResumeAccess: Boolean(item.resume_url || profile.resume_url)
+          }
+        })
+      };
+    });
+
+  const shortlisted = [...crmEntries, ...jobEntries, ...campusEntries]
+    .sort((left, right) => new Date(right.updated_at || right.updatedAt || 0).getTime() - new Date(left.updated_at || left.updatedAt || 0).getTime());
+
   return {
     access,
     summary: {
-      total: rows.length,
-      connected: rows.filter((item) => interestMap[item.student_user_id] === 'accepted').length
+      total: shortlisted.length,
+      candidateDb: crmEntries.length,
+      jobApplications: jobEntries.length,
+      campusDrives: campusEntries.length,
+      connected: shortlisted.filter((item) => interestMap[item.student_user_id] === 'accepted').length
     },
-    shortlisted: rows.map((item) => ({
-      ...item,
-      candidate: buildCandidatePresentation({
-        candidate: {
-          user: usersMap[item.student_user_id] || { id: item.student_user_id },
-          profile: profilesMap[item.student_user_id] || {},
-          education: toEducationInsight(profilesMap[item.student_user_id] || {}),
-          crm: {
-            interestStatus: interestMap[item.student_user_id] || null,
-            isShortlisted: true,
-            tags: item.tags || [],
-            notes: item.notes || ''
-          }
-        },
-        access
-      })
-    }))
+    shortlisted
   };
 };
 
