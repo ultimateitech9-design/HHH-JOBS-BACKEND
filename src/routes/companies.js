@@ -2,7 +2,7 @@ const express = require('express');
 
 const { supabase, sendSupabaseError } = require('../supabase');
 const { asyncHandler } = require('../utils/helpers');
-const { JOB_STATUSES, ROLES, USER_STATUSES } = require('../constants');
+const { JOB_APPROVAL_STATUSES, JOB_STATUSES, ROLES, USER_STATUSES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { mapJobFromRow } = require('../utils/mappers');
@@ -33,6 +33,12 @@ const companySubscriptionAuth = [
     ROLES.SUPER_ADMIN
   )
 ];
+
+const applyVisiblePortalJobFilters = (query, nowIso) =>
+  query
+    .eq('status', JOB_STATUSES.OPEN)
+    .or(`approval_status.is.null,approval_status.neq.${JOB_APPROVAL_STATUSES.REJECTED}`)
+    .or(`valid_till.is.null,valid_till.gte.${nowIso}`);
 
 const getDirectorySourceData = async (nowIso) => {
   const [sponsorsResp, profilesResp, portalJobsResp, externalJobsResp] = await Promise.all([
@@ -75,7 +81,7 @@ const getDirectorySourceData = async (nowIso) => {
         users!inner(id, name, email, status, is_hr_approved)
       `)
       .order('created_at', { ascending: false }),
-    supabase
+    applyVisiblePortalJobFilters(supabase
       .from('jobs')
       .select(`
         id,
@@ -103,10 +109,7 @@ const getDirectorySourceData = async (nowIso) => {
         valid_till,
         created_at,
         updated_at
-      `)
-      .eq('status', JOB_STATUSES.OPEN)
-      .neq('approval_status', 'rejected')
-      .gte('valid_till', nowIso),
+      `), nowIso),
     supabase
       .from('external_jobs')
       .select(`

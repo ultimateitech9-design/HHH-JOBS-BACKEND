@@ -375,8 +375,12 @@ const applyJobFilters = (query, filters = {}) => {
   if (salaryType) query = query.eq('salary_type', salaryType);
   if (category) query = applyIlikeAny(query, ['category', 'sector_name'], category);
   if (status) query = query.eq('status', status);
-  if (status === JOB_STATUSES.OPEN) query = query.gte('valid_till', new Date().toISOString());
-  if (!includeUnapproved) query = query.neq('approval_status', JOB_APPROVAL_STATUSES.REJECTED);
+  if (status === JOB_STATUSES.OPEN) {
+    query = query.or(`valid_till.is.null,valid_till.gte.${new Date().toISOString()}`);
+  }
+  if (!includeUnapproved) {
+    query = query.or(`approval_status.is.null,approval_status.neq.${JOB_APPROVAL_STATUSES.REJECTED}`);
+  }
 
   return query;
 };
