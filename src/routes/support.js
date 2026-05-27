@@ -212,7 +212,6 @@ router.post('/queries', asyncHandler(async (req, res) => {
       requester_email: req.user?.email || null,
       requester_role: req.user?.role || null,
       assigned_department: 'support',
-      source: 'self_service',
       sla_due_at: new Date(Date.now() + 24 * 3600000).toISOString()
     })
     .select('*')
