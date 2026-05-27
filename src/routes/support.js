@@ -7,7 +7,21 @@ const { asyncHandler } = require('../utils/helpers');
 
 const router = express.Router();
 
-router.use(requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT));
+router.use(requireAuth, requireActiveUser);
+router.use((req, res, next) => {
+  if (String(req.path || '').startsWith('/queries')) return next();
+  return requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT)(req, res, next);
+});
+
+const TRANSFER_DEPARTMENTS = new Set(['support', 'admin', 'dataentry', 'sales', 'accounts']);
+const normalizeDepartment = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, '');
+  if (normalized === 'dataentry' || normalized === 'dataentryteam') return 'dataentry';
+  if (normalized === 'account' || normalized === 'accounts' || normalized === 'billing') return 'accounts';
+  if (normalized === 'sale' || normalized === 'sales') return 'sales';
+  if (normalized === 'admin') return 'admin';
+  return 'support';
+};
 
 const findSupportTicket = async (ticketIdentifier) => {
   const identifier = String(ticketIdentifier || '').trim();
@@ -154,6 +168,58 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
   res.send({ status: true, ticket: { ...ticket, replies: replies || [] } });
 }));
 
+router.get('/queries', asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from('support_tickets')
+    .select('id, ticket_number, title, category, status, priority, requester_name, requester_email, assigned_department, assignee_name, created_at, updated_at')
+    .eq('requester_id', req.user?.id)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (error) { sendSupabaseError(res, error); return; }
+  res.send({ status: true, tickets: data || [] });
+}));
+
+router.post('/queries', asyncHandler(async (req, res) => {
+  const title = String(req.body?.title || req.body?.subject || '').trim();
+  const description = String(req.body?.description || req.body?.message || '').trim();
+  const category = String(req.body?.category || 'general').trim().toLowerCase();
+  const priority = String(req.body?.priority || 'medium').trim().toLowerCase();
+  const assignedDepartment = normalizeDepartment(req.body?.assignedDepartment || req.body?.assigned_department || category);
+
+  if (!title) return res.status(400).send({ status: false, message: 'title is required' });
+
+  const ticketCount = await countRows('support_tickets');
+  const ticketNumber = `SUP-${String(ticketCount + 1).padStart(4, '0')}`;
+
+  const { data: ticket, error } = await supabase
+    .from('support_tickets')
+    .insert({
+      ticket_number: ticketNumber,
+      title,
+      description: description || null,
+      category,
+      priority: ['low', 'medium', 'high', 'critical'].includes(priority) ? priority : 'medium',
+      status: 'open',
+      requester_id: req.user?.id,
+      requester_name: req.user?.name || null,
+      requester_email: req.user?.email || null,
+      requester_role: req.user?.role || null,
+      assigned_department: TRANSFER_DEPARTMENTS.has(assignedDepartment) ? assignedDepartment : 'support',
+      source: 'self_service',
+      meta: {
+        state: req.body?.state || req.body?.stateName || req.body?.state_name || null,
+        clientType: req.body?.clientType || req.body?.client_type || req.user?.role || null
+      },
+      sla_due_at: new Date(Date.now() + 24 * 3600000).toISOString()
+    })
+    .select('*')
+    .single();
+
+  if (error) { sendSupabaseError(res, error); return; }
+  res.status(201).send({ status: true, ticket });
+}));
+
 router.post('/tickets', asyncHandler(async (req, res) => {
   const { title, description, category, priority } = req.body || {};
   const requesterName = String(req.body?.customer || req.user?.name || '').trim();
@@ -208,6 +274,45 @@ router.patch('/tickets/:id', asyncHandler(async (req, res) => {
 
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Ticket not found' });
+
+  res.send({ status: true, ticket: data });
+}));
+
+router.patch('/tickets/:id/transfer', asyncHandler(async (req, res) => {
+  const targetDepartment = normalizeDepartment(req.body?.department || req.body?.targetDepartment || req.body?.assigned_department);
+  const reason = String(req.body?.reason || '').trim();
+
+  if (!TRANSFER_DEPARTMENTS.has(targetDepartment)) {
+    return res.status(400).send({ status: false, message: 'Invalid transfer department' });
+  }
+
+  const updates = {
+    assigned_department: targetDepartment,
+    status: targetDepartment === 'support' ? 'pending' : 'escalated',
+    transfer_reason: reason || null,
+    transferred_at: new Date().toISOString(),
+    transferred_by: req.user?.id || null,
+    updated_at: new Date().toISOString()
+  };
+
+  const { data, error } = await supabase
+    .from('support_tickets')
+    .update(updates)
+    .eq('id', req.params.id)
+    .select('*')
+    .maybeSingle();
+
+  if (error) { sendSupabaseError(res, error); return; }
+  if (!data) return res.status(404).send({ status: false, message: 'Ticket not found' });
+
+  await supabase.from('ticket_replies').insert({
+    ticket_id: data.id,
+    author_id: req.user?.id,
+    author_name: req.user?.name || 'Support',
+    author_role: req.user?.role || 'support',
+    message: `[TRANSFER] Moved to ${targetDepartment}${reason ? `: ${reason}` : ''}`,
+    is_internal: true
+  });
 
   res.send({ status: true, ticket: data });
 }));
@@ -311,7 +416,49 @@ router.post('/tickets/:id/internal-note', asyncHandler(async (req, res) => {
 // Chats (placeholder — no live chat table yet)
 // =============================================
 router.get('/chats', asyncHandler(async (req, res) => {
-  res.send({ status: true, chats: [] });
+  const { data, error } = await supabase
+    .from('support_chats')
+    .select('*')
+    .order('updated_at', { ascending: false })
+    .limit(100);
+
+  if (error) {
+    if (String(error.code || '').toUpperCase() === '42P01') {
+      res.send({ status: true, chats: [] });
+      return;
+    }
+    sendSupabaseError(res, error);
+    return;
+  }
+
+  res.send({ status: true, chats: data || [] });
+}));
+
+router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
+  const targetDepartment = normalizeDepartment(req.body?.department || req.body?.targetDepartment || req.body?.assigned_department);
+  const reason = String(req.body?.reason || '').trim();
+
+  if (!TRANSFER_DEPARTMENTS.has(targetDepartment)) {
+    return res.status(400).send({ status: false, message: 'Invalid transfer department' });
+  }
+
+  const { data, error } = await supabase
+    .from('support_chats')
+    .update({
+      assigned_department: targetDepartment,
+      transfer_reason: reason || null,
+      transferred_at: new Date().toISOString(),
+      transferred_by: req.user?.id || null,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', req.params.id)
+    .select('*')
+    .maybeSingle();
+
+  if (error) { sendSupabaseError(res, error); return; }
+  if (!data) return res.status(404).send({ status: false, message: 'Chat not found' });
+
+  res.send({ status: true, chat: data });
 }));
 
 // =============================================

@@ -261,6 +261,23 @@ const formatCouponRequest = (row = {}) => ({
   coupon_code: row.sales_coupon?.code || row.coupon_code || null
 });
 
+const buildSalesCode = (user = {}) => {
+  const source = String(user?.name || user?.email || user?.id || 'SALES')
+    .replace(/[^a-z0-9]/gi, '')
+    .toUpperCase();
+  return `HHH-${(source || 'SALES').slice(0, 6)}-${String(user?.id || '').replace(/-/g, '').slice(0, 4).toUpperCase() || '0000'}`;
+};
+
+const getSalesProfileMeta = async (user = {}) => {
+  const { data } = await supabase
+    .from('sales_profiles')
+    .select('meta')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  return data?.meta && typeof data.meta === 'object' ? data.meta : {};
+};
+
 const summarizeByKey = (rows = [], key, fallback = 'Unassigned') => Object.values(rows.reduce((acc, row) => {
   const label = String(row?.[key] || fallback).trim() || fallback;
   const current = acc[label] || { label, leads: 0, converted: 0, revenue: 0 };
@@ -1604,6 +1621,32 @@ router.patch('/orders/:id/status', asyncHandler(async (req, res) => {
   res.send({ status: true, order: data });
 }));
 
+router.get('/referral-code', asyncHandler(async (req, res) => {
+  const meta = req.user?.role === ROLES.SALES ? await getSalesProfileMeta(req.user) : {};
+  const salesCode = String(meta.salesCode || meta.sales_code || buildSalesCode(req.user)).trim().toUpperCase();
+  const assignedStates = Array.isArray(meta.assignedStates || meta.assigned_states)
+    ? (meta.assignedStates || meta.assigned_states)
+    : [];
+
+  if (req.user?.role === ROLES.SALES && !meta.salesCode && !meta.sales_code) {
+    await supabase
+      .from('sales_profiles')
+      .upsert({
+        user_id: req.user.id,
+        meta: { ...meta, salesCode, sales_code: salesCode, assignedStates, assigned_states: assignedStates }
+      }, { onConflict: 'user_id' });
+  }
+
+  res.send({
+    status: true,
+    referral: {
+      salesCode,
+      assignedStates,
+      shareText: `Use HHH Jobs sales code ${salesCode} while registering as HR, Campus, or Student.`
+    }
+  });
+}));
+
 // =============================================
 // Leads
 // =============================================
@@ -1708,6 +1751,80 @@ router.post('/leads', asyncHandler(async (req, res) => {
   if (error) { sendSupabaseError(res, error); return; }
 
   res.status(201).send({ status: true, lead: formatLeadRow(data) });
+}));
+
+router.post('/onboarding-requests', asyncHandler(async (req, res) => {
+  const payload = req.body || {};
+  const companyName = String(payload.company_name || payload.companyName || payload.clientName || '').trim();
+  const contactName = String(payload.contact_name || payload.contactName || '').trim();
+  const contactEmail = String(payload.contact_email || payload.contactEmail || '').trim().toLowerCase();
+  const targetRole = String(payload.target_role || payload.targetRole || ROLES.HR).trim().toLowerCase();
+  const salesCode = String(payload.sales_code || payload.salesCode || '').trim().toUpperCase();
+
+  if (!companyName) {
+    res.status(400).send({ status: false, message: 'company_name is required' });
+    return;
+  }
+
+  const { data: lead, error: leadError } = await supabase
+    .from('sales_leads')
+    .insert({
+      company_name: companyName,
+      contact_name: contactName || null,
+      contact_email: contactEmail || null,
+      contact_phone: payload.contact_phone || payload.contactPhone || null,
+      source: 'sales_dataentry_onboarding',
+      notes: payload.notes || null,
+      value: payload.value ? Number(payload.value) : null,
+      assigned_to: req.user?.id,
+      assigned_name: req.user?.name || req.user?.email || 'Sales',
+      assigned_at: new Date().toISOString(),
+      assignment_source: salesCode ? 'sales_code' : 'sales_request',
+      sales_code: salesCode || null,
+      target_role: targetRole,
+      onboarding_status: 'onboarding',
+      status: 'qualified',
+      state_name: payload.state_name || payload.stateName || null,
+      district_name: payload.district_name || payload.districtName || null,
+      location: payload.location || null,
+      zone: buildLeadZoneLabel({
+        stateName: payload.state_name || payload.stateName,
+        districtName: payload.district_name || payload.districtName,
+        location: payload.location
+      }) || null
+    })
+    .select('*')
+    .single();
+
+  if (leadError) { sendSupabaseError(res, leadError); return; }
+
+  const { data: dataEntryTask, error: taskError } = await supabase
+    .from('dataentry_entries')
+    .insert({
+      type: 'onboarding',
+      title: `Onboard ${companyName}`,
+      status: 'pending',
+      submitted_by: req.user?.id,
+      submitted_name: req.user?.name || req.user?.email || 'Sales',
+      data: {
+        leadId: lead.id,
+        companyName,
+        contactName,
+        contactEmail,
+        targetRole,
+        salesCode,
+        stateName: payload.state_name || payload.stateName || null,
+        districtName: payload.district_name || payload.districtName || null,
+        location: payload.location || null,
+        notes: payload.notes || null
+      }
+    })
+    .select('*')
+    .single();
+
+  if (taskError) { sendSupabaseError(res, taskError); return; }
+
+  res.status(201).send({ status: true, lead: formatLeadRow(lead), dataEntryTask });
 }));
 
 router.patch('/leads/:id', asyncHandler(async (req, res) => {

@@ -79,6 +79,28 @@ const sanitizeMeta = (value) => (
     : {}
 );
 
+const normalizeStringArray = (value) => {
+  const items = Array.isArray(value)
+    ? value
+    : String(value ?? '').split(',');
+
+  return [...new Set(items
+    .map((item) => String(item || '').trim())
+    .filter(Boolean))];
+};
+
+const buildOpsMeta = (reqBody = {}) => {
+  const meta = sanitizeMeta(reqBody?.meta);
+  const assignedStates = normalizeStringArray(reqBody?.assignedStates ?? reqBody?.assigned_states);
+  const salesCode = toOptionalText(reqBody?.salesCode ?? reqBody?.sales_code);
+
+  return {
+    ...meta,
+    ...(assignedStates.length ? { assignedStates, assigned_states: assignedStates } : {}),
+    ...(salesCode ? { salesCode: salesCode.toUpperCase(), sales_code: salesCode.toUpperCase() } : {})
+  };
+};
+
 const getProfileRoleKey = (role) => (
   normalizeRole(role) === ROLES.RETIRED_EMPLOYEE
     ? ROLES.STUDENT
@@ -243,15 +265,16 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
   }
 
   if (profileRole === ROLES.ADMIN) {
+    const opsMeta = buildOpsMeta(reqBody);
     return {
       ...basePayload,
       admin_tier: toOptionalText(reqBody?.adminTier ?? reqBody?.admin_tier) || 'standard',
       department: toOptionalText(reqBody?.department) || 'Administration',
       designation: toOptionalText(reqBody?.designation) || 'Administrator',
-      access_scope: toOptionalText(reqBody?.accessScope ?? reqBody?.access_scope),
+      access_scope: toOptionalText(reqBody?.accessScope ?? reqBody?.access_scope) || normalizeStringArray(reqBody?.assignedStates ?? reqBody?.assigned_states).join(', '),
       can_manage_users: reqBody?.canManageUsers ?? reqBody?.can_manage_users ?? true,
       notes: toOptionalText(reqBody?.notes),
-      meta: sanitizeMeta(reqBody?.meta)
+      meta: opsMeta
     };
   }
 
@@ -274,7 +297,7 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
       escalation_level: toOptionalText(reqBody?.escalationLevel ?? reqBody?.escalation_level) || 'L1',
       voice_enabled: reqBody?.voiceEnabled ?? reqBody?.voice_enabled ?? false,
       notes: toOptionalText(reqBody?.notes),
-      meta: sanitizeMeta(reqBody?.meta)
+      meta: buildOpsMeta(reqBody)
     };
   }
 
@@ -286,7 +309,7 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
       quota: toOptionalNumber(reqBody?.quota) ?? 0,
       commission_rate: toOptionalNumber(reqBody?.commissionRate ?? reqBody?.commission_rate) ?? 0,
       notes: toOptionalText(reqBody?.notes),
-      meta: sanitizeMeta(reqBody?.meta)
+      meta: buildOpsMeta(reqBody)
     };
   }
 
@@ -298,7 +321,7 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
       approval_limit: toOptionalNumber(reqBody?.approvalLimit ?? reqBody?.approval_limit) ?? 0,
       settlement_responsibility: toOptionalText(reqBody?.settlementResponsibility ?? reqBody?.settlement_responsibility),
       notes: toOptionalText(reqBody?.notes),
-      meta: sanitizeMeta(reqBody?.meta)
+      meta: buildOpsMeta(reqBody)
     };
   }
 
@@ -310,7 +333,7 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
       target_volume: Number.parseInt(reqBody?.targetVolume ?? reqBody?.target_volume ?? 0, 10) || 0,
       quality_score: toOptionalNumber(reqBody?.qualityScore ?? reqBody?.quality_score),
       notes: toOptionalText(reqBody?.notes),
-      meta: sanitizeMeta(reqBody?.meta)
+      meta: buildOpsMeta(reqBody)
     };
   }
 

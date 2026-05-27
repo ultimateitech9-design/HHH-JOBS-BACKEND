@@ -230,6 +230,7 @@ mountRoute('/sales', safeRequireRoute('./src/routes/sales', 'sales'));
 mountRoute('/accounts', safeRequireRoute('./src/routes/accounts', 'accounts'));
 mountRoute('/dataentry', safeRequireRoute('./src/routes/dataentry', 'dataentry'));
 mountRoute('/campus-connect', safeRequireRoute('./src/routes/campusConnect', 'campusConnect'));
+mountRoute('/ops', safeRequireRoute('./src/routes/ops', 'ops'));
 mountRoute('/external-jobs', safeRequireRoute('./src/routes/externalJobs', 'externalJobs'));
 mountRoute('/integrations', safeRequireRoute('./src/routes/integrations', 'integrations'));
 mountRoute('/features', safeRequireRoute('./src/routes/features', 'features'));

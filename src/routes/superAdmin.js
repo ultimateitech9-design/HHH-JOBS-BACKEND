@@ -22,6 +22,48 @@ const getFirstRelation = (value) => {
   return value || null;
 };
 
+const PROFILE_TABLES_FOR_MANAGED_META = {
+  [ROLES.ADMIN]: 'admin_profiles',
+  [ROLES.SUPPORT]: 'support_profiles',
+  [ROLES.SALES]: 'sales_profiles',
+  [ROLES.ACCOUNTS]: 'accounts_profiles',
+  [ROLES.DATAENTRY]: 'dataentry_profiles'
+};
+
+const normalizeArrayMeta = (value) => (
+  Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean)
+    : []
+);
+
+const enrichManagedUsers = async (users = []) => {
+  const byId = new Map((users || []).map((user) => [user.id, { ...user }]));
+  const grouped = users.reduce((acc, user) => {
+    const table = PROFILE_TABLES_FOR_MANAGED_META[String(user.role || '').toLowerCase()];
+    if (!table) return acc;
+    acc[table] = acc[table] || [];
+    acc[table].push(user.id);
+    return acc;
+  }, {});
+
+  await Promise.all(Object.entries(grouped).map(async ([table, ids]) => {
+    const { data } = await supabase
+      .from(table)
+      .select('user_id, meta')
+      .in('user_id', ids);
+
+    (data || []).forEach((profile) => {
+      const user = byId.get(profile.user_id);
+      const meta = profile.meta && typeof profile.meta === 'object' ? profile.meta : {};
+      if (!user) return;
+      user.assignedStates = normalizeArrayMeta(meta.assignedStates || meta.assigned_states);
+      user.salesCode = String(meta.salesCode || meta.sales_code || '').trim().toUpperCase();
+    });
+  }));
+
+  return users.map((user) => byId.get(user.id) || user);
+};
+
 const isLiveCampusDriveStatus = (value = '') => !['completed', 'cancelled', 'closed', 'archived'].includes(String(value || '').toLowerCase());
 
 const SYSTEM_LOG_FETCH_LIMIT = 5000;
@@ -273,14 +315,27 @@ router.get('/users', asyncHandler(async (req, res) => {
   const { data, error, count } = await query;
   if (error) { sendSupabaseError(res, error); return; }
 
-  res.send({ status: true, users: data || [], total: count || 0, page, limit });
+  const users = await enrichManagedUsers(data || []);
+  res.send({ status: true, users, total: count || 0, page, limit });
 }));
 
 router.post('/users', asyncHandler(async (req, res) => {
   const { name, email, password, role, mobile } = req.body || {};
+  const normalizedRole = String(role || '').trim().toLowerCase();
 
   if (!name || !email || !password || !role) {
     return res.status(400).send({ status: false, message: 'name, email, password and role are required' });
+  }
+
+  if (req.user?.role === ROLES.ADMIN && [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(normalizedRole)) {
+    return res.status(403).send({ status: false, message: 'Admins can create data entry, support, sales, and accounts users only.' });
+  }
+
+  if (normalizedRole === ROLES.SUPER_ADMIN) {
+    const existingSuperAdmins = await countRows('users', (q) => q.eq('role', ROLES.SUPER_ADMIN).neq('status', USER_STATUSES.BANNED));
+    if (existingSuperAdmins > 0) {
+      return res.status(409).send({ status: false, message: 'Only one super admin account is allowed.' });
+    }
   }
 
   const passwordError = getPasswordPolicyError(password);
@@ -308,7 +363,7 @@ router.post('/users', asyncHandler(async (req, res) => {
       email: String(email).trim().toLowerCase(),
       mobile: String(mobile || '').trim(),
       password_hash: passwordHash,
-      role: String(role).trim(),
+      role: normalizedRole,
       status: USER_STATUSES.ACTIVE,
       is_email_verified: true
     })
@@ -320,7 +375,7 @@ router.post('/users', asyncHandler(async (req, res) => {
   try {
     await upsertRoleProfile({
       supabase,
-      role,
+      role: normalizedRole,
       userId: user.id,
       reqBody: req.body || {}
     });
@@ -336,7 +391,7 @@ router.post('/users', asyncHandler(async (req, res) => {
     actor_id: req.user?.id,
     actor_name: req.user?.name,
     actor_role: req.user?.role,
-    details: `Created user ${user.email} with role ${role}`
+    details: `Created user ${user.email} with role ${normalizedRole}`
   });
 
   await enqueueCreatedUserWelcomeEmail({
@@ -346,7 +401,8 @@ router.post('/users', asyncHandler(async (req, res) => {
     console.warn('[CREATED USER WELCOME EMAIL]', welcomeError?.message || welcomeError);
   });
 
-  res.status(201).send({ status: true, user });
+  const [enrichedUser] = await enrichManagedUsers([user]);
+  res.status(201).send({ status: true, user: enrichedUser || user });
 }));
 
 router.patch('/users/:id/status', asyncHandler(async (req, res) => {
