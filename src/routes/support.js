@@ -185,19 +185,25 @@ router.post('/queries', asyncHandler(async (req, res) => {
   const description = String(req.body?.description || req.body?.message || '').trim();
   const category = String(req.body?.category || 'general').trim().toLowerCase();
   const priority = String(req.body?.priority || 'medium').trim().toLowerCase();
-  const assignedDepartment = normalizeDepartment(req.body?.assignedDepartment || req.body?.assigned_department || category);
+  const state = String(req.body?.state || req.body?.stateName || req.body?.state_name || '').trim();
+  const clientType = String(req.body?.clientType || req.body?.client_type || req.body?.customerRole || req.user?.role || '').trim();
 
   if (!title) return res.status(400).send({ status: false, message: 'title is required' });
 
   const ticketCount = await countRows('support_tickets');
   const ticketNumber = `SUP-${String(ticketCount + 1).padStart(4, '0')}`;
+  const contextLines = [
+    state ? `State/Location: ${state}` : '',
+    clientType ? `Client Type: ${clientType}` : ''
+  ].filter(Boolean);
+  const ticketDescription = [description, ...contextLines].filter(Boolean).join('\n\n');
 
   const { data: ticket, error } = await supabase
     .from('support_tickets')
     .insert({
       ticket_number: ticketNumber,
       title,
-      description: description || null,
+      description: ticketDescription || null,
       category,
       priority: ['low', 'medium', 'high', 'critical'].includes(priority) ? priority : 'medium',
       status: 'open',
@@ -205,12 +211,8 @@ router.post('/queries', asyncHandler(async (req, res) => {
       requester_name: req.user?.name || null,
       requester_email: req.user?.email || null,
       requester_role: req.user?.role || null,
-      assigned_department: TRANSFER_DEPARTMENTS.has(assignedDepartment) ? assignedDepartment : 'support',
+      assigned_department: 'support',
       source: 'self_service',
-      meta: {
-        state: req.body?.state || req.body?.stateName || req.body?.state_name || null,
-        clientType: req.body?.clientType || req.body?.client_type || req.user?.role || null
-      },
       sla_due_at: new Date(Date.now() + 24 * 3600000).toISOString()
     })
     .select('*')
