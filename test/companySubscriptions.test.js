@@ -159,8 +159,8 @@ const createQueryWithError = (error) => {
 };
 
 test('buildCompanySubscriptionKey normalizes company names and slugs consistently', () => {
-  assert.equal(buildCompanySubscriptionKey({ companyName: 'ACME & Sons Pvt. Ltd.' }), 'acme and sons pvt ltd');
-  assert.equal(buildCompanySubscriptionKey({ companySlug: 'acme-sons-pvt-ltd' }), 'acme sons pvt ltd');
+  assert.equal(buildCompanySubscriptionKey({ companyName: 'ACME & Sons Pvt. Ltd.' }), 'acme and sons');
+  assert.equal(buildCompanySubscriptionKey({ companySlug: 'acme-sons-pvt-ltd' }), 'acme sons');
 });
 
 test('notifyCompanySubscribersForJob sends one notification per subscribed portal user', async () => {

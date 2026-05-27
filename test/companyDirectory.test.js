@@ -9,9 +9,15 @@ const {
 } = require('../src/services/companyDirectory');
 
 test('normalizeCompanyKey keeps company duplicates in one bucket', () => {
-  assert.equal(normalizeCompanyKey('Cloudflare, Inc.'), 'cloudflare inc');
-  assert.equal(normalizeCompanyKey('  CLOUDFlare inc  '), 'cloudflare inc');
-  assert.equal(toCompanySlug('Cloudflare, Inc.'), 'cloudflare-inc');
+  assert.equal(normalizeCompanyKey('Cloudflare, Inc.'), 'cloudflare');
+  assert.equal(normalizeCompanyKey('  CLOUDFlare inc  '), 'cloudflare');
+  assert.equal(toCompanySlug('Cloudflare, Inc.'), 'cloudflare');
+});
+
+test('normalizeCompanyKey merges common legal suffix variants', () => {
+  assert.equal(normalizeCompanyKey('Eimager Pvt Ltd'), 'eimager');
+  assert.equal(normalizeCompanyKey('Eimager Private Limited'), 'eimager');
+  assert.equal(normalizeCompanyKey('Ultimate ITech LLP'), 'ultimate itech');
 });
 
 test('buildCompanyDirectory merges portal and live-feed company records', () => {
@@ -160,6 +166,43 @@ test('buildCompanyDirectory keeps portal employer profiles visible before open j
   assert.equal(companies[0].totalJobs, 0);
   assert.equal(companies[0].location, 'Raipur, Chhattisgarh');
   assert.deepEqual(companies[0].categories, ['Engineering']);
+});
+
+test('buildCompanyDirectory merges sponsor names with legal-suffix job company variants', () => {
+  const companies = buildCompanyDirectory({
+    sponsoredCompanies: [
+      {
+        company_name: 'Eimager',
+        company_slug: 'eimager',
+        logo_url: 'https://www.eimager.com/images/logo.png',
+        display_rating: 4.6,
+        reviews_label: '120+ reviews',
+        display_tags: ['IT Services', 'Technology'],
+        sort_order: 10,
+        created_at: '2026-05-20T08:00:00.000Z',
+        updated_at: '2026-05-21T08:00:00.000Z'
+      }
+    ],
+    portalJobs: [
+      {
+        company_name: 'Eimager Pvt Ltd',
+        company_logo: '',
+        job_location: 'Noida, Uttar Pradesh',
+        category: 'IT Services',
+        is_featured: false,
+        created_at: '2026-05-21T08:00:00.000Z',
+        updated_at: '2026-05-21T08:00:00.000Z',
+        valid_till: null
+      }
+    ],
+    externalJobs: []
+  });
+
+  assert.equal(companies.length, 1);
+  assert.equal(companies[0].slug, 'eimager');
+  assert.equal(companies[0].name, 'Eimager Pvt Ltd');
+  assert.equal(companies[0].totalJobs, 1);
+  assert.equal(companies[0].portalJobs, 1);
 });
 
 test('buildCompanyDirectory keeps sponsor companies routable before they post jobs', () => {

@@ -190,6 +190,9 @@ const buildDirectoryFromSourceData = ({ sponsorsResp, profilesResp, portalJobsRe
   });
 };
 
+const isMainDirectoryCompany = (company = {}) =>
+  Boolean(company.portalProfile || Number(company.totalJobs || 0) > 0);
+
 const mapExternalCompanyJob = (job, brandIndex) => {
   const brand = resolveCompanyBrand(brandIndex, job.company_name, {
     logoUrl: job.company_logo,
@@ -257,7 +260,7 @@ router.get('/', asyncHandler(async (req, res) => {
     profilesResp,
     portalJobsResp,
     externalJobsResp
-  });
+  }).filter(isMainDirectoryCompany);
 
   const filteredCompanies = search
     ? listedCompanies.filter((company) => {

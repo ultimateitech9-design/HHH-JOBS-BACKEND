@@ -3,6 +3,8 @@ const normalizeCompanyKey = (value = '') =>
     .toLowerCase()
     .replace(/&/g, ' and ')
     .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(pvt|private)\s+(ltd|limited)\b/g, ' ')
+    .replace(/\b(pvt|ltd|limited|llp|llc|inc|incorporated|corp|corporation|company|co)\b/g, ' ')
     .trim();
 
 const toCompanySlug = (value = '') =>
