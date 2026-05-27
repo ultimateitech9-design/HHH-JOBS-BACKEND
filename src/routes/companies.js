@@ -35,14 +35,161 @@ const companySubscriptionAuth = [
   )
 ];
 
-const applyVisiblePortalJobFilters = (query, nowIso) =>
+const COMPANY_PROFILE_SELECT = `
+  id,
+  company_key,
+  company_slug,
+  company_name,
+  hr_user_id,
+  logo_url,
+  website_url,
+  location,
+  state_id,
+  district_id,
+  state_name,
+  district_name,
+  sector_id,
+  sector_name,
+  industry_type,
+  company_type,
+  company_size,
+  about,
+  is_verified,
+  is_sponsored,
+  sponsor_rating,
+  sponsor_reviews_label,
+  sponsor_tags,
+  sponsor_sort_order,
+  is_active,
+  source,
+  created_at,
+  updated_at
+`;
+
+const PORTAL_JOB_SELECT = `
+  id,
+  created_by,
+  posted_by,
+  company_id,
+  company_key,
+  company_slug,
+  job_title,
+  company_name,
+  min_price,
+  max_price,
+  salary_type,
+  job_location,
+  job_locations,
+  state_id,
+  district_id,
+  state_name,
+  district_name,
+  posting_date,
+  experience_level,
+  skills,
+  company_logo,
+  employment_type,
+  description,
+  status,
+  approval_status,
+  category,
+  sector_id,
+  sector_name,
+  is_featured,
+  applications_count,
+  valid_till,
+  created_at,
+  updated_at
+`;
+
+const LEGACY_PORTAL_JOB_SELECT = `
+  id,
+  created_by,
+  posted_by,
+  job_title,
+  company_name,
+  min_price,
+  max_price,
+  salary_type,
+  job_location,
+  job_locations,
+  state_id,
+  district_id,
+  state_name,
+  district_name,
+  posting_date,
+  experience_level,
+  skills,
+  company_logo,
+  employment_type,
+  description,
+  status,
+  approval_status,
+  category,
+  sector_id,
+  sector_name,
+  is_featured,
+  applications_count,
+  valid_till,
+  created_at,
+  updated_at
+`;
+
+const isOptionalCompanySchemaError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.code === '42P01'
+    || error?.code === '42703'
+    || message.includes('relation "public.companies" does not exist')
+    || message.includes('relation "companies" does not exist')
+    || (message.includes('companies') && message.includes('schema cache'))
+    || message.includes('column jobs.company_id does not exist')
+    || message.includes('column jobs.company_key does not exist')
+    || message.includes('column jobs.company_slug does not exist')
+    || (message.includes('jobs') && message.includes('company_id'))
+    || (message.includes('jobs') && message.includes('company_key'))
+    || (message.includes('jobs') && message.includes('company_slug'));
+};
+
+const applyVisiblePortalJobFilters = (query) =>
   query
     .eq('status', JOB_STATUSES.OPEN)
-    .or(`approval_status.is.null,approval_status.neq.${JOB_APPROVAL_STATUSES.REJECTED}`)
-    .or(`valid_till.is.null,valid_till.gte.${nowIso}`);
+    .or(`approval_status.is.null,approval_status.neq.${JOB_APPROVAL_STATUSES.REJECTED}`);
 
-const getDirectorySourceData = async (nowIso) => {
-  const [sponsorsResp, profilesResp, portalJobsResp, externalJobsResp] = await Promise.all([
+const fetchCompanyProfiles = async () => {
+  const response = await supabase
+    .from('companies')
+    .select(COMPANY_PROFILE_SELECT)
+    .eq('is_active', true)
+    .order('is_sponsored', { ascending: false })
+    .order('sponsor_sort_order', { ascending: true, nullsFirst: false })
+    .order('updated_at', { ascending: false, nullsFirst: false });
+
+  if (response.error && isOptionalCompanySchemaError(response.error)) {
+    return { data: [], error: null, schemaUnavailable: true };
+  }
+
+  return response;
+};
+
+const fetchPortalJobs = async () => {
+  const response = await applyVisiblePortalJobFilters(
+    supabase
+      .from('jobs')
+      .select(PORTAL_JOB_SELECT)
+  );
+
+  if (!response.error || !isOptionalCompanySchemaError(response.error)) return response;
+
+  return applyVisiblePortalJobFilters(
+    supabase
+      .from('jobs')
+      .select(LEGACY_PORTAL_JOB_SELECT)
+  );
+};
+
+const getDirectorySourceData = async () => {
+  const [companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp] = await Promise.all([
+    fetchCompanyProfiles(),
     supabase
       .from('sponsored_companies')
       .select(`
@@ -86,39 +233,7 @@ const getDirectorySourceData = async (nowIso) => {
         users!inner(id, name, email, status, is_hr_approved)
       `)
       .order('created_at', { ascending: false }),
-    applyVisiblePortalJobFilters(supabase
-      .from('jobs')
-      .select(`
-        id,
-        created_by,
-        job_title,
-        company_name,
-        min_price,
-        max_price,
-        salary_type,
-        job_location,
-        job_locations,
-        state_id,
-        district_id,
-        state_name,
-        district_name,
-        posting_date,
-        experience_level,
-        skills,
-        company_logo,
-        employment_type,
-        description,
-        status,
-        approval_status,
-        category,
-        sector_id,
-        sector_name,
-        is_featured,
-        applications_count,
-        valid_till,
-        created_at,
-        updated_at
-      `), nowIso),
+    fetchPortalJobs(),
     supabase
       .from('external_jobs')
       .select(`
@@ -145,6 +260,7 @@ const getDirectorySourceData = async (nowIso) => {
   ]);
 
   return {
+    companyProfilesResp,
     sponsorsResp,
     profilesResp,
     portalJobsResp,
@@ -169,20 +285,23 @@ const isPublicHrCompanyProfile = (profile = {}) => {
 
 const buildVisibleHrProfiles = (profilesResp) => (profilesResp.data || []).filter(isPublicHrCompanyProfile);
 
-const buildVisiblePortalJobs = ({ profilesResp, portalJobsResp }) =>
+const buildVisiblePortalJobs = ({ companyProfilesResp, profilesResp, portalJobsResp }) =>
   enrichPortalJobsWithHrProfiles({
     portalJobs: portalJobsResp.data || [],
-    hrProfiles: buildVisibleHrProfiles(profilesResp)
+    hrProfiles: buildVisibleHrProfiles(profilesResp),
+    companyProfiles: companyProfilesResp.data || []
   });
 
-const buildDirectoryFromSourceData = ({ sponsorsResp, profilesResp, portalJobsResp, externalJobsResp }) => {
+const buildDirectoryFromSourceData = ({ companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp }) => {
   const hrProfiles = buildVisibleHrProfiles(profilesResp);
   const portalJobs = enrichPortalJobsWithHrProfiles({
     portalJobs: portalJobsResp.data || [],
-    hrProfiles
+    hrProfiles,
+    companyProfiles: companyProfilesResp.data || []
   });
 
   return buildCompanyDirectory({
+    companyProfiles: companyProfilesResp.data || [],
     sponsoredCompanies: sponsorsResp.data || [],
     hrProfiles,
     portalJobs,
@@ -231,9 +350,13 @@ router.get('/', asyncHandler(async (req, res) => {
   }
 
   const search = String(req.query.search || '').trim().toLowerCase();
-  const nowIso = new Date().toISOString();
 
-  const { sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData(nowIso);
+  const { companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData();
+
+  if (companyProfilesResp.error) {
+    sendSupabaseError(res, companyProfilesResp.error);
+    return;
+  }
 
   if (sponsorsResp.error) {
     sendSupabaseError(res, sponsorsResp.error);
@@ -256,6 +379,7 @@ router.get('/', asyncHandler(async (req, res) => {
   }
 
   const listedCompanies = buildDirectoryFromSourceData({
+    companyProfilesResp,
     sponsorsResp,
     profilesResp,
     portalJobsResp,
@@ -294,8 +418,12 @@ router.get('/sponsors', asyncHandler(async (req, res) => {
     return;
   }
 
-  const nowIso = new Date().toISOString();
-  const { sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData(nowIso);
+  const { companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData();
+
+  if (companyProfilesResp.error) {
+    sendSupabaseError(res, companyProfilesResp.error);
+    return;
+  }
 
   if (sponsorsResp.error) {
     sendSupabaseError(res, sponsorsResp.error);
@@ -318,6 +446,7 @@ router.get('/sponsors', asyncHandler(async (req, res) => {
   }
 
   const companies = buildDirectoryFromSourceData({
+    companyProfilesResp,
     sponsorsResp,
     profilesResp,
     portalJobsResp,
@@ -414,8 +543,12 @@ router.get('/:companySlug', asyncHandler(async (req, res) => {
   }
 
   const companySlug = String(req.params.companySlug || '').trim().toLowerCase();
-  const nowIso = new Date().toISOString();
-  const { sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData(nowIso);
+  const { companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData();
+
+  if (companyProfilesResp.error) {
+    sendSupabaseError(res, companyProfilesResp.error);
+    return;
+  }
 
   if (sponsorsResp.error) {
     sendSupabaseError(res, sponsorsResp.error);
@@ -438,6 +571,7 @@ router.get('/:companySlug', asyncHandler(async (req, res) => {
   }
 
   const companies = buildDirectoryFromSourceData({
+    companyProfilesResp,
     sponsorsResp,
     profilesResp,
     portalJobsResp,
@@ -455,13 +589,24 @@ router.get('/:companySlug', asyncHandler(async (req, res) => {
   }
 
   const brandIndex = buildCompanyBrandIndex({
-    sponsoredCompanies: sponsorsResp.data || [],
-    hrProfiles: profilesResp.data || []
+    sponsoredCompanies: [
+      ...(sponsorsResp.data || []),
+      ...(companyProfilesResp.data || []).filter((entry) => entry.is_sponsored)
+    ],
+    hrProfiles: [
+      ...(profilesResp.data || []),
+      ...(companyProfilesResp.data || [])
+    ]
   });
-  const companyKey = normalizeCompanyKey(company.name);
-  const visiblePortalJobs = buildVisiblePortalJobs({ profilesResp, portalJobsResp });
+  const companyKey = normalizeCompanyKey(company.companyKey || company.name);
+  const companyId = String(company.companyId || '').trim();
+  const visiblePortalJobs = buildVisiblePortalJobs({ companyProfilesResp, profilesResp, portalJobsResp });
   const portalJobs = visiblePortalJobs
-    .filter((job) => normalizeCompanyKey(job.company_name) === companyKey)
+    .filter((job) => {
+      const jobCompanyId = String(job.company_id || '').trim();
+      const jobCompanyKey = normalizeCompanyKey(job.company_key || job.company_name);
+      return (companyId && jobCompanyId === companyId) || jobCompanyKey === companyKey;
+    })
     .map((job) => {
       const brand = resolveCompanyBrand(brandIndex, job.company_name, {
         logoUrl: job.company_logo

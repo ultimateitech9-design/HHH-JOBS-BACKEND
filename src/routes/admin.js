@@ -51,6 +51,25 @@ const ADMIN_USER_FILTER_ROLES = new Set([
   'company_admin'
 ]);
 
+const toOptionalText = (value) => {
+  const text = String(value ?? '').trim();
+  return text || null;
+};
+
+const toTextArray = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  const text = String(value || '').trim();
+  return text ? text.split(',').map((item) => item.trim()).filter(Boolean) : [];
+};
+
+const toOptionalInteger = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 const normalizeAdminSettings = (payload = {}) => {
   const source = payload && typeof payload === 'object' ? payload : {};
 
@@ -293,6 +312,49 @@ router.patch('/jobs/:id/approval', asyncHandler(async (req, res) => {
     status: false,
     message: 'Job approval flow has been removed. Jobs now go live immediately unless blocked by content safeguards.'
   });
+}));
+
+// =============================================
+// Company directory controls
+// =============================================
+router.patch('/companies/:id/sponsor', asyncHandler(async (req, res) => {
+  const sponsored = req.body?.sponsored !== false;
+  const updateDoc = {
+    is_sponsored: sponsored,
+    sponsor_rating: req.body?.rating === undefined || req.body?.rating === null
+      ? null
+      : Number(req.body.rating),
+    sponsor_reviews_label: toOptionalText(req.body?.reviewsLabel ?? req.body?.reviews_label),
+    sponsor_tags: toTextArray(req.body?.tags ?? req.body?.sponsorTags ?? req.body?.sponsor_tags),
+    sponsor_sort_order: toOptionalInteger(req.body?.sortOrder ?? req.body?.sort_order),
+    updated_at: new Date().toISOString()
+  };
+
+  if (!sponsored) {
+    updateDoc.sponsor_rating = null;
+    updateDoc.sponsor_reviews_label = null;
+    updateDoc.sponsor_tags = [];
+    updateDoc.sponsor_sort_order = null;
+  }
+
+  const { data, error } = await supabase
+    .from('companies')
+    .update(updateDoc)
+    .eq('id', req.params.id)
+    .select('*')
+    .maybeSingle();
+
+  if (error) {
+    sendSupabaseError(res, error);
+    return;
+  }
+
+  if (!data) {
+    res.status(404).send({ status: false, message: 'Company not found' });
+    return;
+  }
+
+  res.send({ status: true, company: data });
 }));
 
 router.delete('/jobs/:id', asyncHandler(async (req, res) => {

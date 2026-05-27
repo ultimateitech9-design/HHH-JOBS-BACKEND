@@ -66,7 +66,7 @@ const buildCompanyBrandIndex = ({
   for (const profile of hrProfiles) {
     register(profile.company_name || profile.companyName, {
       logoUrl: profile.logo_url || profile.logoUrl,
-      websiteUrl: profile.company_website || profile.companyWebsite
+      websiteUrl: profile.company_website || profile.companyWebsite || profile.website_url || profile.websiteUrl
     });
   }
 

@@ -105,13 +105,18 @@ const addSourceKey = (entry, value) => {
   entry.liveSourceKeys[sourceKey] = true;
 };
 
-const getOrCreateEntry = (directory, companyName) => {
-  const key = normalizeCompanyKey(companyName);
+const getDirectoryKey = (companyName = '', explicitKey = '') =>
+  normalizeCompanyKey(explicitKey) || normalizeCompanyKey(companyName);
+
+const getOrCreateEntry = (directory, companyName, explicitKey = '') => {
+  const key = getDirectoryKey(companyName, explicitKey);
   if (!key) return null;
 
   if (!directory[key]) {
     directory[key] = {
       id: key,
+      companyKey: key,
+      companyId: '',
       name: '',
       preferredSlug: '',
       logoUrl: '',
@@ -164,11 +169,80 @@ const buildHrProfileByUserId = (hrProfiles = []) => {
   return profilesByUserId;
 };
 
-const enrichPortalJobsWithHrProfiles = ({ portalJobs = [], hrProfiles = [] } = {}) => {
+const getCompanyRecordId = (company = {}) =>
+  String(company.id || company.company_id || '').trim();
+
+const getCompanyRecordKey = (company = {}) =>
+  getDirectoryKey(company.company_name || company.name, company.company_key || company.companyKey);
+
+const getCompanyRecordOwnerId = (company = {}) =>
+  String(company.hr_user_id || company.user_id || company.hrUserId || '').trim();
+
+const buildCompanyRecordIndexes = (companyProfiles = []) => {
+  const byId = new Map();
+  const byKey = new Map();
+  const byOwnerId = new Map();
+
+  for (const company of companyProfiles || []) {
+    const id = getCompanyRecordId(company);
+    const key = getCompanyRecordKey(company);
+    const ownerId = getCompanyRecordOwnerId(company);
+
+    if (id) byId.set(id, company);
+    if (key) byKey.set(key, company);
+    if (ownerId) byOwnerId.set(ownerId, company);
+  }
+
+  return { byId, byKey, byOwnerId };
+};
+
+const findCompanyRecordForJob = (job = {}, indexes = {}) => {
+  const companyId = String(job.company_id || job.companyId || '').trim();
+  if (companyId && indexes.byId?.has(companyId)) return indexes.byId.get(companyId);
+
+  const ownerId = String(job.created_by || job.createdBy || '').trim();
+  if (ownerId && indexes.byOwnerId?.has(ownerId)) return indexes.byOwnerId.get(ownerId);
+
+  const companyKey = getDirectoryKey(job.company_name || job.companyName, job.company_key || job.companyKey);
+  if (companyKey && indexes.byKey?.has(companyKey)) return indexes.byKey.get(companyKey);
+
+  return null;
+};
+
+const toCompanyLikeProfile = (company = {}) => ({
+  id: company.id,
+  company_id: company.id,
+  company_key: company.company_key || company.companyKey,
+  company_slug: company.company_slug || company.companySlug,
+  company_name: company.company_name || company.name,
+  user_id: company.hr_user_id || company.user_id || company.hrUserId,
+  logo_url: company.logo_url || company.logoUrl,
+  company_website: company.website_url || company.company_website || company.websiteUrl,
+  location: company.location,
+  state_id: company.state_id || company.stateId,
+  district_id: company.district_id || company.districtId,
+  state_name: company.state_name || company.stateName,
+  district_name: company.district_name || company.districtName,
+  sector_id: company.sector_id || company.sectorId,
+  sector_name: company.sector_name || company.sectorName,
+  industry_type: company.industry_type || company.industryType,
+  company_type: company.company_type || company.companyType,
+  company_size: company.company_size || company.companySize,
+  about: company.about,
+  is_verified: company.is_verified || company.isVerified,
+  created_at: company.created_at || company.createdAt,
+  updated_at: company.updated_at || company.updatedAt
+});
+
+const enrichPortalJobsWithHrProfiles = ({ portalJobs = [], hrProfiles = [], companyProfiles = [] } = {}) => {
   const profilesByUserId = buildHrProfileByUserId(hrProfiles);
+  const companyIndexes = buildCompanyRecordIndexes(companyProfiles);
 
   return (portalJobs || []).map((job) => {
-    const profile = profilesByUserId.get(String(job.created_by || '').trim());
+    const companyRecord = findCompanyRecordForJob(job, companyIndexes);
+    const profile = companyRecord
+      ? toCompanyLikeProfile(companyRecord)
+      : profilesByUserId.get(String(job.created_by || '').trim());
     if (!profile) return job;
 
     const structuredLocation = buildLocationLabel(profile.district_name, profile.state_name);
@@ -176,6 +250,9 @@ const enrichPortalJobsWithHrProfiles = ({ portalJobs = [], hrProfiles = [] } = {
 
     return {
       ...job,
+      company_id: job.company_id || profile.company_id || profile.id || null,
+      company_key: job.company_key || profile.company_key || getDirectoryKey(profile.company_name, ''),
+      company_slug: job.company_slug || profile.company_slug || toCompanySlug(profile.company_name),
       company_name: pickPreferredText(profile.company_name, job.company_name),
       company_logo: pickPreferredText(job.company_logo, profile.logo_url),
       job_location: pickPreferredText(job.job_location, profileLocation),
@@ -233,6 +310,8 @@ const finalizeEntry = (entry) => {
 
   return {
     id: entry.id,
+    companyId: entry.companyId || null,
+    companyKey: entry.companyKey || entry.id,
     slug: pickPreferredText(entry.preferredSlug, toCompanySlug(entry.name || entry.id)),
     name: pickPreferredText(entry.name, toTitleCase(entry.id), 'Company'),
     logoUrl: entry.logoUrl || null,
@@ -265,6 +344,7 @@ const finalizeEntry = (entry) => {
 };
 
 const buildCompanyDirectory = ({
+  companyProfiles = [],
   sponsoredCompanies = [],
   hrProfiles = [],
   portalJobs = [],
@@ -272,9 +352,44 @@ const buildCompanyDirectory = ({
 }) => {
   const directory = {};
 
+  for (const company of companyProfiles) {
+    const companyName = pickPreferredText(company.company_name, company.name);
+    const entry = getOrCreateEntry(directory, companyName, company.company_key || company.companyKey);
+    if (!entry) continue;
+
+    const structuredLocation = buildLocationLabel(company.district_name, company.state_name);
+    const industry = pickPreferredText(company.sector_name, company.industry_type);
+    const sponsored = Boolean(company.is_sponsored || company.sponsored);
+    const hasPortalOwner = Boolean(company.hr_user_id || company.hrUserId || company.source === 'hr_profile' || String(company.source || '').includes('hr_profile'));
+
+    entry.companyId = pickPreferredText(entry.companyId, company.id);
+    entry.companyKey = getDirectoryKey(companyName, company.company_key || company.companyKey) || entry.companyKey;
+    entry.name = pickBetterCompanyName(entry.name, companyName);
+    entry.preferredSlug = pickPreferredText(entry.preferredSlug, company.company_slug || company.companySlug);
+    entry.logoUrl = pickPreferredText(entry.logoUrl, company.logo_url || company.logoUrl);
+    entry.websiteUrl = pickPreferredText(entry.websiteUrl, company.website_url || company.websiteUrl);
+    entry.websiteHost = pickPreferredText(entry.websiteHost, toHostname(company.website_url || company.websiteUrl));
+    entry.location = pickPreferredText(entry.location, company.location, structuredLocation);
+    entry.description = pickPreferredText(entry.description, company.about);
+    entry.companySize = pickPreferredText(entry.companySize, company.company_size || company.companySize);
+    entry.industry = pickPreferredText(entry.industry, industry);
+    entry.companyType = pickPreferredText(entry.companyType, company.company_type || company.companyType);
+    entry.portalProfile = entry.portalProfile || hasPortalOwner;
+    entry.verifiedEmployer = entry.verifiedEmployer || Boolean(company.is_verified || company.isVerified);
+    entry.sponsored = entry.sponsored || sponsored;
+    entry.sponsorRating = company.sponsor_rating ?? company.sponsorRating ?? entry.sponsorRating;
+    entry.sponsorReviewsLabel = pickPreferredText(entry.sponsorReviewsLabel, company.sponsor_reviews_label || company.sponsorReviewsLabel);
+    entry.sponsorTags = toTextArray(company.sponsor_tags || company.sponsorTags);
+    entry.sponsorSortOrder = Number.isFinite(Number(company.sponsor_sort_order ?? company.sponsorSortOrder))
+      ? Number(company.sponsor_sort_order ?? company.sponsorSortOrder)
+      : entry.sponsorSortOrder;
+    entry.latestActivityAt = updateLatestTimestamp(entry.latestActivityAt, company.updated_at, company.created_at);
+    addCategory(entry, industry);
+  }
+
   for (const sponsor of sponsoredCompanies) {
     const companyName = pickPreferredText(sponsor.company_name, sponsor.name);
-    const entry = getOrCreateEntry(directory, companyName);
+    const entry = getOrCreateEntry(directory, companyName, sponsor.company_key || sponsor.companyKey);
     if (!entry) continue;
 
     entry.name = pickBetterCompanyName(entry.name, companyName);
@@ -294,7 +409,7 @@ const buildCompanyDirectory = ({
 
   for (const profile of hrProfiles) {
     const companyName = String(profile.company_name || '').trim();
-    const entry = getOrCreateEntry(directory, companyName);
+    const entry = getOrCreateEntry(directory, companyName, profile.company_key || profile.companyKey);
     if (!entry) continue;
 
     const structuredLocation = buildLocationLabel(profile.district_name, profile.state_name);
@@ -317,10 +432,12 @@ const buildCompanyDirectory = ({
 
   for (const job of portalJobs) {
     const companyName = String(job.company_name || '').trim();
-    const entry = getOrCreateEntry(directory, companyName);
+    const entry = getOrCreateEntry(directory, companyName, job.company_key || job.companyKey);
     if (!entry) continue;
 
     const structuredLocation = buildLocationLabel(job.district_name, job.state_name);
+    entry.companyId = pickPreferredText(entry.companyId, job.company_id || job.companyId);
+    entry.companyKey = getDirectoryKey(companyName, job.company_key || job.companyKey) || entry.companyKey;
     entry.name = pickBetterCompanyName(entry.name, companyName);
     entry.logoUrl = pickPreferredText(entry.logoUrl, job.company_logo);
     entry.location = pickPreferredText(entry.location, job.job_location, structuredLocation);
@@ -333,7 +450,7 @@ const buildCompanyDirectory = ({
 
   for (const job of externalJobs) {
     const companyName = String(job.company_name || '').trim();
-    const entry = getOrCreateEntry(directory, companyName);
+    const entry = getOrCreateEntry(directory, companyName, job.company_key || job.companyKey);
     if (!entry) continue;
 
     entry.name = pickBetterCompanyName(entry.name, companyName);

@@ -5,7 +5,8 @@ const {
   normalizeCompanyKey,
   toCompanySlug,
   buildCompanyDirectory,
-  buildCompanyDirectorySummary
+  buildCompanyDirectorySummary,
+  enrichPortalJobsWithHrProfiles
 } = require('../src/services/companyDirectory');
 
 test('normalizeCompanyKey keeps company duplicates in one bucket', () => {
@@ -272,4 +273,75 @@ test('buildCompanyDirectory upgrades company names when a better-cased source ar
   assert.equal(companies.length, 1);
   assert.equal(companies[0].name, 'Indian Trade Mart');
   assert.equal(companies[0].slug, 'indian-trade-mart');
+});
+
+test('buildCompanyDirectory counts jobs attached by canonical company key', () => {
+  const companies = buildCompanyDirectory({
+    companyProfiles: [
+      {
+        id: 'company-1',
+        company_key: 'testing',
+        company_slug: 'testing',
+        company_name: 'Testing Company',
+        hr_user_id: 'hr-1',
+        sector_name: 'IT Services',
+        is_active: true,
+        is_sponsored: false,
+        source: 'hr_profile'
+      }
+    ],
+    portalJobs: [
+      {
+        id: 'job-1',
+        company_id: 'company-1',
+        company_key: 'testing',
+        company_name: 'Testing Company Pvt Ltd',
+        job_location: 'Delhi',
+        sector_name: 'IT Services',
+        is_featured: false,
+        created_at: '2026-05-21T08:00:00.000Z',
+        updated_at: '2026-05-21T08:00:00.000Z'
+      }
+    ]
+  });
+
+  assert.equal(companies.length, 1);
+  assert.equal(companies[0].companyId, 'company-1');
+  assert.equal(companies[0].companyKey, 'testing');
+  assert.equal(companies[0].portalJobs, 1);
+  assert.equal(companies[0].totalJobs, 1);
+  assert.deepEqual(companies[0].categories, ['IT Services']);
+});
+
+test('enrichPortalJobsWithHrProfiles maps job owner to company master metadata', () => {
+  const [job] = enrichPortalJobsWithHrProfiles({
+    companyProfiles: [
+      {
+        id: 'company-2',
+        company_key: 'pattolika',
+        company_slug: 'pattolika',
+        company_name: 'Pattolika Pvt Ltd',
+        hr_user_id: 'hr-2',
+        state_name: 'Uttar Pradesh',
+        district_name: 'Noida',
+        sector_name: 'Construction'
+      }
+    ],
+    portalJobs: [
+      {
+        id: 'job-2',
+        created_by: 'hr-2',
+        company_name: 'Pattolika',
+        job_location: '',
+        sector_name: ''
+      }
+    ]
+  });
+
+  assert.equal(job.company_id, 'company-2');
+  assert.equal(job.company_key, 'pattolika');
+  assert.equal(job.company_slug, 'pattolika');
+  assert.equal(job.company_name, 'Pattolika Pvt Ltd');
+  assert.equal(job.job_location, 'Noida, Uttar Pradesh');
+  assert.equal(job.sector_name, 'Construction');
 });
