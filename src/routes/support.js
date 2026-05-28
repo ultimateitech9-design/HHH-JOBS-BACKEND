@@ -9,10 +9,13 @@ const router = express.Router();
 
 router.use(requireAuth, requireActiveUser);
 router.use((req, res, next) => {
-  if (String(req.path || '').startsWith('/queries')) return next();
+  const path = String(req.path || '');
+  if (path.startsWith('/queries') || path.startsWith('/chats')) return next();
   return requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT)(req, res, next);
 });
 
+const CHAT_CUSTOMER_ROLES = new Set([ROLES.STUDENT, ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.RETIRED_EMPLOYEE]);
+const CHAT_AGENT_ROLES = new Set([ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT, ROLES.DATAENTRY, ROLES.SALES, ROLES.ACCOUNTS]);
 const TRANSFER_DEPARTMENTS = new Set(['support', 'admin', 'dataentry', 'sales', 'accounts']);
 const normalizeDepartment = (value = '') => {
   const normalized = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, '');
@@ -21,6 +24,175 @@ const normalizeDepartment = (value = '') => {
   if (normalized === 'sale' || normalized === 'sales') return 'sales';
   if (normalized === 'admin') return 'admin';
   return 'support';
+};
+
+const normalizeStateName = (value = '') => String(value || '').trim();
+const canManageChats = (user = {}) => CHAT_AGENT_ROLES.has(user?.role);
+const canUseCustomerChat = (user = {}) => CHAT_CUSTOMER_ROLES.has(user?.role);
+const canTransferChats = (user = {}) => [ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT].includes(user?.role);
+const memoryChats = [];
+const memoryChatMessages = [];
+
+const isSupportChatSchemaError = (error = {}) => {
+  const code = String(error.code || '').toUpperCase();
+  const message = String(error.message || '').toLowerCase();
+  return ['42P01', '42703', 'PGRST204'].includes(code)
+    || message.includes('support_chats')
+    || message.includes('support_chat_messages');
+};
+const isMemoryChatId = (value = '') => String(value || '').startsWith('MEM-CHAT-');
+
+const getRoleDepartment = (role = '') => {
+  if (role === ROLES.DATAENTRY) return 'dataentry';
+  if (role === ROLES.SALES) return 'sales';
+  if (role === ROLES.ACCOUNTS) return 'accounts';
+  if (role === ROLES.SUPPORT) return 'support';
+  return '';
+};
+
+const canAccessChatRow = (user = {}, chat = {}) => {
+  if (chat.requester_id === user?.id) return true;
+  if ([ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT].includes(user?.role)) return true;
+  const roleDepartment = getRoleDepartment(user?.role);
+  return Boolean(roleDepartment && chat.assigned_department === roleDepartment);
+};
+
+const appendMemoryChatMessage = ({ chatId, user, message, isInternal = false }) => {
+  const role = user?.role || 'customer';
+  const isAgent = ['support', 'admin', 'super_admin', 'dataentry', 'sales', 'accounts'].includes(String(role).toLowerCase());
+  const row = {
+    id: `MEM-MSG-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    chat_id: chatId,
+    author_id: user?.id || null,
+    author_name: user?.name || user?.email || (isAgent ? 'Support' : 'Customer'),
+    author_role: role,
+    message,
+    is_internal: isInternal,
+    created_at: new Date().toISOString()
+  };
+  memoryChatMessages.push(row);
+  return mapChatMessageRow(row);
+};
+
+const hydrateMemoryChat = (chat) => {
+  const normalized = mapChatRow(chat);
+  normalized.messages = memoryChatMessages
+    .filter((message) => message.chat_id === chat.id)
+    .map(mapChatMessageRow);
+  return normalized;
+};
+
+const updateMemoryChatLastMessage = (chat) => {
+  const latestMessage = memoryChatMessages
+    .filter((message) => message.chat_id === chat.id)
+    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+  chat.last_message = latestMessage?.message || null;
+  chat.updated_at = new Date().toISOString();
+};
+
+const findMemoryChatForUser = (userId) =>
+  memoryChats
+    .filter((chat) => chat.requester_id === userId && ['open', 'active', 'pending'].includes(chat.status || 'open'))
+    .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))[0] || null;
+
+const listMemoryChatsForUser = (user = {}, { department = '', stateName = '' } = {}) => {
+  const roleDepartment = department || getRoleDepartment(user?.role);
+  return memoryChats
+    .filter((chat) => {
+      if (roleDepartment && chat.assigned_department !== roleDepartment) return false;
+      if (stateName && chat.state_name !== stateName) return false;
+      if (user?.role === ROLES.SUPPORT && chat.assignee_id && chat.assignee_id !== user.id) return false;
+      if ([ROLES.DATAENTRY, ROLES.SALES, ROLES.ACCOUNTS].includes(user?.role)) {
+        return chat.assigned_department === getRoleDepartment(user.role);
+      }
+      return true;
+    })
+    .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))
+    .map(hydrateMemoryChat);
+};
+
+const mapChatRow = (row = {}) => ({
+  id: row.id,
+  requesterId: row.requester_id,
+  requesterName: row.requester_name,
+  requesterEmail: row.requester_email,
+  requesterRole: row.requester_role,
+  visitor: row.requester_name || row.requester_email || 'Customer',
+  company: row.company || row.meta?.company || row.requester_role || 'Portal user',
+  assignedDepartment: row.assigned_department || 'support',
+  assignedTo: row.assignee_name || row.assigned_department || 'Support',
+  assigneeId: row.assignee_id,
+  assigneeName: row.assignee_name,
+  stateName: row.state_name || row.meta?.stateName || '',
+  status: row.status || 'open',
+  subject: row.subject || 'Live support',
+  lastMessage: row.last_message || '',
+  transferReason: row.transfer_reason || '',
+  transferredAt: row.transferred_at,
+  transferredBy: row.transferred_by,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+  messages: []
+});
+
+const mapChatMessageRow = (row = {}) => {
+  const role = String(row.author_role || '').toLowerCase();
+  const isAgent = ['support', 'admin', 'super_admin', 'dataentry', 'sales', 'accounts'].includes(role);
+  return {
+    id: row.id,
+    chatId: row.chat_id,
+    authorId: row.author_id,
+    author: row.author_name || (isAgent ? 'Support' : 'Customer'),
+    authorRole: row.author_role,
+    role: isAgent ? 'agent' : 'customer',
+    message: row.message || '',
+    text: row.message || '',
+    isInternal: Boolean(row.is_internal),
+    createdAt: row.created_at
+  };
+};
+
+const chooseSupportAssignee = async (stateName = '') => {
+  const { data: supportUsers, error } = await supabase
+    .from('users')
+    .select('id, name, email, role, status')
+    .eq('role', ROLES.SUPPORT)
+    .eq('status', 'active')
+    .limit(20);
+
+  if (error || !Array.isArray(supportUsers) || supportUsers.length === 0) return null;
+
+  const agentLoads = await Promise.all(supportUsers.map(async (agent) => {
+    let query = supabase
+      .from('support_chats')
+      .select('id', { count: 'exact', head: true })
+      .eq('assignee_id', agent.id)
+      .in('status', ['open', 'active', 'pending']);
+
+    if (stateName) query = query.eq('state_name', stateName);
+
+    const result = await query;
+    return { agent, count: result.count || 0 };
+  }));
+
+  return agentLoads.sort((a, b) => a.count - b.count)[0]?.agent || supportUsers[0];
+};
+
+const insertChatMessage = async ({ chatId, user, message, isInternal = false }) => {
+  const { data, error } = await supabase
+    .from('support_chat_messages')
+    .insert({
+      chat_id: chatId,
+      author_id: user?.id || null,
+      author_name: user?.name || user?.email || 'User',
+      author_role: user?.role || 'customer',
+      message,
+      is_internal: isInternal
+    })
+    .select('*')
+    .single();
+
+  return { message: data ? mapChatMessageRow(data) : null, error };
 };
 
 const findSupportTicket = async (ticketIdentifier) => {
@@ -414,33 +586,557 @@ router.post('/tickets/:id/internal-note', asyncHandler(async (req, res) => {
 }));
 
 // =============================================
-// Chats (placeholder — no live chat table yet)
+// Live Chats
 // =============================================
 router.get('/chats', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  if (!canManageChats(req.user)) {
+    res.status(403).send({ status: false, message: 'Forbidden: support access required' });
+    return;
+  }
+
+  const stateName = normalizeStateName(req.query.state || req.query.stateName || req.query.state_name);
+  const requestedDepartment = String(req.query.department || req.query.assigned_department || '').trim();
+  const department = requestedDepartment
+    ? normalizeDepartment(requestedDepartment)
+    : getRoleDepartment(req.user?.role);
+  let query = supabase
     .from('support_chats')
     .select('*')
     .order('updated_at', { ascending: false })
     .limit(100);
 
+  if (department && TRANSFER_DEPARTMENTS.has(department)) query = query.eq('assigned_department', department);
+  if (stateName) query = query.eq('state_name', stateName);
+  if (req.user?.role === ROLES.SUPPORT) {
+    query = query.or(`assignee_id.eq.${req.user.id},assignee_id.is.null`);
+  }
+
+  const { data, error } = await query;
+
   if (error) {
     if (String(error.code || '').toUpperCase() === '42P01') {
-      res.send({ status: true, chats: [] });
+      res.send({ status: true, chats: listMemoryChatsForUser(req.user, { department, stateName }), fallback: 'memory' });
+      return;
+    }
+    if (isSupportChatSchemaError(error)) {
+      res.send({ status: true, chats: listMemoryChatsForUser(req.user, { department, stateName }), fallback: 'memory' });
       return;
     }
     sendSupabaseError(res, error);
     return;
   }
 
-  res.send({ status: true, chats: data || [] });
+  const chats = (data || []).map(mapChatRow);
+  const chatIds = chats.map((chat) => chat.id);
+  if (chatIds.length > 0) {
+    const { data: messages } = await supabase
+      .from('support_chat_messages')
+      .select('*')
+      .in('chat_id', chatIds)
+      .order('created_at', { ascending: true });
+
+    const groupedMessages = (messages || []).reduce((acc, row) => {
+      const message = mapChatMessageRow(row);
+      acc[message.chatId] = acc[message.chatId] || [];
+      acc[message.chatId].push(message);
+      return acc;
+    }, {});
+
+    chats.forEach((chat) => {
+      chat.messages = groupedMessages[chat.id] || [];
+    });
+  }
+
+  res.send({ status: true, chats });
+}));
+
+router.get('/chats/mine', asyncHandler(async (req, res) => {
+  if (!canUseCustomerChat(req.user)) {
+    res.status(403).send({ status: false, message: 'Forbidden: customer chat is not available for this role' });
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from('support_chats')
+    .select('*')
+    .eq('requester_id', req.user?.id)
+    .in('status', ['open', 'active', 'pending'])
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    if (String(error.code || '').toUpperCase() === '42P01') {
+      const memoryChat = findMemoryChatForUser(req.user?.id);
+      res.send({ status: true, chat: memoryChat ? hydrateMemoryChat(memoryChat) : null, fallback: 'memory' });
+      return;
+    }
+    if (isSupportChatSchemaError(error)) {
+      const memoryChat = findMemoryChatForUser(req.user?.id);
+      res.send({ status: true, chat: memoryChat ? hydrateMemoryChat(memoryChat) : null, fallback: 'memory' });
+      return;
+    }
+    sendSupabaseError(res, error);
+    return;
+  }
+
+  if (!data) {
+    res.send({ status: true, chat: null });
+    return;
+  }
+
+  const chat = mapChatRow(data);
+  const { data: messages } = await supabase
+    .from('support_chat_messages')
+    .select('*')
+    .eq('chat_id', chat.id)
+    .order('created_at', { ascending: true });
+
+  chat.messages = (messages || []).map(mapChatMessageRow);
+  res.send({ status: true, chat });
+}));
+
+router.post('/chats', asyncHandler(async (req, res) => {
+  if (!canUseCustomerChat(req.user)) {
+    res.status(403).send({ status: false, message: 'Forbidden: customer chat is not available for this role' });
+    return;
+  }
+
+  const message = String(req.body?.message || '').trim();
+  const subject = String(req.body?.subject || 'Live support').trim();
+  const stateName = normalizeStateName(req.body?.state || req.body?.stateName || req.body?.state_name);
+  const company = String(req.body?.company || req.body?.campus || req.body?.companyName || '').trim();
+
+  if (!message) return res.status(400).send({ status: false, message: 'message is required' });
+
+  const { data: existing, error: existingError } = await supabase
+    .from('support_chats')
+    .select('*')
+    .eq('requester_id', req.user?.id)
+    .in('status', ['open', 'active', 'pending'])
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (isSupportChatSchemaError(existingError)) {
+    let memoryChat = findMemoryChatForUser(req.user?.id);
+    const now = new Date().toISOString();
+    if (!memoryChat) {
+      memoryChat = {
+        id: `MEM-CHAT-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        requester_id: req.user?.id,
+        requester_name: req.user?.name || null,
+        requester_email: req.user?.email || null,
+        requester_role: req.user?.role || null,
+        assigned_department: 'support',
+        assignee_id: null,
+        assignee_name: null,
+        status: 'open',
+        subject,
+        state_name: stateName || null,
+        company: company || null,
+        last_message: message,
+        meta: { stateName, company, autoAssigned: false, fallback: 'memory' },
+        created_at: now,
+        updated_at: now
+      };
+      memoryChats.unshift(memoryChat);
+    } else {
+      memoryChat.last_message = message;
+      memoryChat.status = 'open';
+      memoryChat.updated_at = now;
+    }
+
+    appendMemoryChatMessage({ chatId: memoryChat.id, user: req.user, message });
+    res.status(memoryChat.created_at === now ? 201 : 200).send({ status: true, chat: hydrateMemoryChat(memoryChat), fallback: 'memory' });
+    return;
+  }
+
+  if (existingError && String(existingError.code || '').toUpperCase() !== 'PGRST116') {
+    sendSupabaseError(res, existingError);
+    return;
+  }
+
+  let chatRow = existing;
+  const isExistingChat = Boolean(chatRow);
+  if (!chatRow) {
+    const assignee = await chooseSupportAssignee(stateName);
+    const { data: created, error } = await supabase
+      .from('support_chats')
+      .insert({
+        requester_id: req.user?.id,
+        requester_name: req.user?.name || null,
+        requester_email: req.user?.email || null,
+        requester_role: req.user?.role || null,
+        assigned_department: 'support',
+        assignee_id: assignee?.id || null,
+        assignee_name: assignee?.name || null,
+        status: 'open',
+        subject,
+        state_name: stateName || null,
+        company: company || null,
+        last_message: message,
+        meta: { stateName, company, autoAssigned: Boolean(assignee) }
+      })
+      .select('*')
+      .single();
+
+    if (error) { sendSupabaseError(res, error); return; }
+    chatRow = created;
+  }
+
+  const messageResult = await insertChatMessage({ chatId: chatRow.id, user: req.user, message });
+  if (messageResult.error) { sendSupabaseError(res, messageResult.error); return; }
+
+  const { data: updatedChat, error: updateError } = await supabase
+    .from('support_chats')
+    .update({ last_message: message, status: 'open', updated_at: new Date().toISOString() })
+    .eq('id', chatRow.id)
+    .select('*')
+    .maybeSingle();
+
+  if (updateError) { sendSupabaseError(res, updateError); return; }
+
+  const chat = mapChatRow(updatedChat || chatRow);
+  const { data: messages } = await supabase
+    .from('support_chat_messages')
+    .select('*')
+    .eq('chat_id', chat.id)
+    .order('created_at', { ascending: true });
+  chat.messages = (messages || []).map(mapChatMessageRow);
+
+  res.status(isExistingChat ? 200 : 201).send({ status: true, chat, message: messageResult.message });
+}));
+
+router.get('/chats/:id/messages', asyncHandler(async (req, res) => {
+  if (isMemoryChatId(req.params.id)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
+    res.send({
+      status: true,
+      messages: memoryChatMessages
+        .filter((message) => message.chat_id === req.params.id)
+        .map(mapChatMessageRow),
+      fallback: 'memory'
+    });
+    return;
+  }
+
+  const { data: chat, error: chatError } = await supabase
+    .from('support_chats')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (isSupportChatSchemaError(chatError)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
+    res.send({
+      status: true,
+      messages: memoryChatMessages
+        .filter((message) => message.chat_id === req.params.id)
+        .map(mapChatMessageRow),
+      fallback: 'memory'
+    });
+    return;
+  }
+
+  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
+  if (!canAccessChatRow(req.user, chat)) {
+    res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from('support_chat_messages')
+    .select('*')
+    .eq('chat_id', req.params.id)
+    .order('created_at', { ascending: true });
+
+  if (error) { sendSupabaseError(res, error); return; }
+  res.send({ status: true, messages: (data || []).map(mapChatMessageRow) });
+}));
+
+router.post('/chats/:id/messages', asyncHandler(async (req, res) => {
+  const text = String(req.body?.message || '').trim();
+  if (!text) return res.status(400).send({ status: false, message: 'message is required' });
+
+  if (isMemoryChatId(req.params.id)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
+
+    const messageRow = appendMemoryChatMessage({
+      chatId: memoryChat.id,
+      user: req.user,
+      message: text,
+      isInternal: Boolean(req.body?.isInternal || req.body?.is_internal)
+    });
+    memoryChat.last_message = text;
+    memoryChat.status = canManageChats(req.user) ? 'active' : 'open';
+    memoryChat.updated_at = new Date().toISOString();
+    res.status(201).send({ status: true, message: messageRow, chat: hydrateMemoryChat(memoryChat), fallback: 'memory' });
+    return;
+  }
+
+  const { data: chat, error: chatError } = await supabase
+    .from('support_chats')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (isSupportChatSchemaError(chatError)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
+
+    const messageRow = appendMemoryChatMessage({
+      chatId: memoryChat.id,
+      user: req.user,
+      message: text,
+      isInternal: Boolean(req.body?.isInternal || req.body?.is_internal)
+    });
+    memoryChat.last_message = text;
+    memoryChat.status = canManageChats(req.user) ? 'active' : 'open';
+    memoryChat.updated_at = new Date().toISOString();
+    res.status(201).send({ status: true, message: messageRow, chat: hydrateMemoryChat(memoryChat), fallback: 'memory' });
+    return;
+  }
+
+  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
+  if (!canAccessChatRow(req.user, chat)) {
+    res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+    return;
+  }
+
+  const result = await insertChatMessage({
+    chatId: chat.id,
+    user: req.user,
+    message: text,
+    isInternal: Boolean(req.body?.isInternal || req.body?.is_internal)
+  });
+  if (result.error) { sendSupabaseError(res, result.error); return; }
+
+  const updatePayload = {
+    last_message: text,
+    status: canManageChats(req.user) ? 'active' : 'open',
+    updated_at: new Date().toISOString()
+  };
+
+  if (canManageChats(req.user) && !chat.assignee_id && req.user?.role === ROLES.SUPPORT) {
+    updatePayload.assignee_id = req.user.id;
+    updatePayload.assignee_name = req.user.name || 'Support';
+  }
+
+  const { data: updatedChat } = await supabase
+    .from('support_chats')
+    .update(updatePayload)
+    .eq('id', chat.id)
+    .select('*')
+    .maybeSingle();
+
+  res.status(201).send({ status: true, message: result.message, chat: mapChatRow(updatedChat || chat) });
+}));
+
+router.delete('/chats/:id/messages', asyncHandler(async (req, res) => {
+  if (isMemoryChatId(req.params.id)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
+
+    for (let index = memoryChatMessages.length - 1; index >= 0; index -= 1) {
+      if (memoryChatMessages[index].chat_id === req.params.id) memoryChatMessages.splice(index, 1);
+    }
+    updateMemoryChatLastMessage(memoryChat);
+    res.send({ status: true, chat: hydrateMemoryChat(memoryChat), fallback: 'memory' });
+    return;
+  }
+
+  const { data: chat, error: chatError } = await supabase
+    .from('support_chats')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (isSupportChatSchemaError(chatError)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
+
+    for (let index = memoryChatMessages.length - 1; index >= 0; index -= 1) {
+      if (memoryChatMessages[index].chat_id === req.params.id) memoryChatMessages.splice(index, 1);
+    }
+    updateMemoryChatLastMessage(memoryChat);
+    res.send({ status: true, chat: hydrateMemoryChat(memoryChat), fallback: 'memory' });
+    return;
+  }
+
+  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
+  if (!canAccessChatRow(req.user, chat)) {
+    res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+    return;
+  }
+
+  const { error } = await supabase
+    .from('support_chat_messages')
+    .delete()
+    .eq('chat_id', req.params.id);
+
+  if (error) { sendSupabaseError(res, error); return; }
+
+  const { data: updatedChat, error: updateError } = await supabase
+    .from('support_chats')
+    .update({ last_message: null, updated_at: new Date().toISOString() })
+    .eq('id', req.params.id)
+    .select('*')
+    .maybeSingle();
+
+  if (updateError) { sendSupabaseError(res, updateError); return; }
+  const normalizedChat = mapChatRow(updatedChat || chat);
+  normalizedChat.messages = [];
+  res.send({ status: true, chat: normalizedChat });
+}));
+
+router.delete('/chats/:id/messages/:messageId', asyncHandler(async (req, res) => {
+  if (isMemoryChatId(req.params.id)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
+
+    const messageIndex = memoryChatMessages.findIndex((message) => (
+      message.chat_id === req.params.id && message.id === req.params.messageId
+    ));
+    if (messageIndex === -1) return res.status(404).send({ status: false, message: 'Message not found' });
+    memoryChatMessages.splice(messageIndex, 1);
+    updateMemoryChatLastMessage(memoryChat);
+    res.send({ status: true, chat: hydrateMemoryChat(memoryChat), deletedMessageId: req.params.messageId, fallback: 'memory' });
+    return;
+  }
+
+  const { data: chat, error: chatError } = await supabase
+    .from('support_chats')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (isSupportChatSchemaError(chatError)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
+
+    const messageIndex = memoryChatMessages.findIndex((message) => (
+      message.chat_id === req.params.id && message.id === req.params.messageId
+    ));
+    if (messageIndex === -1) return res.status(404).send({ status: false, message: 'Message not found' });
+    memoryChatMessages.splice(messageIndex, 1);
+    updateMemoryChatLastMessage(memoryChat);
+    res.send({ status: true, chat: hydrateMemoryChat(memoryChat), deletedMessageId: req.params.messageId, fallback: 'memory' });
+    return;
+  }
+
+  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
+  if (!canAccessChatRow(req.user, chat)) {
+    res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+    return;
+  }
+
+  const { error } = await supabase
+    .from('support_chat_messages')
+    .delete()
+    .eq('chat_id', req.params.id)
+    .eq('id', req.params.messageId);
+
+  if (error) { sendSupabaseError(res, error); return; }
+
+  const { data: latestMessages, error: latestError } = await supabase
+    .from('support_chat_messages')
+    .select('*')
+    .eq('chat_id', req.params.id)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (latestError) { sendSupabaseError(res, latestError); return; }
+
+  const { data: updatedChat, error: updateError } = await supabase
+    .from('support_chats')
+    .update({ last_message: latestMessages?.[0]?.message || null, updated_at: new Date().toISOString() })
+    .eq('id', req.params.id)
+    .select('*')
+    .maybeSingle();
+
+  if (updateError) { sendSupabaseError(res, updateError); return; }
+
+  const normalizedChat = mapChatRow(updatedChat || chat);
+  const { data: messages } = await supabase
+    .from('support_chat_messages')
+    .select('*')
+    .eq('chat_id', req.params.id)
+    .order('created_at', { ascending: true });
+  normalizedChat.messages = (messages || []).map(mapChatMessageRow);
+  res.send({ status: true, chat: normalizedChat, deletedMessageId: req.params.messageId });
 }));
 
 router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
+  if (!canTransferChats(req.user)) {
+    res.status(403).send({ status: false, message: 'Forbidden: support access required' });
+    return;
+  }
+
   const targetDepartment = normalizeDepartment(req.body?.department || req.body?.targetDepartment || req.body?.assigned_department);
   const reason = String(req.body?.reason || '').trim();
 
   if (!TRANSFER_DEPARTMENTS.has(targetDepartment)) {
     return res.status(400).send({ status: false, message: 'Invalid transfer department' });
+  }
+
+  if (isMemoryChatId(req.params.id)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    memoryChat.assigned_department = targetDepartment;
+    memoryChat.transfer_reason = reason || null;
+    memoryChat.transferred_at = new Date().toISOString();
+    memoryChat.transferred_by = req.user?.id || null;
+    memoryChat.assignee_id = targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? req.user.id : null;
+    memoryChat.assignee_name = targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? (req.user.name || 'Support') : null;
+    memoryChat.updated_at = new Date().toISOString();
+    appendMemoryChatMessage({
+      chatId: memoryChat.id,
+      user: req.user,
+      message: `[TRANSFER] Moved to ${targetDepartment}${reason ? `: ${reason}` : ''}`,
+      isInternal: true
+    });
+    res.send({ status: true, chat: hydrateMemoryChat(memoryChat), fallback: 'memory' });
+    return;
   }
 
   const { data, error } = await supabase
@@ -450,16 +1146,45 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
       transfer_reason: reason || null,
       transferred_at: new Date().toISOString(),
       transferred_by: req.user?.id || null,
+      assignee_id: targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? req.user.id : null,
+      assignee_name: targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? (req.user.name || 'Support') : null,
       updated_at: new Date().toISOString()
     })
     .eq('id', req.params.id)
     .select('*')
     .maybeSingle();
 
+  if (isSupportChatSchemaError(error)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    memoryChat.assigned_department = targetDepartment;
+    memoryChat.transfer_reason = reason || null;
+    memoryChat.transferred_at = new Date().toISOString();
+    memoryChat.transferred_by = req.user?.id || null;
+    memoryChat.assignee_id = targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? req.user.id : null;
+    memoryChat.assignee_name = targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? (req.user.name || 'Support') : null;
+    memoryChat.updated_at = new Date().toISOString();
+    appendMemoryChatMessage({
+      chatId: memoryChat.id,
+      user: req.user,
+      message: `[TRANSFER] Moved to ${targetDepartment}${reason ? `: ${reason}` : ''}`,
+      isInternal: true
+    });
+    res.send({ status: true, chat: hydrateMemoryChat(memoryChat), fallback: 'memory' });
+    return;
+  }
+
   if (error) { sendSupabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Chat not found' });
 
-  res.send({ status: true, chat: data });
+  await insertChatMessage({
+    chatId: data.id,
+    user: req.user,
+    message: `[TRANSFER] Moved to ${targetDepartment}${reason ? `: ${reason}` : ''}`,
+    isInternal: true
+  });
+
+  res.send({ status: true, chat: mapChatRow(data) });
 }));
 
 // =============================================
