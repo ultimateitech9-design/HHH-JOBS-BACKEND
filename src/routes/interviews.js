@@ -544,14 +544,18 @@ router.get('/:id/signals', asyncHandler(async (req, res) => {
     Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : DEFAULT_INTERVIEW_SIGNAL_FETCH_LIMIT)
   );
 
+  const isManager = canManageInterview({ interview: context.participantInterview || context.interview, user: req.user });
   let query = supabase
     .from('interview_signals')
     .select('*')
     .eq('interview_id', context.interview.id)
     .neq('sender_id', req.user.id)
-    .or(`recipient_id.is.null,recipient_id.eq.${req.user.id}`)
     .order('created_at', { ascending: true })
     .limit(signalLimit);
+
+  query = isManager
+    ? query.or(`recipient_id.is.null,recipient_id.eq.${req.user.id}`)
+    : query.eq('recipient_id', req.user.id);
 
   if (isValidDateString(req.query.since)) {
     query = query.gt('created_at', new Date(req.query.since).toISOString());
@@ -576,8 +580,23 @@ router.post('/:id/signals', asyncHandler(async (req, res) => {
     return;
   }
 
-  const recipientId = isValidUuid(req.body?.recipientId) ? req.body.recipientId : null;
+  const isManager = canManageInterview({ interview: context.participantInterview || context.interview, user: req.user });
+  let recipientId = isValidUuid(req.body?.recipientId) ? req.body.recipientId : null;
   const payload = req.body?.payload && typeof req.body.payload === 'object' ? req.body.payload : {};
+
+  if (!isManager) {
+    if (recipientId && recipientId !== context.interview.hr_id) {
+      res.status(403).send({ status: false, message: 'Candidates can only signal the recruiter in a group interview.' });
+      return;
+    }
+    recipientId = context.interview.hr_id;
+  } else if (recipientId) {
+    const candidateIds = new Set((context.roomInterviews || []).map((item) => item.candidate_id).filter(Boolean));
+    if (!candidateIds.has(recipientId)) {
+      res.status(403).send({ status: false, message: 'Recruiter signals must target a candidate in this interview room.' });
+      return;
+    }
+  }
 
   const { data, error } = await supabase
     .from('interview_signals')

@@ -22,7 +22,7 @@ const DEFAULT_TEMPLATES = [
 
 const STUDENT_DB_VIEW_FEATURE_KEY = 'hr.student_database_view';
 const STUDENT_DB_VIEW_SUBJECT_TYPE = 'student_profile';
-const STUDENT_DB_USAGE_CONSUMERS = new Set(['resume_view', 'candidate_interest', 'candidate_bulk_interest']);
+const STUDENT_DB_USAGE_CONSUMERS = new Set(['candidate_search', 'resume_view', 'candidate_interest', 'candidate_bulk_interest']);
 const DEFAULT_TRIAL_STUDENT_DB_VIEW_LIMIT = 25;
 const STUDENT_PROFILE_FETCH_BATCH_SIZE = 1000;
 const STUDENT_PROFILE_FETCH_MAX_ROWS = 100000;
@@ -1044,28 +1044,35 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
     }
 
     const { candidates: rawCandidates } = await buildCandidateRowsForProfiles({ profiles: pageProfiles, hrUser });
+    const quota = await applyStudentDbViewQuota({
+      hrUser,
+      access,
+      candidates: rawCandidates,
+      consume: true,
+      consumedBy: 'candidate_search'
+    });
     const pagedCandidates = rawCandidates.map((candidate) => buildCandidatePresentation({
       candidate,
       access: {
-        ...access,
-        candidateProfileUnlocked: true
+        ...quota.access,
+        candidateProfileUnlocked: quota.unlockedIds.has(candidate.user?.id)
       },
       exposeResume: false
     }));
 
     return {
-      access,
+      access: quota.access,
       summary: {
         total,
-        blurred: access.hasPaidAccess
+        blurred: quota.access.hasPaidAccess
           ? pagedCandidates.filter((item) => item.access?.requiresUpgrade || !item.access?.canBrowseFullProfile).length
           : total,
         connected: rawCandidates.filter((item) => item.crm?.interestStatus === 'accepted').length,
         availableNow: rawCandidates.filter((item) => item.profile?.available_to_hire).length,
         verified: rawCandidates.filter((item) => getCandidateVerification(item.profile).isVerified).length,
-        studentDbViewsUsed: access.studentDbViewsUsed,
-        studentDbViewsRemaining: access.studentDbViewsRemaining,
-        studentDbViewLimit: access.studentDbViewLimit
+        studentDbViewsUsed: quota.access.studentDbViewsUsed,
+        studentDbViewsRemaining: quota.access.studentDbViewsRemaining,
+        studentDbViewLimit: quota.access.studentDbViewLimit
       },
       pagination: {
         page: safePage,
@@ -1104,28 +1111,35 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
   const safePage = Math.min(currentPage, totalPages);
   const startIndex = (safePage - 1) * pageSize;
   const pagedRawCandidates = filtered.slice(startIndex, startIndex + pageSize);
+  const quota = await applyStudentDbViewQuota({
+    hrUser,
+    access,
+    candidates: pagedRawCandidates,
+    consume: true,
+    consumedBy: 'candidate_search'
+  });
   const pagedCandidates = pagedRawCandidates.map((candidate) => buildCandidatePresentation({
     candidate,
     access: {
-      ...access,
-      candidateProfileUnlocked: true
+      ...quota.access,
+      candidateProfileUnlocked: quota.unlockedIds.has(candidate.user?.id)
     },
     exposeResume: false
   }));
 
   return {
-    access,
+    access: quota.access,
     summary: {
       total,
-      blurred: access.hasPaidAccess
+      blurred: quota.access.hasPaidAccess
         ? pagedCandidates.filter((item) => item.access?.requiresUpgrade || !item.access?.canBrowseFullProfile).length
         : total,
       connected: filtered.filter((item) => item.crm.interestStatus === 'accepted').length,
       availableNow: filtered.filter((item) => item.profile.available_to_hire).length,
       verified: filtered.filter((item) => getCandidateVerification(item.profile).isVerified).length,
-      studentDbViewsUsed: access.studentDbViewsUsed,
-      studentDbViewsRemaining: access.studentDbViewsRemaining,
-      studentDbViewLimit: access.studentDbViewLimit
+      studentDbViewsUsed: quota.access.studentDbViewsUsed,
+      studentDbViewsRemaining: quota.access.studentDbViewsRemaining,
+      studentDbViewLimit: quota.access.studentDbViewLimit
     },
     pagination: {
       page: safePage,

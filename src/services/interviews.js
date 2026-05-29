@@ -282,6 +282,9 @@ const mapInterviewAudiencePayload = ({
   const canManage = canManageInterview({ interview: participantInterview, user: viewer });
   const isCandidateViewer = participantInterview.candidate_id === viewer.id;
   const workspaceInterview = participantInterview || interview;
+  const visibleRoomParticipants = canManage
+    ? roomParticipants
+    : roomParticipants.filter((participant) => participant.candidateId === viewer.id);
 
   return {
     interview: {
@@ -297,8 +300,8 @@ const mapInterviewAudiencePayload = ({
       red_flags: workspaceInterview.red_flags || interview.red_flags,
       participant_interview_id: participantInterview.id,
       room_interview_id: interview.id,
-      is_group_room: roomParticipants.length > 1,
-      room_participant_count: roomParticipants.length,
+      is_group_room: canManage && roomParticipants.length > 1,
+      room_participant_count: canManage ? roomParticipants.length : visibleRoomParticipants.length,
       live_notes: canManage ? workspaceInterview.live_notes : null,
       final_notes: canManage ? workspaceInterview.final_notes : null,
       rating: canManage ? workspaceInterview.rating : null,
@@ -338,7 +341,7 @@ const mapInterviewAudiencePayload = ({
         logoUrl: hrProfile?.logo_url || ''
       }
       : null,
-    roomParticipants,
+    roomParticipants: visibleRoomParticipants,
     permissions: {
       canManage,
       canJoin: canManage || isCandidateViewer,

@@ -17,6 +17,9 @@ router.use((req, res, next) => {
 const CHAT_CUSTOMER_ROLES = new Set([ROLES.STUDENT, ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.RETIRED_EMPLOYEE]);
 const CHAT_AGENT_ROLES = new Set([ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT, ROLES.DATAENTRY, ROLES.SALES, ROLES.ACCOUNTS]);
 const TRANSFER_DEPARTMENTS = new Set(['support', 'admin', 'dataentry', 'sales', 'accounts']);
+const SUPPORT_ACTIVE_CHAT_STATUSES = ['open', 'active', 'pending'];
+const CUSTOMER_OPEN_CHAT_STATUSES = ['open', 'active', 'pending', 'waiting'];
+const SUPPORT_AGENT_MAX_ACTIVE_CHATS = Math.max(1, parseInt(process.env.SUPPORT_AGENT_MAX_ACTIVE_CHATS || '1', 10) || 1);
 const normalizeDepartment = (value = '') => {
   const normalized = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, '');
   if (normalized === 'dataentry' || normalized === 'dataentryteam') return 'dataentry';
@@ -92,7 +95,7 @@ const updateMemoryChatLastMessage = (chat) => {
 
 const findMemoryChatForUser = (userId) =>
   memoryChats
-    .filter((chat) => chat.requester_id === userId && ['open', 'active', 'pending'].includes(chat.status || 'open'))
+    .filter((chat) => chat.requester_id === userId && CUSTOMER_OPEN_CHAT_STATUSES.includes(chat.status || 'open'))
     .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))[0] || null;
 
 const listMemoryChatsForUser = (user = {}, { department = '', stateName = '' } = {}) => {
@@ -123,6 +126,8 @@ const mapChatRow = (row = {}) => ({
   assignedTo: row.assignee_name || row.assigned_department || 'Support',
   assigneeId: row.assignee_id,
   assigneeName: row.assignee_name,
+  queueStatus: row.meta?.queueStatus || (row.status === 'waiting' ? 'waiting' : (row.assignee_id ? 'assigned' : 'unassigned')),
+  waitingMessage: row.meta?.waitingMessage || (row.status === 'waiting' ? 'All support agents are busy. You are in the waiting queue.' : ''),
   stateName: row.state_name || row.meta?.stateName || '',
   status: row.status || 'open',
   subject: row.subject || 'Live support',
@@ -167,15 +172,54 @@ const chooseSupportAssignee = async (stateName = '') => {
       .from('support_chats')
       .select('id', { count: 'exact', head: true })
       .eq('assignee_id', agent.id)
-      .in('status', ['open', 'active', 'pending']);
-
-    if (stateName) query = query.eq('state_name', stateName);
+      .in('status', SUPPORT_ACTIVE_CHAT_STATUSES);
 
     const result = await query;
     return { agent, count: result.count || 0 };
   }));
 
-  return agentLoads.sort((a, b) => a.count - b.count)[0]?.agent || supportUsers[0];
+  return agentLoads
+    .filter((entry) => Number(entry.count || 0) < SUPPORT_AGENT_MAX_ACTIVE_CHATS)
+    .sort((a, b) => a.count - b.count)[0]?.agent || null;
+};
+
+const assignWaitingSupportChats = async ({ stateName = '' } = {}) => {
+  const assignee = await chooseSupportAssignee(stateName);
+  if (!assignee) return { assignedCount: 0 };
+
+  let query = supabase
+    .from('support_chats')
+    .select('*')
+    .eq('assigned_department', 'support')
+    .is('assignee_id', null)
+    .in('status', ['waiting', 'open'])
+    .order('created_at', { ascending: true })
+    .limit(1);
+
+  if (stateName) query = query.eq('state_name', stateName);
+
+  const { data: waitingChat, error } = await query.maybeSingle();
+  if (error || !waitingChat) return { assignedCount: 0, error };
+
+  const nextMeta = {
+    ...(waitingChat.meta && typeof waitingChat.meta === 'object' ? waitingChat.meta : {}),
+    queueStatus: 'assigned',
+    waitingMessage: '',
+    assignedFromWaitingAt: new Date().toISOString()
+  };
+
+  const { error: updateError } = await supabase
+    .from('support_chats')
+    .update({
+      assignee_id: assignee.id,
+      assignee_name: assignee.name || assignee.email || 'Support',
+      status: 'open',
+      meta: nextMeta,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', waitingChat.id);
+
+  return { assignedCount: updateError ? 0 : 1, error: updateError || null };
 };
 
 const insertChatMessage = async ({ chatId, user, message, isInternal = false }) => {
@@ -599,6 +643,11 @@ router.get('/chats', asyncHandler(async (req, res) => {
   const department = requestedDepartment
     ? normalizeDepartment(requestedDepartment)
     : getRoleDepartment(req.user?.role);
+
+  if (!department || department === 'support') {
+    await assignWaitingSupportChats({ stateName });
+  }
+
   let query = supabase
     .from('support_chats')
     .select('*')
@@ -660,7 +709,7 @@ router.get('/chats/mine', asyncHandler(async (req, res) => {
     .from('support_chats')
     .select('*')
     .eq('requester_id', req.user?.id)
-    .in('status', ['open', 'active', 'pending'])
+    .in('status', CUSTOMER_OPEN_CHAT_STATUSES)
     .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -685,7 +734,17 @@ router.get('/chats/mine', asyncHandler(async (req, res) => {
     return;
   }
 
-  const chat = mapChatRow(data);
+  if (data.status === 'waiting' || !data.assignee_id) {
+    await assignWaitingSupportChats({ stateName: data.state_name || '' });
+  }
+
+  const { data: refreshedChat } = await supabase
+    .from('support_chats')
+    .select('*')
+    .eq('id', data.id)
+    .maybeSingle();
+
+  const chat = mapChatRow(refreshedChat || data);
   const { data: messages } = await supabase
     .from('support_chat_messages')
     .select('*')
@@ -713,7 +772,7 @@ router.post('/chats', asyncHandler(async (req, res) => {
     .from('support_chats')
     .select('*')
     .eq('requester_id', req.user?.id)
-    .in('status', ['open', 'active', 'pending'])
+    .in('status', CUSTOMER_OPEN_CHAT_STATUSES)
     .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -761,6 +820,7 @@ router.post('/chats', asyncHandler(async (req, res) => {
   const isExistingChat = Boolean(chatRow);
   if (!chatRow) {
     const assignee = await chooseSupportAssignee(stateName);
+    const isWaiting = !assignee;
     const { data: created, error } = await supabase
       .from('support_chats')
       .insert({
@@ -770,13 +830,19 @@ router.post('/chats', asyncHandler(async (req, res) => {
         requester_role: req.user?.role || null,
         assigned_department: 'support',
         assignee_id: assignee?.id || null,
-        assignee_name: assignee?.name || null,
-        status: 'open',
+        assignee_name: assignee?.name || assignee?.email || null,
+        status: isWaiting ? 'waiting' : 'open',
         subject,
         state_name: stateName || null,
         company: company || null,
         last_message: message,
-        meta: { stateName, company, autoAssigned: Boolean(assignee) }
+        meta: {
+          stateName,
+          company,
+          autoAssigned: Boolean(assignee),
+          queueStatus: isWaiting ? 'waiting' : 'assigned',
+          waitingMessage: isWaiting ? 'All support agents are busy. You are in the waiting queue.' : ''
+        }
       })
       .select('*')
       .single();
@@ -790,7 +856,11 @@ router.post('/chats', asyncHandler(async (req, res) => {
 
   const { data: updatedChat, error: updateError } = await supabase
     .from('support_chats')
-    .update({ last_message: message, status: 'open', updated_at: new Date().toISOString() })
+    .update({
+      last_message: message,
+      status: chatRow.assignee_id ? 'open' : 'waiting',
+      updated_at: new Date().toISOString()
+    })
     .eq('id', chatRow.id)
     .select('*')
     .maybeSingle();
@@ -933,15 +1003,29 @@ router.post('/chats/:id/messages', asyncHandler(async (req, res) => {
   });
   if (result.error) { sendSupabaseError(res, result.error); return; }
 
+  const isAgentMessage = canManageChats(req.user);
+  const nextMeta = {
+    ...(chat.meta && typeof chat.meta === 'object' ? chat.meta : {}),
+    queueStatus: isAgentMessage || chat.assignee_id ? 'assigned' : 'waiting',
+    waitingMessage: isAgentMessage || chat.assignee_id ? '' : 'All support agents are busy. You are in the waiting queue.'
+  };
   const updatePayload = {
     last_message: text,
-    status: canManageChats(req.user) ? 'active' : 'open',
-    updated_at: new Date().toISOString()
+    status: isAgentMessage ? 'active' : (chat.assignee_id ? 'open' : 'waiting'),
+    updated_at: new Date().toISOString(),
+    meta: nextMeta
   };
 
-  if (canManageChats(req.user) && !chat.assignee_id && req.user?.role === ROLES.SUPPORT) {
+  if (isAgentMessage && !chat.assignee_id && req.user?.role === ROLES.SUPPORT) {
     updatePayload.assignee_id = req.user.id;
     updatePayload.assignee_name = req.user.name || 'Support';
+    updatePayload.status = 'active';
+    updatePayload.meta = {
+      ...nextMeta,
+      queueStatus: 'assigned',
+      waitingMessage: '',
+      assignedFromWaitingAt: new Date().toISOString()
+    };
   }
 
   const { data: updatedChat } = await supabase
@@ -1106,6 +1190,79 @@ router.delete('/chats/:id/messages/:messageId', asyncHandler(async (req, res) =>
   res.send({ status: true, chat: normalizedChat, deletedMessageId: req.params.messageId });
 }));
 
+router.patch('/chats/:id/status', asyncHandler(async (req, res) => {
+  if (!canManageChats(req.user)) {
+    res.status(403).send({ status: false, message: 'Forbidden: support access required' });
+    return;
+  }
+
+  const nextStatus = String(req.body?.status || '').trim().toLowerCase();
+  if (!['open', 'active', 'pending', 'waiting', 'resolved', 'closed'].includes(nextStatus)) {
+    res.status(400).send({ status: false, message: 'Invalid chat status' });
+    return;
+  }
+
+  if (isMemoryChatId(req.params.id)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
+    memoryChat.status = nextStatus;
+    memoryChat.updated_at = new Date().toISOString();
+    res.send({ status: true, chat: hydrateMemoryChat(memoryChat), fallback: 'memory' });
+    return;
+  }
+
+  const { data: chat, error: chatError } = await supabase
+    .from('support_chats')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (isSupportChatSchemaError(chatError)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
+    memoryChat.status = nextStatus;
+    memoryChat.updated_at = new Date().toISOString();
+    res.send({ status: true, chat: hydrateMemoryChat(memoryChat), fallback: 'memory' });
+    return;
+  }
+
+  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
+  if (!canAccessChatRow(req.user, chat)) {
+    res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+    return;
+  }
+
+  const nextMeta = {
+    ...(chat.meta && typeof chat.meta === 'object' ? chat.meta : {}),
+    statusUpdatedBy: req.user?.id || null,
+    statusUpdatedAt: new Date().toISOString()
+  };
+
+  const { data: updatedChat, error: updateError } = await supabase
+    .from('support_chats')
+    .update({ status: nextStatus, meta: nextMeta, updated_at: new Date().toISOString() })
+    .eq('id', chat.id)
+    .select('*')
+    .maybeSingle();
+
+  if (updateError) { sendSupabaseError(res, updateError); return; }
+
+  if (['resolved', 'closed'].includes(nextStatus)) {
+    await assignWaitingSupportChats({ stateName: chat.state_name || '' });
+  }
+
+  res.send({ status: true, chat: mapChatRow(updatedChat || chat) });
+}));
+
 router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
   if (!canTransferChats(req.user)) {
     res.status(403).send({ status: false, message: 'Forbidden: support access required' });
@@ -1128,6 +1285,7 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
     memoryChat.transferred_by = req.user?.id || null;
     memoryChat.assignee_id = targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? req.user.id : null;
     memoryChat.assignee_name = targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? (req.user.name || 'Support') : null;
+    memoryChat.status = memoryChat.assignee_id ? 'open' : (targetDepartment === 'support' ? 'waiting' : 'open');
     memoryChat.updated_at = new Date().toISOString();
     appendMemoryChatMessage({
       chatId: memoryChat.id,
@@ -1139,6 +1297,15 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
     return;
   }
 
+  const currentChatResp = await supabase
+    .from('support_chats')
+    .select('state_name, meta')
+    .eq('id', req.params.id)
+    .maybeSingle();
+  const transferStateName = currentChatResp.data?.state_name || '';
+  const supportAssignee = targetDepartment === 'support' ? await chooseSupportAssignee(transferStateName) : null;
+  const isWaitingForSupport = targetDepartment === 'support' && !supportAssignee;
+
   const { data, error } = await supabase
     .from('support_chats')
     .update({
@@ -1146,8 +1313,14 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
       transfer_reason: reason || null,
       transferred_at: new Date().toISOString(),
       transferred_by: req.user?.id || null,
-      assignee_id: targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? req.user.id : null,
-      assignee_name: targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? (req.user.name || 'Support') : null,
+      assignee_id: targetDepartment === 'support' ? (supportAssignee?.id || null) : null,
+      assignee_name: targetDepartment === 'support' ? (supportAssignee?.name || supportAssignee?.email || null) : null,
+      status: isWaitingForSupport ? 'waiting' : 'open',
+      meta: {
+        ...(currentChatResp.data?.meta && typeof currentChatResp.data.meta === 'object' ? currentChatResp.data.meta : {}),
+        queueStatus: isWaitingForSupport ? 'waiting' : (targetDepartment === 'support' ? 'assigned' : 'transferred'),
+        waitingMessage: isWaitingForSupport ? 'All support agents are busy. You are in the waiting queue.' : ''
+      },
       updated_at: new Date().toISOString()
     })
     .eq('id', req.params.id)
@@ -1163,6 +1336,7 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
     memoryChat.transferred_by = req.user?.id || null;
     memoryChat.assignee_id = targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? req.user.id : null;
     memoryChat.assignee_name = targetDepartment === 'support' && req.user?.role === ROLES.SUPPORT ? (req.user.name || 'Support') : null;
+    memoryChat.status = memoryChat.assignee_id ? 'open' : (targetDepartment === 'support' ? 'waiting' : 'open');
     memoryChat.updated_at = new Date().toISOString();
     appendMemoryChatMessage({
       chatId: memoryChat.id,

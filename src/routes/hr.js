@@ -680,7 +680,7 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
   res.send({ status: true, activities });
 }));
 
-router.get('/candidates/search', requireApprovedHr, attachPlanAccess, asyncHandler(async (req, res) => {
+router.get('/candidates/search', requireApprovedHr, requirePlanFeature('hr.candidate_search'), attachPlanAccess, asyncHandler(async (req, res) => {
   try {
     const result = await searchDiscoverableCandidates({
       hrUser: req.user,
@@ -718,7 +718,7 @@ router.get('/candidates/search', requireApprovedHr, attachPlanAccess, asyncHandl
   }
 }));
 
-router.post('/candidates/:studentId/resume-view', requireApprovedHr, asyncHandler(async (req, res) => {
+router.post('/candidates/:studentId/resume-view', requireApprovedHr, requirePlanFeature('hr.candidate_resume_view'), asyncHandler(async (req, res) => {
   const { studentId } = req.params;
   if (!isValidUuid(studentId)) return res.status(400).send({ status: false, message: 'Invalid studentId' });
 
@@ -740,7 +740,7 @@ router.post('/candidates/:studentId/resume-view', requireApprovedHr, asyncHandle
   });
 }));
 
-router.post('/candidates/:studentId/interest', requireApprovedHr, asyncHandler(async (req, res) => {
+router.post('/candidates/:studentId/interest', requireApprovedHr, requirePlanFeature('hr.candidate_interest'), asyncHandler(async (req, res) => {
   const { studentId } = req.params;
   if (!isValidUuid(studentId)) return res.status(400).send({ status: false, message: 'Invalid studentId' });
 
@@ -1169,7 +1169,7 @@ router.get('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
   });
 }));
 
-router.post('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
+router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_scheduling'), asyncHandler(async (req, res) => {
   const interviewCapabilities = await getInterviewScheduleCapabilities({ force: true });
   const sourceType = String(req.body?.sourceType || 'job').trim().toLowerCase() === 'campus' ? 'campus' : 'job';
   const applicationId = req.body?.applicationId;
