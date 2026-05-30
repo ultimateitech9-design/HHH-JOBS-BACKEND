@@ -16,7 +16,7 @@ router.use((req, res, next) => {
 
 const CHAT_CUSTOMER_ROLES = new Set([ROLES.STUDENT, ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.RETIRED_EMPLOYEE]);
 const CHAT_AGENT_ROLES = new Set([ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT, ROLES.DATAENTRY, ROLES.SALES, ROLES.ACCOUNTS]);
-const TRANSFER_DEPARTMENTS = new Set(['support', 'admin', 'dataentry', 'sales', 'accounts']);
+const TRANSFER_DEPARTMENTS = new Set(['support', 'dataentry', 'sales', 'accounts']);
 const SUPPORT_ACTIVE_CHAT_STATUSES = ['open', 'active', 'pending'];
 const CUSTOMER_OPEN_CHAT_STATUSES = ['open', 'active', 'pending', 'waiting'];
 const SUPPORT_AGENT_MAX_ACTIVE_CHATS = Math.max(1, parseInt(process.env.SUPPORT_AGENT_MAX_ACTIVE_CHATS || '1', 10) || 1);
@@ -25,7 +25,6 @@ const normalizeDepartment = (value = '') => {
   if (normalized === 'dataentry' || normalized === 'dataentryteam') return 'dataentry';
   if (normalized === 'account' || normalized === 'accounts' || normalized === 'billing') return 'accounts';
   if (normalized === 'sale' || normalized === 'sales') return 'sales';
-  if (normalized === 'admin') return 'admin';
   return 'support';
 };
 
@@ -676,6 +675,11 @@ router.get('/chats', asyncHandler(async (req, res) => {
   }
 
   const chats = (data || []).map(mapChatRow);
+  const memoryChatsForQueue = listMemoryChatsForUser(req.user, { department, stateName });
+  const knownChatIds = new Set(chats.map((chat) => chat.id));
+  for (const memoryChat of memoryChatsForQueue) {
+    if (!knownChatIds.has(memoryChat.id)) chats.push(memoryChat);
+  }
   const chatIds = chats.map((chat) => chat.id);
   if (chatIds.length > 0) {
     const { data: messages } = await supabase
@@ -692,7 +696,7 @@ router.get('/chats', asyncHandler(async (req, res) => {
     }, {});
 
     chats.forEach((chat) => {
-      chat.messages = groupedMessages[chat.id] || [];
+      chat.messages = groupedMessages[chat.id] || chat.messages || [];
     });
   }
 
