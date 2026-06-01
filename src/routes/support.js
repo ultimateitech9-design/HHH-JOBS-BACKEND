@@ -34,6 +34,11 @@ const canUseCustomerChat = (user = {}) => CHAT_CUSTOMER_ROLES.has(user?.role);
 const canTransferChats = (user = {}) => [ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT].includes(user?.role);
 const memoryChats = [];
 const memoryChatMessages = [];
+const memoryModerations = [];
+const MODERATION_ACTIONS = new Set(['ban', 'block']);
+const MODERATION_ACTIVE_STATUS = 'active';
+const MODERATION_LIFTED_STATUS = 'lifted';
+const DEFAULT_BAN_HOURS = 24;
 
 const isSupportChatSchemaError = (error = {}) => {
   const code = String(error.code || '').toUpperCase();
@@ -43,6 +48,43 @@ const isSupportChatSchemaError = (error = {}) => {
     || message.includes('support_chat_messages');
 };
 const isMemoryChatId = (value = '') => String(value || '').startsWith('MEM-CHAT-');
+
+const isModerationSchemaError = (error = {}) => {
+  const code = String(error.code || '').toUpperCase();
+  const message = String(error.message || '').toLowerCase();
+  return ['42P01', '42703', 'PGRST204'].includes(code)
+    || message.includes('support_chat_moderations');
+};
+
+const isActiveModeration = (row = {}) => {
+  if (row.status && row.status !== MODERATION_ACTIVE_STATUS) return false;
+  if (!row.expires_at) return true;
+  return new Date(row.expires_at).getTime() > Date.now();
+};
+
+const mapModerationRow = (row = {}) => ({
+  id: row.id || '',
+  action: row.action || '',
+  status: row.status || '',
+  reason: row.reason || '',
+  expiresAt: row.expires_at || '',
+  createdAt: row.created_at || '',
+  createdBy: row.created_by || '',
+  liftedAt: row.lifted_at || '',
+  liftedBy: row.lifted_by || ''
+});
+
+const getActiveMemoryModeration = (userId = '') =>
+  memoryModerations
+    .filter((row) => row.user_id === userId && isActiveModeration(row))
+    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0] || null;
+
+const buildRestrictionMessage = (moderation = {}) => {
+  if (!moderation?.action) return '';
+  if (moderation.action === 'block') return 'You are blocked from live support chat. Contact support admin.';
+  const expiresAt = moderation.expires_at || moderation.expiresAt;
+  return `You are temporarily banned from live support chat${expiresAt ? ` until ${new Date(expiresAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}` : ''}.`;
+};
 
 const getRoleDepartment = (role = '') => {
   if (role === ROLES.DATAENTRY) return 'dataentry';
@@ -134,6 +176,7 @@ const mapChatRow = (row = {}) => ({
   transferReason: row.transfer_reason || '',
   transferredAt: row.transferred_at,
   transferredBy: row.transferred_by,
+  moderation: row.moderation || row.meta?.moderation || null,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   messages: []
@@ -236,6 +279,86 @@ const insertChatMessage = async ({ chatId, user, message, isInternal = false }) 
     .single();
 
   return { message: data ? mapChatMessageRow(data) : null, error };
+};
+
+const getActiveChatModerationForUser = async (userId = '') => {
+  if (!userId) return { moderation: null, fallback: false, error: null };
+
+  const { data, error } = await supabase
+    .from('support_chat_moderations')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('status', MODERATION_ACTIVE_STATUS)
+    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (isModerationSchemaError(error)) {
+    return { moderation: getActiveMemoryModeration(userId), fallback: true, error: null };
+  }
+
+  if (error && String(error.code || '').toUpperCase() !== 'PGRST116') {
+    return { moderation: null, fallback: false, error };
+  }
+
+  return { moderation: data || null, fallback: false, error: null };
+};
+
+const getChatModerationsByRequester = async (requesterIds = []) => {
+  const ids = Array.from(new Set(requesterIds.filter(Boolean)));
+  if (ids.length === 0) return { byUserId: new Map(), fallback: false };
+
+  const { data, error } = await supabase
+    .from('support_chat_moderations')
+    .select('*')
+    .in('user_id', ids)
+    .eq('status', MODERATION_ACTIVE_STATUS)
+    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+    .order('created_at', { ascending: false });
+
+  if (isModerationSchemaError(error)) {
+    const byUserId = new Map();
+    ids.forEach((id) => {
+      const row = getActiveMemoryModeration(id);
+      if (row) byUserId.set(id, mapModerationRow(row));
+    });
+    return { byUserId, fallback: true };
+  }
+
+  if (error) return { byUserId: new Map(), fallback: false, error };
+
+  const byUserId = new Map();
+  (data || []).forEach((row) => {
+    if (!byUserId.has(row.user_id)) byUserId.set(row.user_id, mapModerationRow(row));
+  });
+  return { byUserId, fallback: false };
+};
+
+const attachModerationToChats = async (chats = []) => {
+  const { byUserId } = await getChatModerationsByRequester(chats.map((chat) => chat.requesterId));
+  chats.forEach((chat) => {
+    const moderation = byUserId.get(chat.requesterId);
+    if (moderation) chat.moderation = moderation;
+  });
+  return chats;
+};
+
+const enforceCustomerChatModeration = async (req, res) => {
+  if (!canUseCustomerChat(req.user)) return false;
+  const { moderation, error } = await getActiveChatModerationForUser(req.user?.id);
+  if (error) {
+    sendSupabaseError(res, error);
+    return true;
+  }
+  if (!moderation) return false;
+  res.status(403).send({
+    status: false,
+    code: `chat_${moderation.action || 'restricted'}`,
+    message: buildRestrictionMessage(moderation),
+    moderation: mapModerationRow(moderation)
+  });
+  return true;
 };
 
 const findSupportTicket = async (ticketIdentifier) => {
@@ -663,11 +786,11 @@ router.get('/chats', asyncHandler(async (req, res) => {
 
   if (error) {
     if (String(error.code || '').toUpperCase() === '42P01') {
-      res.send({ status: true, chats: listMemoryChatsForUser(req.user, { department, stateName }), fallback: 'memory' });
+      res.send({ status: true, chats: await attachModerationToChats(listMemoryChatsForUser(req.user, { department, stateName })), fallback: 'memory' });
       return;
     }
     if (isSupportChatSchemaError(error)) {
-      res.send({ status: true, chats: listMemoryChatsForUser(req.user, { department, stateName }), fallback: 'memory' });
+      res.send({ status: true, chats: await attachModerationToChats(listMemoryChatsForUser(req.user, { department, stateName })), fallback: 'memory' });
       return;
     }
     sendSupabaseError(res, error);
@@ -700,7 +823,7 @@ router.get('/chats', asyncHandler(async (req, res) => {
     });
   }
 
-  res.send({ status: true, chats });
+  res.send({ status: true, chats: await attachModerationToChats(chats) });
 }));
 
 router.get('/chats/mine', asyncHandler(async (req, res) => {
@@ -708,6 +831,8 @@ router.get('/chats/mine', asyncHandler(async (req, res) => {
     res.status(403).send({ status: false, message: 'Forbidden: customer chat is not available for this role' });
     return;
   }
+
+  if (await enforceCustomerChatModeration(req, res)) return;
 
   const { data, error } = await supabase
     .from('support_chats')
@@ -749,6 +874,7 @@ router.get('/chats/mine', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   const chat = mapChatRow(refreshedChat || data);
+  await attachModerationToChats([chat]);
   const { data: messages } = await supabase
     .from('support_chat_messages')
     .select('*')
@@ -764,6 +890,8 @@ router.post('/chats', asyncHandler(async (req, res) => {
     res.status(403).send({ status: false, message: 'Forbidden: customer chat is not available for this role' });
     return;
   }
+
+  if (await enforceCustomerChatModeration(req, res)) return;
 
   const message = String(req.body?.message || '').trim();
   const subject = String(req.body?.subject || 'Live support').trim();
@@ -943,6 +1071,7 @@ router.get('/chats/:id/messages', asyncHandler(async (req, res) => {
 router.post('/chats/:id/messages', asyncHandler(async (req, res) => {
   const text = String(req.body?.message || '').trim();
   if (!text) return res.status(400).send({ status: false, message: 'message is required' });
+  if (await enforceCustomerChatModeration(req, res)) return;
 
   if (isMemoryChatId(req.params.id)) {
     const memoryChat = memoryChats.find((item) => item.id === req.params.id);
@@ -1363,6 +1492,168 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
   });
 
   res.send({ status: true, chat: mapChatRow(data) });
+}));
+
+router.patch('/chats/:id/moderation', asyncHandler(async (req, res) => {
+  if (!canManageChats(req.user)) {
+    res.status(403).send({ status: false, message: 'Forbidden: support access required' });
+    return;
+  }
+
+  const rawAction = String(req.body?.action || '').trim().toLowerCase();
+  const action = rawAction === 'unban' ? 'unblock' : rawAction;
+  const reason = String(req.body?.reason || '').trim();
+  const hours = Math.max(1, Math.min(720, Number(req.body?.hours || req.body?.durationHours || DEFAULT_BAN_HOURS) || DEFAULT_BAN_HOURS));
+
+  if (![...MODERATION_ACTIONS, 'unblock'].includes(action)) {
+    res.status(400).send({ status: false, message: 'Invalid moderation action' });
+    return;
+  }
+
+  const applyMemoryModeration = (memoryChat) => {
+    if (!memoryChat) return null;
+    const now = new Date();
+    for (const row of memoryModerations) {
+      if (row.user_id === memoryChat.requester_id && row.status === MODERATION_ACTIVE_STATUS) {
+        row.status = MODERATION_LIFTED_STATUS;
+        row.lifted_by = req.user?.id || null;
+        row.lifted_at = now.toISOString();
+      }
+    }
+
+    let moderation = null;
+    if (action !== 'unblock') {
+      moderation = {
+        id: `MEM-MOD-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        user_id: memoryChat.requester_id,
+        user_role: memoryChat.requester_role || null,
+        user_email: memoryChat.requester_email || null,
+        chat_id: memoryChat.id,
+        action,
+        status: MODERATION_ACTIVE_STATUS,
+        reason: reason || null,
+        expires_at: action === 'ban' ? new Date(now.getTime() + hours * 3600000).toISOString() : null,
+        created_by: req.user?.id || null,
+        created_at: now.toISOString()
+      };
+      memoryModerations.unshift(moderation);
+    }
+
+    memoryChat.meta = {
+      ...(memoryChat.meta && typeof memoryChat.meta === 'object' ? memoryChat.meta : {}),
+      moderation: moderation ? mapModerationRow(moderation) : null
+    };
+    memoryChat.updated_at = now.toISOString();
+    appendMemoryChatMessage({
+      chatId: memoryChat.id,
+      user: req.user,
+      message: action === 'unblock'
+        ? `[MODERATION] Customer unblocked${reason ? `: ${reason}` : ''}`
+        : `[MODERATION] Customer ${action === 'ban' ? `banned for ${hours} hour${hours === 1 ? '' : 's'}` : 'blocked'}${reason ? `: ${reason}` : ''}`,
+      isInternal: true
+    });
+    return hydrateMemoryChat(memoryChat);
+  };
+
+  if (isMemoryChatId(req.params.id)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    const updatedChat = applyMemoryModeration(memoryChat);
+    if (!updatedChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    res.send({ status: true, chat: updatedChat, moderation: updatedChat.moderation || null, fallback: 'memory' });
+    return;
+  }
+
+  const { data: chat, error: chatError } = await supabase
+    .from('support_chats')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (isSupportChatSchemaError(chatError)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    const updatedChat = applyMemoryModeration(memoryChat);
+    if (!updatedChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    res.send({ status: true, chat: updatedChat, moderation: updatedChat.moderation || null, fallback: 'memory' });
+    return;
+  }
+
+  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
+  if (!chat.requester_id) return res.status(400).send({ status: false, message: 'Chat requester is missing' });
+
+  const liftedPayload = {
+    status: MODERATION_LIFTED_STATUS,
+    lifted_by: req.user?.id || null,
+    lifted_at: new Date().toISOString()
+  };
+  const liftResult = await supabase
+    .from('support_chat_moderations')
+    .update(liftedPayload)
+    .eq('user_id', chat.requester_id)
+    .eq('status', MODERATION_ACTIVE_STATUS);
+
+  if (isModerationSchemaError(liftResult.error)) {
+    const memoryChat = memoryChats.find((item) => item.id === req.params.id);
+    const updatedChat = applyMemoryModeration(memoryChat);
+    if (!updatedChat) {
+      const fallbackChat = mapChatRow(chat);
+      fallbackChat.moderation = null;
+      res.send({ status: true, chat: fallbackChat, moderation: null, fallback: 'memory-moderation' });
+      return;
+    }
+    res.send({ status: true, chat: updatedChat, moderation: updatedChat.moderation || null, fallback: 'memory' });
+    return;
+  }
+
+  if (liftResult.error) { sendSupabaseError(res, liftResult.error); return; }
+
+  let moderation = null;
+  if (action !== 'unblock') {
+    const expiresAt = action === 'ban' ? new Date(Date.now() + hours * 3600000).toISOString() : null;
+    const { data: inserted, error: insertError } = await supabase
+      .from('support_chat_moderations')
+      .insert({
+        user_id: chat.requester_id,
+        user_role: chat.requester_role || null,
+        user_email: chat.requester_email || null,
+        chat_id: chat.id,
+        action,
+        status: MODERATION_ACTIVE_STATUS,
+        reason: reason || null,
+        expires_at: expiresAt,
+        created_by: req.user?.id || null,
+        meta: { hours: action === 'ban' ? hours : null }
+      })
+      .select('*')
+      .single();
+
+    if (insertError) { sendSupabaseError(res, insertError); return; }
+    moderation = mapModerationRow(inserted);
+  }
+
+  const nextMeta = {
+    ...(chat.meta && typeof chat.meta === 'object' ? chat.meta : {}),
+    moderation
+  };
+  const { data: updatedChat } = await supabase
+    .from('support_chats')
+    .update({ meta: nextMeta, updated_at: new Date().toISOString() })
+    .eq('id', chat.id)
+    .select('*')
+    .maybeSingle();
+
+  await insertChatMessage({
+    chatId: chat.id,
+    user: req.user,
+    message: action === 'unblock'
+      ? `[MODERATION] Customer unblocked${reason ? `: ${reason}` : ''}`
+      : `[MODERATION] Customer ${action === 'ban' ? `banned for ${hours} hour${hours === 1 ? '' : 's'}` : 'blocked'}${reason ? `: ${reason}` : ''}`,
+    isInternal: true
+  });
+
+  const responseChat = mapChatRow(updatedChat || { ...chat, meta: nextMeta });
+  responseChat.moderation = moderation;
+  res.send({ status: true, chat: responseChat, moderation });
 }));
 
 // =============================================
