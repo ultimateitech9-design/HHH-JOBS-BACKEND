@@ -40,16 +40,16 @@ const requireAuth = asyncHandler(async (req, res, next) => {
     return;
   }
 
+  const devUser = parseDevUserHeader(req);
+  if (devUser) {
+    req.user = devUser;
+    req.tokenPayload = { id: devUser.id, role: devUser.role, devFallback: true };
+    next();
+    return;
+  }
+
   const header = req.headers.authorization || '';
   if (!header.startsWith('Bearer ')) {
-    const devUser = parseDevUserHeader(req);
-    if (devUser) {
-      req.user = devUser;
-      req.tokenPayload = { id: devUser.id, role: devUser.role, devFallback: true };
-      next();
-      return;
-    }
-
     res.status(401).send({ status: false, message: 'Missing or invalid authorization token' });
     return;
   }
