@@ -34,6 +34,201 @@ const setCatalogCacheHeaders = (_req, res, next) => {
   next();
 };
 
+const DEFAULT_ROLE_NAMES = [
+  'Delivery',
+  'Field Sales',
+  'Telecalling',
+  'Cook',
+  'Accounts',
+  'Retail',
+  'Labourer',
+  'Restaurant Staff',
+  'Business Development',
+  'Driver',
+  'Back Office',
+  'Receptionist',
+  'Office Boy Peon',
+  'Warehousing',
+  'Online Marketing',
+  'Digital Marketing',
+  'Machine Operator',
+  'Technician',
+  'Housekeeping',
+  'HR',
+  'Data Entry Operator',
+  'Sales Executive',
+  'Customer Support',
+  'Security Guard',
+  'Graphic Designer',
+  'Software Developer',
+  'Accountant',
+  'Teacher',
+  'Nurse',
+  'Electrician',
+  'Plumber',
+  'Beautician',
+  'Content Writer',
+  'Admin Executive',
+  'Computer Operator',
+  'Store Manager',
+  'Marketing Executive',
+  'Business Analyst',
+  'Data Analyst',
+  'Full Stack Developer',
+  'React Developer',
+  'Java Developer',
+  'QA Engineer',
+  'Project Manager',
+  'Operations Executive',
+  'Logistics Executive',
+  'Purchase Executive',
+  'Production Supervisor',
+  'Site Engineer',
+  'Civil Engineer'
+];
+
+const DEFAULT_CITY_NAMES = [
+  'Mumbai',
+  'Delhi / NCR',
+  'Pune',
+  'Ahmedabad',
+  'Bengaluru',
+  'Chennai',
+  'Kolkata',
+  'Lucknow',
+  'Hyderabad',
+  'Surat',
+  'Nagpur',
+  'Nashik',
+  'Chandigarh',
+  'Coimbatore',
+  'Jaipur',
+  'Kochi',
+  'Trivandrum',
+  'Indore',
+  'Vadodara',
+  'Aurangabad',
+  'Noida',
+  'Gurgaon',
+  'Ghitorni',
+  'Faridabad',
+  'Ghaziabad',
+  'Greater Noida',
+  'Bhopal',
+  'Patna',
+  'Ranchi',
+  'Raipur',
+  'Bhubaneswar',
+  'Visakhapatnam',
+  'Vijayawada',
+  'Guntur',
+  'Mysuru',
+  'Mangalore',
+  'Madurai',
+  'Tiruchirappalli',
+  'Ludhiana',
+  'Amritsar',
+  'Jalandhar',
+  'Kanpur',
+  'Agra',
+  'Varanasi',
+  'Prayagraj',
+  'Meerut',
+  'Dehradun',
+  'Guwahati',
+  'Udaipur',
+  'Jodhpur'
+];
+
+const EXCLUDED_FACET_LABELS = new Set([
+  'all',
+  'all india',
+  'all industries',
+  'all industry type',
+  'basement',
+  'gf',
+  'india',
+  'not specified',
+  'remote',
+  'unassigned',
+  'wfh',
+  'work from home'
+]);
+
+const normalizeFacetKey = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+const cleanFacetName = (value) => String(value || '').trim().replace(/\s+/g, ' ');
+
+const isDisplayFacetName = (name, kind) => {
+  const label = cleanFacetName(name);
+  if (!label || EXCLUDED_FACET_LABELS.has(normalizeFacetKey(label))) return false;
+  if (kind === 'city') {
+    if (label.length > 34 || /[0-9]/.test(label) || label.includes(',')) return false;
+  }
+  return true;
+};
+
+const mergeFacetItems = ({ activeRows = [], allRows = [], fallbackNames = [], limit, kind }) => {
+  const itemsByKey = new Map();
+
+  const addItem = ({ name, activeCount = 0, totalCount = 0, sourceRank = 99, order = 0 }) => {
+    const label = cleanFacetName(name);
+    if (!isDisplayFacetName(label, kind)) return;
+
+    const key = normalizeFacetKey(label);
+    const current = itemsByKey.get(key) || {
+      name: label,
+      count: 0,
+      activeCount: 0,
+      totalCount: 0,
+      hasHiring: false,
+      sourceRank,
+      order
+    };
+
+    current.name = current.name || label;
+    current.count = Math.max(current.count, Number(activeCount || 0));
+    current.activeCount = current.count;
+    current.totalCount = Math.max(current.totalCount, Number(totalCount || 0), current.count);
+    current.hasHiring = current.count > 0;
+    current.sourceRank = Math.min(current.sourceRank, sourceRank);
+    current.order = Math.min(current.order, order);
+    itemsByKey.set(key, current);
+  };
+
+  activeRows.forEach((row, index) => addItem({
+    name: row.name,
+    activeCount: row.count,
+    totalCount: row.totalCount || row.count,
+    sourceRank: 0,
+    order: index
+  }));
+
+  allRows.forEach((row, index) => addItem({
+    name: row.name,
+    activeCount: row.activeCount || 0,
+    totalCount: row.totalCount || row.count || 0,
+    sourceRank: Number.isFinite(row.sourceRank) ? row.sourceRank : 1,
+    order: index
+  }));
+
+  fallbackNames.forEach((name, index) => addItem({
+    name,
+    sourceRank: 2,
+    order: index
+  }));
+
+  return [...itemsByKey.values()]
+    .sort((left, right) => {
+      if (right.count !== left.count) return right.count - left.count;
+      if (right.totalCount !== left.totalCount) return right.totalCount - left.totalCount;
+      if (left.sourceRank !== right.sourceRank) return left.sourceRank - right.sourceRank;
+      if (left.order !== right.order) return left.order - right.order;
+      return left.name.localeCompare(right.name);
+    })
+    .slice(0, limit);
+};
+
 const mapJobWithBrand = (job, brandIndex) => {
   const mappedJob = mapJobFromRow(job);
   const brand = resolveCompanyBrand(brandIndex, job.company_name, {
@@ -55,9 +250,14 @@ const OPEN_JOBS_WHERE = `
 const normalizeFacetRows = (rows = []) => rows
   .map((row) => ({
     name: String(row.name || '').trim(),
-    count: Number(row.count || 0)
+    count: Number(row.count || 0),
+    totalCount: Number(row.totalCount || row.total_count || row.count || 0),
+    activeCount: Number(row.activeCount || row.active_count || row.count || 0),
+    sourceRank: Number.isFinite(Number(row.sourceRank ?? row.source_rank))
+      ? Number(row.sourceRank ?? row.source_rank)
+      : undefined
   }))
-  .filter((row) => row.name && row.count > 0);
+  .filter((row) => row.name);
 
 const getFacetLimit = (value, fallback, maximum) => {
   const parsed = parseInt(value || fallback, 10);
@@ -66,7 +266,21 @@ const getFacetLimit = (value, fallback, maximum) => {
 
 const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLimit }) => {
   const db = getPool();
-  const [roles, sectors, cities, pincodes, totals] = await Promise.all([
+  const [
+    activeRoles,
+    allJobRoles,
+    masterCategories,
+    activeSectors,
+    allJobSectors,
+    masterSectors,
+    activeCities,
+    allJobCities,
+    masterDistricts,
+    activePincodes,
+    allPincodes,
+    masterPincodes,
+    totals
+  ] = await Promise.all([
     db.execute(`
       SELECT MIN(TRIM(job_title)) AS name, COUNT(*) AS count
       FROM jobs
@@ -74,6 +288,22 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
         AND NULLIF(TRIM(job_title), '') IS NOT NULL
       GROUP BY LOWER(TRIM(job_title))
       ORDER BY count DESC, name ASC
+      LIMIT ${roleLimit}
+    `),
+    db.execute(`
+      SELECT MIN(TRIM(job_title)) AS name, COUNT(*) AS totalCount
+      FROM jobs
+      WHERE NULLIF(TRIM(job_title), '') IS NOT NULL
+      GROUP BY LOWER(TRIM(job_title))
+      ORDER BY totalCount DESC, name ASC
+      LIMIT ${roleLimit * 2}
+    `),
+    db.execute(`
+      SELECT MIN(TRIM(name)) AS name, 0 AS totalCount
+      FROM master_categories
+      WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL
+      GROUP BY LOWER(TRIM(name))
+      ORDER BY name ASC
       LIMIT ${roleLimit}
     `),
     db.execute(`
@@ -87,6 +317,26 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
         AND LOWER(label) NOT IN ('all industry type', 'all industries', 'all', 'unassigned')
       GROUP BY LOWER(label)
       ORDER BY count DESC, name ASC
+      LIMIT ${sectorLimit}
+    `),
+    db.execute(`
+      SELECT MIN(label) AS name, COUNT(*) AS totalCount
+      FROM (
+        SELECT COALESCE(NULLIF(TRIM(sector_name), ''), NULLIF(TRIM(category), '')) AS label
+        FROM jobs
+      ) sector_jobs
+      WHERE label IS NOT NULL
+        AND LOWER(label) NOT IN ('all industry type', 'all industries', 'all', 'unassigned')
+      GROUP BY LOWER(label)
+      ORDER BY totalCount DESC, name ASC
+      LIMIT ${sectorLimit * 2}
+    `),
+    db.execute(`
+      SELECT MIN(TRIM(name)) AS name, 0 AS totalCount
+      FROM master_sectors
+      WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL
+      GROUP BY LOWER(TRIM(name))
+      ORDER BY name ASC
       LIMIT ${sectorLimit}
     `),
     db.execute(`
@@ -107,12 +357,51 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
       LIMIT ${cityLimit}
     `),
     db.execute(`
+      SELECT MIN(label) AS name, COUNT(*) AS totalCount
+      FROM (
+        SELECT COALESCE(
+          NULLIF(TRIM(city_name), ''),
+          NULLIF(TRIM(district_name), ''),
+          NULLIF(TRIM(SUBSTRING_INDEX(job_location, ',', 1)), '')
+        ) AS label
+        FROM jobs
+      ) city_jobs
+      WHERE label IS NOT NULL
+      GROUP BY LOWER(label)
+      ORDER BY totalCount DESC, name ASC
+      LIMIT ${cityLimit * 2}
+    `),
+    db.execute(`
+      SELECT MIN(TRIM(name)) AS name, 0 AS totalCount
+      FROM master_districts
+      WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL
+      GROUP BY LOWER(TRIM(name))
+      ORDER BY name ASC
+      LIMIT ${cityLimit}
+    `),
+    db.execute(`
       SELECT MIN(TRIM(pincode)) AS name, COUNT(*) AS count
       FROM jobs
       ${OPEN_JOBS_WHERE}
         AND NULLIF(TRIM(pincode), '') IS NOT NULL
       GROUP BY LOWER(TRIM(pincode))
       ORDER BY count DESC, name ASC
+      LIMIT ${pincodeLimit}
+    `),
+    db.execute(`
+      SELECT MIN(TRIM(pincode)) AS name, COUNT(*) AS totalCount
+      FROM jobs
+      WHERE NULLIF(TRIM(pincode), '') IS NOT NULL
+      GROUP BY LOWER(TRIM(pincode))
+      ORDER BY totalCount DESC, name ASC
+      LIMIT ${pincodeLimit * 2}
+    `),
+    db.execute(`
+      SELECT MIN(TRIM(pincode)) AS name, 0 AS totalCount
+      FROM master_pincodes
+      WHERE is_active = 1 AND NULLIF(TRIM(pincode), '') IS NOT NULL
+      GROUP BY LOWER(TRIM(pincode))
+      ORDER BY name ASC
       LIMIT ${pincodeLimit}
     `),
     db.execute(`
@@ -125,10 +414,43 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
   ]);
 
   return {
-    roles: normalizeFacetRows(roles[0]),
-    sectors: normalizeFacetRows(sectors[0]),
-    cities: normalizeFacetRows(cities[0]),
-    pincodes: normalizeFacetRows(pincodes[0]),
+    roles: mergeFacetItems({
+      activeRows: normalizeFacetRows(activeRoles[0]),
+      allRows: [
+        ...normalizeFacetRows(allJobRoles[0]),
+        ...normalizeFacetRows(masterCategories[0]).map((row) => ({ ...row, sourceRank: 3 }))
+      ],
+      fallbackNames: DEFAULT_ROLE_NAMES,
+      limit: roleLimit,
+      kind: 'role'
+    }),
+    sectors: mergeFacetItems({
+      activeRows: normalizeFacetRows(activeSectors[0]),
+      allRows: [
+        ...normalizeFacetRows(allJobSectors[0]),
+        ...normalizeFacetRows(masterSectors[0]).map((row) => ({ ...row, sourceRank: 2 }))
+      ],
+      fallbackNames: [],
+      limit: sectorLimit,
+      kind: 'sector'
+    }),
+    cities: mergeFacetItems({
+      activeRows: normalizeFacetRows(activeCities[0]),
+      allRows: [
+        ...normalizeFacetRows(allJobCities[0]),
+        ...normalizeFacetRows(masterDistricts[0]).map((row) => ({ ...row, sourceRank: 3 }))
+      ],
+      fallbackNames: DEFAULT_CITY_NAMES,
+      limit: cityLimit,
+      kind: 'city'
+    }),
+    pincodes: mergeFacetItems({
+      activeRows: normalizeFacetRows(activePincodes[0]),
+      allRows: [...normalizeFacetRows(allPincodes[0]), ...normalizeFacetRows(masterPincodes[0])],
+      fallbackNames: [],
+      limit: pincodeLimit,
+      kind: 'pincode'
+    }),
     totals: {
       openJobs: Number(totals[0]?.[0]?.openJobs || 0),
       companies: Number(totals[0]?.[0]?.companies || 0)
@@ -248,9 +570,9 @@ router.get('/meta/homepage-facets', automationProtection, publicJobsReadLimiter,
   }
 
   const facets = await getHomepageFacets({
-    roleLimit: getFacetLimit(req.query.roleLimit || req.query.role_limit, 60, 100),
+    roleLimit: getFacetLimit(req.query.roleLimit || req.query.role_limit, 90, 140),
     sectorLimit: getFacetLimit(req.query.sectorLimit || req.query.sector_limit, 90, 120),
-    cityLimit: getFacetLimit(req.query.cityLimit || req.query.city_limit, 70, 120),
+    cityLimit: getFacetLimit(req.query.cityLimit || req.query.city_limit, 90, 160),
     pincodeLimit: getFacetLimit(req.query.pincodeLimit || req.query.pincode_limit, 40, 80)
   });
 
