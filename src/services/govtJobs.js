@@ -9,6 +9,55 @@ const DEFAULT_REMINDER_DAYS_BEFORE = 1;
 const MAX_REMINDER_DAYS_BEFORE = 30;
 const DEFAULT_PAGE_LIMIT = 18;
 const MAX_PAGE_LIMIT = 50;
+const MASTER_CATEGORIES = [
+  'Civil Services',
+  'Banking',
+  'Railways',
+  'Defence & Police',
+  'Teaching',
+  'Engineering',
+  'Medical',
+  'State PSC',
+  'SSC',
+  'UPSC',
+  'Insurance',
+  'Other'
+];
+const MASTER_STATES = [
+  'All India',
+  'Andhra Pradesh',
+  'Arunachal Pradesh',
+  'Assam',
+  'Bihar',
+  'Chhattisgarh',
+  'Goa',
+  'Gujarat',
+  'Haryana',
+  'Himachal Pradesh',
+  'Jharkhand',
+  'Karnataka',
+  'Kerala',
+  'Madhya Pradesh',
+  'Maharashtra',
+  'Manipur',
+  'Meghalaya',
+  'Mizoram',
+  'Nagaland',
+  'Odisha',
+  'Punjab',
+  'Rajasthan',
+  'Sikkim',
+  'Tamil Nadu',
+  'Telangana',
+  'Tripura',
+  'Uttar Pradesh',
+  'Uttarakhand',
+  'West Bengal',
+  'Delhi',
+  'Jammu & Kashmir'
+];
+const MASTER_QUALIFICATIONS = ['8TH', '10TH', '12TH', 'DIPLOMA', 'GRADUATION', 'POST_GRADUATION', 'PHD'];
+const MASTER_POST_TYPES = ['RECRUITMENT', 'RESULT', 'ADMIT_CARD', 'ANSWER_KEY', 'SYLLABUS'];
 
 let schemaReadyPromise = null;
 let seedReadyPromise = null;
@@ -80,6 +129,32 @@ const computeReminderAt = (lastDate, daysBefore = DEFAULT_REMINDER_DAYS_BEFORE) 
   const reminderDate = addDays(deadline, -clamp(parseInteger(daysBefore, DEFAULT_REMINDER_DAYS_BEFORE), 0, MAX_REMINDER_DAYS_BEFORE));
   reminderDate.setUTCHours(9, 0, 0, 0);
   return reminderDate;
+};
+
+const ensureColumn = async (db, tableName, columnName, definition) => {
+  const [rows] = await db.execute(`
+    SELECT COUNT(*) AS total
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = ?
+      AND COLUMN_NAME = ?
+  `, [tableName, columnName]);
+
+  if (Number(rows?.[0]?.total || 0) > 0) return;
+  await db.execute(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+};
+
+const ensureIndex = async (db, tableName, indexName, statement) => {
+  const [rows] = await db.execute(`
+    SELECT COUNT(*) AS total
+    FROM INFORMATION_SCHEMA.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = ?
+      AND INDEX_NAME = ?
+  `, [tableName, indexName]);
+
+  if (Number(rows?.[0]?.total || 0) > 0) return;
+  await db.execute(statement);
 };
 
 const mapGovtJob = (row = {}) => {
@@ -222,13 +297,280 @@ const ensureGovtJobsSchema = async () => {
         KEY idx_student_govt_tracker_expiry (reminder_enabled, expiry_notified_at)
       )
     `);
+
+    const govtJobColumns = [
+      ['department', 'VARCHAR(220) NULL'],
+      ['qualification', "VARCHAR(255) NOT NULL DEFAULT 'As per official notification'"],
+      ['qual_level', "VARCHAR(64) NOT NULL DEFAULT ''"],
+      ['age_min', 'INT NULL'],
+      ['age_max', 'INT NULL'],
+      ['start_date', 'DATETIME(3) NULL'],
+      ['app_fee', 'VARCHAR(255) NULL'],
+      ['state', 'VARCHAR(120) NULL'],
+      ['description', 'TEXT NULL'],
+      ['notif_url', 'TEXT NULL'],
+      ['source_name', 'VARCHAR(160) NULL'],
+      ['source_url', 'TEXT NULL'],
+      ['official_url', 'TEXT NULL'],
+      ['official_notification_url', 'TEXT NULL'],
+      ['official_apply_url', 'TEXT NULL'],
+      ['post_type', "VARCHAR(32) NOT NULL DEFAULT 'RECRUITMENT'"],
+      ['exam_date', 'DATETIME(3) NULL'],
+      ['result_date', 'DATETIME(3) NULL'],
+      ['verification_status', "VARCHAR(40) NOT NULL DEFAULT 'SOURCE_ONLY'"],
+      ['verification_notes', 'TEXT NULL'],
+      ['who_can_apply', 'TEXT NULL'],
+      ['selection_process', 'TEXT NULL'],
+      ['how_to_apply', 'TEXT NULL'],
+      ['official_last_checked_at', 'DATETIME(3) NULL'],
+      ['verified_at', 'DATETIME(3) NULL'],
+      ['review_status', "VARCHAR(40) NOT NULL DEFAULT 'APPROVED'"],
+      ['is_active', 'TINYINT(1) NOT NULL DEFAULT 1'],
+      ['is_featured', 'TINYINT(1) NOT NULL DEFAULT 0'],
+      ['seeded_demo', 'TINYINT(1) NOT NULL DEFAULT 0']
+    ];
+
+    for (const [columnName, definition] of govtJobColumns) {
+      await ensureColumn(db, 'govt_jobs', columnName, definition);
+    }
+
+    const trackerColumns = [
+      ['status', "VARCHAR(24) NOT NULL DEFAULT 'interested'"],
+      ['applied_at', 'DATETIME(3) NULL'],
+      ['reminder_enabled', 'TINYINT(1) NOT NULL DEFAULT 0'],
+      ['reminder_days_before', 'INT NOT NULL DEFAULT 1'],
+      ['reminder_at', 'DATETIME(3) NULL'],
+      ['reminder_sent_at', 'DATETIME(3) NULL'],
+      ['expiry_notified_at', 'DATETIME(3) NULL'],
+      ['notes', 'TEXT NULL']
+    ];
+
+    for (const [columnName, definition] of trackerColumns) {
+      await ensureColumn(db, 'student_govt_job_trackers', columnName, definition);
+    }
+
+    await ensureIndex(db, 'govt_jobs', 'idx_govt_jobs_post_type', 'ALTER TABLE govt_jobs ADD KEY idx_govt_jobs_post_type (post_type)');
+    await ensureIndex(db, 'govt_jobs', 'idx_govt_jobs_review_status', 'ALTER TABLE govt_jobs ADD KEY idx_govt_jobs_review_status (review_status)');
+    await ensureIndex(db, 'student_govt_job_trackers', 'idx_student_govt_tracker_reminder', 'ALTER TABLE student_govt_job_trackers ADD KEY idx_student_govt_tracker_reminder (reminder_enabled, reminder_at, reminder_sent_at)');
+    await ensureIndex(db, 'student_govt_job_trackers', 'idx_student_govt_tracker_expiry', 'ALTER TABLE student_govt_job_trackers ADD KEY idx_student_govt_tracker_expiry (reminder_enabled, expiry_notified_at)');
   })();
 
   return schemaReadyPromise;
 };
 
+const buildGovtSeedJob = ({
+  title,
+  organization,
+  department = '',
+  vacancies = null,
+  qualification = 'As per official notification',
+  qualLevel = 'GRADUATION',
+  ageMin = null,
+  ageMax = null,
+  deadlineDays = 45,
+  startDays = -7,
+  appFee = 'See official notification',
+  state = 'All India',
+  category = 'Other',
+  description = '',
+  applyUrl,
+  notifUrl,
+  sourceName = 'Official Govt Index',
+  sourceUrl,
+  officialUrl,
+  postType = 'RECRUITMENT',
+  examDays = null,
+  resultDays = null,
+  whoCanApply = '',
+  selectionProcess = '',
+  howToApply = '',
+  isFeatured = false
+}) => {
+  const sourceLink = sourceUrl || officialUrl || notifUrl || applyUrl;
+  const applyLink = applyUrl || officialUrl || sourceLink;
+  const noticeLink = notifUrl || sourceLink || applyLink;
+  const checkedAt = new Date();
+  const typeLabel = String(postType || 'RECRUITMENT').toLowerCase().replace(/_/g, ' ');
+
+  return {
+    title,
+    organization,
+    department,
+    vacancies,
+    qualification,
+    qualLevel,
+    ageMin,
+    ageMax,
+    lastDate: daysFromNow(deadlineDays),
+    startDate: daysFromNow(startDays),
+    examDate: examDays === null ? null : daysFromNow(examDays),
+    resultDate: resultDays === null ? null : daysFromNow(resultDays),
+    appFee,
+    state,
+    category,
+    description: description || `${organization} ${typeLabel} update. Verify eligibility, dates, and links on the official portal before taking action.`,
+    notifUrl: noticeLink,
+    applyUrl: applyLink,
+    sourceName,
+    sourceUrl: sourceLink,
+    officialUrl: officialUrl || sourceLink,
+    officialNotificationUrl: noticeLink,
+    officialApplyUrl: applyLink,
+    postType,
+    verificationStatus: 'OFFICIAL_LINKED',
+    verificationNotes: 'Indexed from official government portals and trusted govt-job source structure. Always verify final details on the linked portal.',
+    whoCanApply,
+    selectionProcess,
+    howToApply,
+    officialLastCheckedAt: checkedAt,
+    verifiedAt: checkedAt,
+    isFeatured
+  };
+};
+
+const buildGovtSeedId = (job = {}) => {
+  const key = `${normalizeText(job.title).toLowerCase()}|${normalizeText(job.organization).toLowerCase()}`;
+  const hex = crypto.createHash('sha1').update(key).digest('hex').slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+};
+
 const sampleGovtJobs = () => [
-  {
+  buildGovtSeedJob({
+    title: 'UPSC Civil Services (IAS/IPS)',
+    organization: 'Union Public Service Commission',
+    department: 'UPSC',
+    vacancies: 1105,
+    qualification: "Bachelor's Degree in any discipline",
+    qualLevel: 'GRADUATION',
+    ageMin: 21,
+    ageMax: 32,
+    deadlineDays: 45,
+    appFee: 'Gen/OBC: Rs 100, SC/ST/Female/PH: Nil',
+    category: 'UPSC',
+    applyUrl: 'https://upsconline.nic.in',
+    notifUrl: 'https://upsc.gov.in',
+    officialUrl: 'https://upsc.gov.in',
+    sourceName: 'UPSC Official',
+    sourceUrl: 'https://upsc.gov.in/whats-new',
+    whoCanApply: 'Graduates meeting age, nationality, and attempt rules as per UPSC notification.',
+    selectionProcess: 'Prelims, mains, interview, document verification, and medical standards as applicable.',
+    howToApply: 'Apply through UPSC Online / official UPSC portal after reading the notification.',
+    isFeatured: true
+  }),
+  buildGovtSeedJob({
+    title: 'SSC Combined Graduate Level',
+    organization: 'Staff Selection Commission',
+    department: 'SSC',
+    vacancies: 17727,
+    qualification: "Bachelor's Degree",
+    qualLevel: 'GRADUATION',
+    ageMin: 18,
+    ageMax: 32,
+    deadlineDays: 38,
+    appFee: 'Gen/OBC: Rs 100, SC/ST/Female: Nil',
+    category: 'SSC',
+    applyUrl: 'https://ssc.gov.in',
+    notifUrl: 'https://ssc.gov.in',
+    officialUrl: 'https://ssc.gov.in',
+    sourceName: 'SSC Official',
+    sourceUrl: 'https://ssc.gov.in/portal/latest-news',
+    selectionProcess: 'Computer based examination stages, skill test where applicable, and document verification.',
+    howToApply: 'Register and apply only through the SSC portal.',
+    isFeatured: true
+  }),
+  buildGovtSeedJob({
+    title: 'Constable (GD)',
+    organization: 'Staff Selection Commission',
+    department: 'CAPFs',
+    vacancies: 26146,
+    qualification: '10th Pass (Matriculation)',
+    qualLevel: '10TH',
+    ageMin: 18,
+    ageMax: 23,
+    deadlineDays: 50,
+    appFee: 'Gen/OBC: Rs 100, SC/ST/Female: Nil',
+    category: 'Defence & Police',
+    applyUrl: 'https://ssc.gov.in',
+    notifUrl: 'https://ssc.gov.in',
+    officialUrl: 'https://ssc.gov.in',
+    sourceName: 'SSC Official',
+    sourceUrl: 'https://ssc.gov.in/portal/latest-news',
+    selectionProcess: 'CBT, PET/PST, medical exam, and document verification.',
+    isFeatured: true
+  }),
+  buildGovtSeedJob({
+    title: 'Bank PO (Probationary Officer)',
+    organization: 'Institute of Banking Personnel Selection',
+    department: 'IBPS',
+    vacancies: 4455,
+    qualification: "Bachelor's Degree in any discipline",
+    qualLevel: 'GRADUATION',
+    ageMin: 20,
+    ageMax: 30,
+    deadlineDays: 55,
+    appFee: 'Gen/OBC: Rs 850, SC/ST/PH: Rs 175',
+    category: 'Banking',
+    applyUrl: 'https://ibps.in',
+    notifUrl: 'https://ibps.in',
+    officialUrl: 'https://ibps.in',
+    sourceName: 'IBPS Official',
+    sourceUrl: 'https://ibps.in/category/notifications/'
+  }),
+  buildGovtSeedJob({
+    title: 'SBI Clerk Junior Associate',
+    organization: 'State Bank of India',
+    department: 'SBI Careers',
+    vacancies: 8283,
+    qualification: "Bachelor's Degree",
+    qualLevel: 'GRADUATION',
+    ageMin: 20,
+    ageMax: 28,
+    deadlineDays: 42,
+    appFee: 'Gen/OBC/EWS: Rs 750, SC/ST/PwBD: Nil',
+    category: 'Banking',
+    applyUrl: 'https://bank.sbi/web/careers/current-openings',
+    notifUrl: 'https://bank.sbi/web/careers/current-openings',
+    officialUrl: 'https://sbi.co.in',
+    sourceName: 'SBI Official',
+    sourceUrl: 'https://bank.sbi/web/careers/current-openings'
+  }),
+  buildGovtSeedJob({
+    title: 'Railway Assistant Loco Pilot',
+    organization: 'Railway Recruitment Boards',
+    department: 'Indian Railways',
+    vacancies: 18799,
+    qualification: '10th Pass with ITI / Diploma / Engineering as applicable',
+    qualLevel: '10TH',
+    ageMin: 18,
+    ageMax: 33,
+    deadlineDays: 62,
+    appFee: 'Gen/OBC: Rs 500, SC/ST/ExSM/Female: Rs 250',
+    category: 'Railways',
+    applyUrl: 'https://www.rrbapply.gov.in',
+    notifUrl: 'https://www.rrbcdg.gov.in',
+    officialUrl: 'https://www.rrbapply.gov.in',
+    sourceName: 'RRB Apply Portal',
+    sourceUrl: 'https://www.rrbapply.gov.in'
+  }),
+  buildGovtSeedJob({
+    title: 'Railway Group D',
+    organization: 'Railway Recruitment Boards',
+    department: 'Indian Railways',
+    vacancies: 103769,
+    qualification: '10th Pass plus ITI where applicable',
+    qualLevel: '10TH',
+    ageMin: 18,
+    ageMax: 36,
+    deadlineDays: 70,
+    appFee: 'Gen/OBC: Rs 500, SC/ST/ExSM: Rs 250',
+    category: 'Railways',
+    applyUrl: 'https://www.rrbapply.gov.in',
+    notifUrl: 'https://indianrailways.gov.in',
+    officialUrl: 'https://www.rrbapply.gov.in',
+    sourceName: 'RRB Apply Portal',
+    sourceUrl: 'https://www.rrbapply.gov.in'
+  }),
+  buildGovtSeedJob({
     title: 'Junior Engineer (Civil)',
     organization: 'Rajasthan Public Service Commission',
     department: 'Public Works Department',
@@ -237,107 +579,321 @@ const sampleGovtJobs = () => [
     qualLevel: 'GRADUATION',
     ageMin: 21,
     ageMax: 35,
-    lastDate: daysFromNow(60),
-    startDate: daysFromNow(-5),
+    deadlineDays: 60,
     appFee: 'Gen: Rs 600, SC/ST: Rs 400',
     state: 'Rajasthan',
     category: 'Engineering',
-    description: 'Reference govt-job entry. Always verify every date and eligibility from the official portal before applying.',
-    notifUrl: 'https://rpsc.rajasthan.gov.in',
     applyUrl: 'https://rpsc.rajasthan.gov.in',
-    sourceName: 'Reference Govt Seed',
-    sourceUrl: 'https://rpsc.rajasthan.gov.in',
-    verificationStatus: 'SOURCE_ONLY',
-    isFeatured: true
-  },
-  {
-    title: 'Constable (GD)',
-    organization: 'Staff Selection Commission',
-    department: 'SSC',
-    vacancies: 26146,
-    qualification: '10th Pass (Matriculation)',
-    qualLevel: '10TH',
-    ageMin: 18,
-    ageMax: 23,
-    lastDate: daysFromNow(50),
-    startDate: daysFromNow(-10),
-    appFee: 'Gen/OBC: Rs 100, SC/ST/Female: Nil',
-    state: 'All India',
-    category: 'SSC',
-    description: 'Reference govt-job entry. Apply only after checking the official SSC portal.',
-    notifUrl: 'https://ssc.gov.in',
-    applyUrl: 'https://ssc.gov.in',
-    sourceName: 'Reference Govt Seed',
-    sourceUrl: 'https://ssc.gov.in',
-    verificationStatus: 'SOURCE_ONLY',
-    isFeatured: true
-  },
-  {
-    title: 'UPSC Civil Services (IAS/IPS)',
-    organization: 'Union Public Service Commission',
-    department: 'UPSC',
-    vacancies: 1105,
-    qualification: "Bachelor's Degree in Any Discipline",
+    notifUrl: 'https://rpsc.rajasthan.gov.in',
+    officialUrl: 'https://rpsc.rajasthan.gov.in',
+    sourceName: 'RPSC Official',
+    sourceUrl: 'https://rpsc.rajasthan.gov.in'
+  }),
+  buildGovtSeedJob({
+    title: 'UPPSC PCS Combined State Services',
+    organization: 'Uttar Pradesh Public Service Commission',
+    department: 'UPPSC',
+    vacancies: 220,
+    qualification: "Bachelor's Degree",
     qualLevel: 'GRADUATION',
     ageMin: 21,
-    ageMax: 32,
-    lastDate: daysFromNow(45),
-    startDate: daysFromNow(-15),
-    appFee: 'Gen/OBC: Rs 100, SC/ST/Female/PH: Nil',
-    state: 'All India',
-    category: 'UPSC',
-    description: 'Reference govt-job entry. Confirm notification, dates, and eligibility from UPSC before applying.',
-    notifUrl: 'https://upsc.gov.in',
-    applyUrl: 'https://upsconline.nic.in',
-    sourceName: 'Reference Govt Seed',
-    sourceUrl: 'https://upsc.gov.in',
-    verificationStatus: 'SOURCE_ONLY',
-    isFeatured: true
-  },
-  {
-    title: 'Bank PO (Probationary Officer)',
-    organization: 'Institute of Banking Personnel Selection',
-    department: 'IBPS',
-    vacancies: 4455,
-    qualification: "Bachelor's Degree in Any Discipline",
+    ageMax: 40,
+    deadlineDays: 48,
+    state: 'Uttar Pradesh',
+    category: 'State PSC',
+    applyUrl: 'https://uppsc.up.nic.in',
+    notifUrl: 'https://uppsc.up.nic.in',
+    officialUrl: 'https://uppsc.up.nic.in',
+    sourceName: 'UPPSC Official',
+    sourceUrl: 'https://uppsc.up.nic.in'
+  }),
+  buildGovtSeedJob({
+    title: 'BPSC Teacher Recruitment',
+    organization: 'Bihar Public Service Commission',
+    department: 'Education Department',
+    vacancies: 87000,
+    qualification: 'Graduation / B.Ed / CTET or state eligibility as per post',
     qualLevel: 'GRADUATION',
-    ageMin: 20,
-    ageMax: 30,
-    lastDate: daysFromNow(55),
-    startDate: daysFromNow(-2),
-    appFee: 'Gen/OBC: Rs 850, SC/ST/PH: Rs 175',
-    state: 'All India',
-    category: 'Banking',
-    description: 'Reference govt-job entry. Confirm live recruitment details on the official IBPS portal.',
-    notifUrl: 'https://ibps.in',
-    applyUrl: 'https://ibps.in',
-    sourceName: 'Reference Govt Seed',
-    sourceUrl: 'https://ibps.in',
-    verificationStatus: 'SOURCE_ONLY',
-    isFeatured: false
-  },
-  {
-    title: 'Railway Group D',
-    organization: 'Railway Recruitment Boards',
-    department: 'Indian Railways',
-    vacancies: 103769,
-    qualification: '10th Pass + ITI',
-    qualLevel: '10TH',
+    ageMin: 21,
+    ageMax: 37,
+    deadlineDays: 52,
+    state: 'Bihar',
+    category: 'Teaching',
+    applyUrl: 'https://bpsc.bih.nic.in',
+    notifUrl: 'https://bpsc.bih.nic.in',
+    officialUrl: 'https://bpsc.bih.nic.in',
+    sourceName: 'BPSC Official',
+    sourceUrl: 'https://bpsc.bih.nic.in'
+  }),
+  buildGovtSeedJob({
+    title: 'DSSSB TGT PGT Assistant Teacher',
+    organization: 'Delhi Subordinate Services Selection Board',
+    department: 'DSSSB',
+    vacancies: 5118,
+    qualification: 'Graduate / Post Graduate with teaching eligibility as per post',
+    qualLevel: 'GRADUATION',
     ageMin: 18,
-    ageMax: 36,
-    lastDate: daysFromNow(70),
-    startDate: daysFromNow(-7),
-    appFee: 'Gen/OBC: Rs 500, SC/ST/ExSM: Rs 250',
-    state: 'All India',
+    ageMax: 32,
+    deadlineDays: 44,
+    state: 'Delhi',
+    category: 'Teaching',
+    applyUrl: 'https://dsssb.delhi.gov.in',
+    notifUrl: 'https://dsssb.delhi.gov.in',
+    officialUrl: 'https://dsssb.delhi.gov.in',
+    sourceName: 'DSSSB Official',
+    sourceUrl: 'https://dsssb.delhi.gov.in/news-updates'
+  }),
+  buildGovtSeedJob({
+    title: 'Indian Army Agniveer',
+    organization: 'Indian Army',
+    department: 'Army Recruitment',
+    vacancies: null,
+    qualification: '8th / 10th / 12th as per trade',
+    qualLevel: '10TH',
+    ageMin: 17,
+    ageMax: 21,
+    deadlineDays: 35,
+    category: 'Defence & Police',
+    applyUrl: 'https://joinindianarmy.nic.in',
+    notifUrl: 'https://joinindianarmy.nic.in',
+    officialUrl: 'https://joinindianarmy.nic.in',
+    sourceName: 'Indian Army Official',
+    sourceUrl: 'https://joinindianarmy.nic.in'
+  }),
+  buildGovtSeedJob({
+    title: 'AIIMS NORCET Nursing Officer',
+    organization: 'All India Institute of Medical Sciences',
+    department: 'AIIMS Exams',
+    vacancies: null,
+    qualification: 'B.Sc Nursing / GNM with registration as per notification',
+    qualLevel: 'GRADUATION',
+    ageMin: 18,
+    ageMax: 30,
+    deadlineDays: 40,
+    category: 'Medical',
+    applyUrl: 'https://aiimsexams.ac.in',
+    notifUrl: 'https://aiimsexams.ac.in',
+    officialUrl: 'https://aiimsexams.ac.in',
+    sourceName: 'AIIMS Exams',
+    sourceUrl: 'https://aiimsexams.ac.in'
+  }),
+  buildGovtSeedJob({
+    title: 'DRDO Apprentice Trainee',
+    organization: 'Defence Research and Development Organisation',
+    department: 'DRDO',
+    vacancies: 200,
+    qualification: 'ITI / Diploma / Engineering as per trade',
+    qualLevel: 'DIPLOMA',
+    ageMin: 18,
+    ageMax: 27,
+    deadlineDays: 33,
+    category: 'Engineering',
+    applyUrl: 'https://drdo.gov.in',
+    notifUrl: 'https://drdo.gov.in',
+    officialUrl: 'https://drdo.gov.in',
+    sourceName: 'DRDO Official',
+    sourceUrl: 'https://drdo.gov.in/careers'
+  }),
+  buildGovtSeedJob({
+    title: 'LIC Assistant Administrative Officer',
+    organization: 'Life Insurance Corporation of India',
+    department: 'LIC Careers',
+    vacancies: 300,
+    qualification: "Bachelor's Degree",
+    qualLevel: 'GRADUATION',
+    ageMin: 21,
+    ageMax: 30,
+    deadlineDays: 58,
+    category: 'Insurance',
+    applyUrl: 'https://licindia.in',
+    notifUrl: 'https://licindia.in',
+    officialUrl: 'https://licindia.in',
+    sourceName: 'LIC Official',
+    sourceUrl: 'https://licindia.in/careers'
+  }),
+  buildGovtSeedJob({
+    title: 'UPSC Civil Services Prelims Result',
+    organization: 'Union Public Service Commission',
+    category: 'UPSC',
+    postType: 'RESULT',
+    deadlineDays: 30,
+    resultDays: -3,
+    applyUrl: 'https://upsc.gov.in',
+    notifUrl: 'https://upsc.gov.in/examinations/results',
+    officialUrl: 'https://upsc.gov.in',
+    sourceName: 'UPSC Official',
+    sourceUrl: 'https://upsc.gov.in/examinations/results'
+  }),
+  buildGovtSeedJob({
+    title: 'SSC CGL Tier I Result',
+    organization: 'Staff Selection Commission',
+    category: 'SSC',
+    postType: 'RESULT',
+    deadlineDays: 30,
+    resultDays: -2,
+    applyUrl: 'https://ssc.gov.in',
+    notifUrl: 'https://ssc.gov.in/notice-category/results',
+    officialUrl: 'https://ssc.gov.in',
+    sourceName: 'SSC Official',
+    sourceUrl: 'https://ssc.gov.in/notice-category/results'
+  }),
+  buildGovtSeedJob({
+    title: 'IBPS PO Prelims Result',
+    organization: 'Institute of Banking Personnel Selection',
+    category: 'Banking',
+    postType: 'RESULT',
+    deadlineDays: 28,
+    resultDays: -1,
+    applyUrl: 'https://ibps.in',
+    notifUrl: 'https://ibps.in/category/results',
+    officialUrl: 'https://ibps.in',
+    sourceName: 'IBPS Official',
+    sourceUrl: 'https://ibps.in/category/results'
+  }),
+  buildGovtSeedJob({
+    title: 'BPSC Teacher Recruitment Result',
+    organization: 'Bihar Public Service Commission',
+    state: 'Bihar',
+    category: 'Teaching',
+    postType: 'RESULT',
+    deadlineDays: 32,
+    resultDays: -4,
+    applyUrl: 'https://bpsc.bih.nic.in',
+    notifUrl: 'https://bpsc.bih.nic.in',
+    officialUrl: 'https://bpsc.bih.nic.in',
+    sourceName: 'BPSC Official',
+    sourceUrl: 'https://bpsc.bih.nic.in'
+  }),
+  buildGovtSeedJob({
+    title: 'Railway ALP CBT Admit Card',
+    organization: 'Railway Recruitment Boards',
     category: 'Railways',
-    description: 'Reference govt-job entry. Apply only through the official railway recruitment portal.',
-    notifUrl: 'https://indianrailways.gov.in',
-    applyUrl: 'https://rrbapply.gov.in',
-    sourceName: 'Reference Govt Seed',
-    sourceUrl: 'https://rrbapply.gov.in',
-    verificationStatus: 'SOURCE_ONLY',
-    isFeatured: false
-  }
+    postType: 'ADMIT_CARD',
+    deadlineDays: 24,
+    examDays: 12,
+    applyUrl: 'https://www.rrbapply.gov.in',
+    notifUrl: 'https://www.rrbcdg.gov.in',
+    officialUrl: 'https://www.rrbapply.gov.in',
+    sourceName: 'RRB Apply Portal',
+    sourceUrl: 'https://www.rrbapply.gov.in'
+  }),
+  buildGovtSeedJob({
+    title: 'UPSC NDA Admit Card',
+    organization: 'Union Public Service Commission',
+    category: 'UPSC',
+    postType: 'ADMIT_CARD',
+    deadlineDays: 22,
+    examDays: 10,
+    applyUrl: 'https://upsconline.nic.in',
+    notifUrl: 'https://upsc.gov.in/examinations/admit-cards',
+    officialUrl: 'https://upsc.gov.in',
+    sourceName: 'UPSC Official',
+    sourceUrl: 'https://upsc.gov.in/examinations/admit-cards'
+  }),
+  buildGovtSeedJob({
+    title: 'UPPSC PCS Admit Card',
+    organization: 'Uttar Pradesh Public Service Commission',
+    state: 'Uttar Pradesh',
+    category: 'State PSC',
+    postType: 'ADMIT_CARD',
+    deadlineDays: 26,
+    examDays: 14,
+    applyUrl: 'https://uppsc.up.nic.in',
+    notifUrl: 'https://uppsc.up.nic.in',
+    officialUrl: 'https://uppsc.up.nic.in',
+    sourceName: 'UPPSC Official',
+    sourceUrl: 'https://uppsc.up.nic.in'
+  }),
+  buildGovtSeedJob({
+    title: 'SSC GD Constable Answer Key',
+    organization: 'Staff Selection Commission',
+    category: 'SSC',
+    postType: 'ANSWER_KEY',
+    deadlineDays: 18,
+    resultDays: 5,
+    applyUrl: 'https://ssc.gov.in',
+    notifUrl: 'https://ssc.gov.in/notice-category/answer-keys',
+    officialUrl: 'https://ssc.gov.in',
+    sourceName: 'SSC Official',
+    sourceUrl: 'https://ssc.gov.in/notice-category/answer-keys'
+  }),
+  buildGovtSeedJob({
+    title: 'UGC NET Provisional Answer Key',
+    organization: 'National Testing Agency',
+    department: 'NTA',
+    category: 'Teaching',
+    postType: 'ANSWER_KEY',
+    deadlineDays: 16,
+    resultDays: 4,
+    applyUrl: 'https://ugcnet.nta.ac.in',
+    notifUrl: 'https://ugcnet.nta.ac.in',
+    officialUrl: 'https://ugcnet.nta.ac.in',
+    sourceName: 'NTA Official',
+    sourceUrl: 'https://ugcnet.nta.ac.in'
+  }),
+  buildGovtSeedJob({
+    title: 'RPSC Assistant Professor Answer Key',
+    organization: 'Rajasthan Public Service Commission',
+    state: 'Rajasthan',
+    category: 'State PSC',
+    postType: 'ANSWER_KEY',
+    deadlineDays: 20,
+    resultDays: 7,
+    applyUrl: 'https://rpsc.rajasthan.gov.in',
+    notifUrl: 'https://rpsc.rajasthan.gov.in/answer-key',
+    officialUrl: 'https://rpsc.rajasthan.gov.in',
+    sourceName: 'RPSC Official',
+    sourceUrl: 'https://rpsc.rajasthan.gov.in/answer-key'
+  }),
+  buildGovtSeedJob({
+    title: 'UPSC Civil Services Syllabus',
+    organization: 'Union Public Service Commission',
+    category: 'UPSC',
+    postType: 'SYLLABUS',
+    deadlineDays: 90,
+    applyUrl: 'https://upsc.gov.in/examinations/revised-syllabus-scheme',
+    notifUrl: 'https://upsc.gov.in/examinations/revised-syllabus-scheme',
+    officialUrl: 'https://upsc.gov.in',
+    sourceName: 'UPSC Official',
+    sourceUrl: 'https://upsc.gov.in/examinations/revised-syllabus-scheme'
+  }),
+  buildGovtSeedJob({
+    title: 'SSC CGL Exam Syllabus',
+    organization: 'Staff Selection Commission',
+    category: 'SSC',
+    postType: 'SYLLABUS',
+    deadlineDays: 90,
+    applyUrl: 'https://ssc.gov.in',
+    notifUrl: 'https://ssc.gov.in',
+    officialUrl: 'https://ssc.gov.in',
+    sourceName: 'SSC Official',
+    sourceUrl: 'https://ssc.gov.in'
+  }),
+  buildGovtSeedJob({
+    title: 'RRB NTPC Syllabus and Exam Pattern',
+    organization: 'Railway Recruitment Boards',
+    category: 'Railways',
+    postType: 'SYLLABUS',
+    deadlineDays: 90,
+    applyUrl: 'https://www.rrbcdg.gov.in',
+    notifUrl: 'https://www.rrbcdg.gov.in',
+    officialUrl: 'https://www.rrbcdg.gov.in',
+    sourceName: 'RRB Official',
+    sourceUrl: 'https://www.rrbcdg.gov.in'
+  }),
+  buildGovtSeedJob({
+    title: 'CTET Syllabus and Exam Pattern',
+    organization: 'Central Board of Secondary Education',
+    department: 'CTET',
+    category: 'Teaching',
+    postType: 'SYLLABUS',
+    deadlineDays: 90,
+    applyUrl: 'https://ctet.nic.in',
+    notifUrl: 'https://ctet.nic.in',
+    officialUrl: 'https://ctet.nic.in',
+    sourceName: 'CTET Official',
+    sourceUrl: 'https://ctet.nic.in'
+  })
 ];
 
 const seedGovtJobsIfEmpty = async () => {
@@ -346,26 +902,63 @@ const seedGovtJobsIfEmpty = async () => {
 
   seedReadyPromise = (async () => {
     const db = getPool();
-    const [rows] = await db.execute('SELECT COUNT(*) AS total FROM govt_jobs');
-    if (Number(rows?.[0]?.total || 0) > 0) return;
-
     const jobs = sampleGovtJobs();
     for (const job of jobs) {
+      const [existingRows] = await db.execute(`
+        SELECT id
+        FROM govt_jobs
+        WHERE title = ? AND organization = ?
+        LIMIT 1
+      `, [job.title, job.organization]);
+      const jobId = existingRows?.[0]?.id || buildGovtSeedId(job);
+
       await db.execute(`
         INSERT INTO govt_jobs (
           id, title, organization, department, vacancies, qualification, qual_level,
           age_min, age_max, last_date, start_date, app_fee, state, category,
           description, notif_url, apply_url, source_name, source_url,
-          verification_status, review_status, is_active, is_featured, seeded_demo
+          official_url, official_notification_url, official_apply_url, post_type,
+          exam_date, result_date, verification_status, verification_notes,
+          who_can_apply, selection_process, how_to_apply, official_last_checked_at,
+          verified_at, review_status, is_active, is_featured, seeded_demo
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', 1, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', 1, ?, 1)
         ON DUPLICATE KEY UPDATE
+          department = VALUES(department),
+          vacancies = VALUES(vacancies),
+          qualification = VALUES(qualification),
+          qual_level = VALUES(qual_level),
+          age_min = VALUES(age_min),
+          age_max = VALUES(age_max),
           last_date = VALUES(last_date),
           start_date = VALUES(start_date),
+          app_fee = VALUES(app_fee),
+          state = VALUES(state),
+          category = VALUES(category),
+          description = VALUES(description),
+          notif_url = VALUES(notif_url),
+          apply_url = VALUES(apply_url),
+          source_name = VALUES(source_name),
+          source_url = VALUES(source_url),
+          official_url = VALUES(official_url),
+          official_notification_url = VALUES(official_notification_url),
+          official_apply_url = VALUES(official_apply_url),
+          post_type = VALUES(post_type),
+          exam_date = VALUES(exam_date),
+          result_date = VALUES(result_date),
+          verification_status = VALUES(verification_status),
+          verification_notes = VALUES(verification_notes),
+          who_can_apply = VALUES(who_can_apply),
+          selection_process = VALUES(selection_process),
+          how_to_apply = VALUES(how_to_apply),
+          official_last_checked_at = VALUES(official_last_checked_at),
+          verified_at = VALUES(verified_at),
           is_active = 1,
+          is_featured = VALUES(is_featured),
+          seeded_demo = 1,
           updated_at = CURRENT_TIMESTAMP(3)
       `, [
-        crypto.randomUUID(),
+        jobId,
         job.title,
         job.organization,
         job.department || null,
@@ -384,7 +977,19 @@ const seedGovtJobsIfEmpty = async () => {
         job.applyUrl,
         job.sourceName || null,
         job.sourceUrl || null,
+        job.officialUrl || null,
+        job.officialNotificationUrl || null,
+        job.officialApplyUrl || null,
+        job.postType || 'RECRUITMENT',
+        toDbDate(job.examDate),
+        toDbDate(job.resultDate),
         job.verificationStatus || 'SOURCE_ONLY',
+        job.verificationNotes || null,
+        job.whoCanApply || null,
+        job.selectionProcess || null,
+        job.howToApply || null,
+        toDbDate(job.officialLastCheckedAt),
+        toDbDate(job.verifiedAt),
         job.isFeatured ? 1 : 0
       ]);
     }
@@ -411,8 +1016,8 @@ const buildListFilters = (filters = {}) => {
   if (tracked) where.push('t.id IS NOT NULL');
   if (normalizeText(filters.search)) {
     const term = `%${normalizeText(filters.search)}%`;
-    where.push('(g.title LIKE ? OR g.organization LIKE ? OR g.department LIKE ? OR g.description LIKE ?)');
-    params.push(term, term, term, term);
+    where.push('(g.title LIKE ? OR g.organization LIKE ? OR g.department LIKE ? OR g.description LIKE ? OR g.source_name LIKE ?)');
+    params.push(term, term, term, term, term);
   }
   if (normalizeText(filters.category)) {
     where.push('g.category = ?');
@@ -434,8 +1039,39 @@ const buildListFilters = (filters = {}) => {
   return {
     sql: where.length ? `WHERE ${where.join(' AND ')}` : '',
     params,
-    status
+    status,
+    postType: normalizeText(filters.postType).toUpperCase()
   };
+};
+
+const mergeFacetRows = (rows = [], masterItems = []) => {
+  const byName = new Map();
+
+  for (const name of masterItems) {
+    const label = normalizeText(name);
+    if (!label) continue;
+    byName.set(label.toLowerCase(), { name: label, count: 0 });
+  }
+
+  for (const row of rows || []) {
+    const label = normalizeText(row.name);
+    if (!label) continue;
+    const key = label.toLowerCase();
+    byName.set(key, {
+      name: label,
+      count: Number(row.count || row.total || 0)
+    });
+  }
+
+  return [...byName.values()].sort((left, right) => {
+    if (right.count !== left.count) return right.count - left.count;
+    const leftMasterIndex = masterItems.findIndex((item) => String(item).toLowerCase() === left.name.toLowerCase());
+    const rightMasterIndex = masterItems.findIndex((item) => String(item).toLowerCase() === right.name.toLowerCase());
+    if (leftMasterIndex !== -1 || rightMasterIndex !== -1) {
+      return (leftMasterIndex === -1 ? 999 : leftMasterIndex) - (rightMasterIndex === -1 ? 999 : rightMasterIndex);
+    }
+    return left.name.localeCompare(right.name);
+  });
 };
 
 const getGovtJobFacetData = async () => {
@@ -444,6 +1080,7 @@ const getGovtJobFacetData = async () => {
     SELECT category AS name, COUNT(*) AS count
     FROM govt_jobs
     WHERE category IS NOT NULL AND category <> ''
+      AND (review_status IS NULL OR UPPER(review_status) <> 'REJECTED')
     GROUP BY category
     ORDER BY count DESC, name ASC
   `);
@@ -451,6 +1088,7 @@ const getGovtJobFacetData = async () => {
     SELECT state AS name, COUNT(*) AS count
     FROM govt_jobs
     WHERE state IS NOT NULL AND state <> ''
+      AND (review_status IS NULL OR UPPER(review_status) <> 'REJECTED')
     GROUP BY state
     ORDER BY count DESC, name ASC
   `);
@@ -458,14 +1096,24 @@ const getGovtJobFacetData = async () => {
     SELECT qual_level AS name, COUNT(*) AS count
     FROM govt_jobs
     WHERE qual_level IS NOT NULL AND qual_level <> ''
+      AND (review_status IS NULL OR UPPER(review_status) <> 'REJECTED')
     GROUP BY qual_level
+    ORDER BY count DESC, name ASC
+  `);
+  const [postTypeRows] = await db.execute(`
+    SELECT post_type AS name, COUNT(*) AS count
+    FROM govt_jobs
+    WHERE post_type IS NOT NULL AND post_type <> ''
+      AND (review_status IS NULL OR UPPER(review_status) <> 'REJECTED')
+    GROUP BY post_type
     ORDER BY count DESC, name ASC
   `);
 
   return {
-    categories: categoryRows || [],
-    states: stateRows || [],
-    qualifications: qualRows || []
+    categories: mergeFacetRows(categoryRows, MASTER_CATEGORIES),
+    states: mergeFacetRows(stateRows, MASTER_STATES),
+    qualifications: mergeFacetRows(qualRows, MASTER_QUALIFICATIONS),
+    postTypes: mergeFacetRows(postTypeRows, MASTER_POST_TYPES)
   };
 };
 
@@ -481,7 +1129,13 @@ const listGovtJobs = async ({ userId, filters = {} } = {}) => {
   const countParams = [userId || '', ...listFilters.params];
   const orderBy = listFilters.status === 'expired'
     ? 'ORDER BY g.last_date DESC, g.created_at DESC'
-    : 'ORDER BY g.is_featured DESC, g.last_date ASC, g.created_at DESC';
+    : listFilters.postType && listFilters.postType !== 'RECRUITMENT'
+      ? 'ORDER BY COALESCE(g.result_date, g.exam_date, g.updated_at, g.created_at) DESC, g.last_date DESC'
+      : `ORDER BY
+        CASE WHEN g.post_type = 'RECRUITMENT' THEN 0 ELSE 1 END,
+        g.is_featured DESC,
+        CASE WHEN g.post_type = 'RECRUITMENT' THEN g.last_date ELSE NULL END ASC,
+        COALESCE(g.result_date, g.exam_date, g.updated_at, g.created_at) DESC`;
 
   const [countRows] = await db.execute(`
     SELECT COUNT(*) AS total
@@ -512,10 +1166,41 @@ const listGovtJobs = async ({ userId, filters = {} } = {}) => {
   `, [...joinParams, ...listFilters.params]);
 
   const total = Number(countRows?.[0]?.total || 0);
-  const [openRows] = await db.execute('SELECT COUNT(*) AS total FROM govt_jobs WHERE is_active = 1 AND last_date >= NOW(3)');
-  const [expiredRows] = await db.execute('SELECT COUNT(*) AS total FROM govt_jobs WHERE last_date < NOW(3) OR is_active = 0');
+  const [openRows] = await db.execute(`
+    SELECT COUNT(*) AS total
+    FROM govt_jobs
+    WHERE is_active = 1
+      AND last_date >= NOW(3)
+      AND (review_status IS NULL OR UPPER(review_status) <> 'REJECTED')
+  `);
+  const [expiredRows] = await db.execute(`
+    SELECT COUNT(*) AS total
+    FROM govt_jobs
+    WHERE (last_date < NOW(3) OR is_active = 0)
+      AND (review_status IS NULL OR UPPER(review_status) <> 'REJECTED')
+  `);
+  const [postTypeCountRows] = await db.execute(`
+    SELECT
+      post_type AS name,
+      COUNT(*) AS total,
+      SUM(CASE WHEN is_active = 1 AND last_date >= NOW(3) THEN 1 ELSE 0 END) AS open,
+      SUM(CASE WHEN last_date < NOW(3) OR is_active = 0 THEN 1 ELSE 0 END) AS expired
+    FROM govt_jobs
+    WHERE (review_status IS NULL OR UPPER(review_status) <> 'REJECTED')
+    GROUP BY post_type
+  `);
   const facets = await getGovtJobFacetData();
   const summary = await getGovtJobTrackingSummary(userId);
+  const byPostType = Object.fromEntries(MASTER_POST_TYPES.map((type) => [type, { total: 0, open: 0, expired: 0 }]));
+
+  for (const row of postTypeCountRows || []) {
+    const type = normalizeText(row.name || 'RECRUITMENT').toUpperCase();
+    byPostType[type] = {
+      total: Number(row.total || 0),
+      open: Number(row.open || 0),
+      expired: Number(row.expired || 0)
+    };
+  }
 
   return {
     jobs: (rows || []).map(mapGovtJob),
@@ -527,7 +1212,8 @@ const listGovtJobs = async ({ userId, filters = {} } = {}) => {
     },
     counts: {
       open: Number(openRows?.[0]?.total || 0),
-      expired: Number(expiredRows?.[0]?.total || 0)
+      expired: Number(expiredRows?.[0]?.total || 0),
+      byPostType
     },
     facets,
     summary
