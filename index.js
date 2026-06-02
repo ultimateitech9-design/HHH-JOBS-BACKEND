@@ -6,7 +6,7 @@ require('dotenv').config();
 
 const config = require('./src/config');
 const { ensureDatabaseConfig, Database, sendDatabaseError, closeDatabasePool } = require('./src/db');
-const { asyncHandler, normalizeEmail } = require('./src/utils/helpers');
+const { asyncHandler, isValidUuid, normalizeEmail } = require('./src/utils/helpers');
 const { mapJobFromRow } = require('./src/utils/mappers');
 const { requireAuth, optionalAuth } = require('./src/middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('./src/middleware/roles');
@@ -20,6 +20,7 @@ const { applyToJob } = require('./src/services/applications');
 const { auditMiddleware } = require('./src/middleware/audit');
 const { closeRedisClient } = require('./src/services/redis');
 const { startSideEffectWorkers, stopSideEffectWorkers } = require('./src/services/sideEffectQueue');
+const { getGovtJobById, listGovtJobs } = require('./src/services/govtJobs');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -57,6 +58,15 @@ const automationProtection = createAutomationProtection();
 const setCatalogCacheHeaders = (_req, res, next) => {
   res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
   next();
+};
+const setGovtJobsCacheHeaders = (req, res, next) => {
+  if (req.user?.role === ROLES.STUDENT) {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+    return;
+  }
+
+  setCatalogCacheHeaders(req, res, next);
 };
 const captureRawBody = (req, _res, buffer) => {
   if (buffer?.length) {
@@ -216,6 +226,52 @@ if (authRoutes) {
   app.use('/auth', browserWriteProtection, automationProtection, authRateLimiter, authRoutes);
 }
 app.use(optionalAuth, requireNotInMaintenance);
+
+app.get('/public/govt-jobs', automationProtection, publicCatalogRateLimiter, setGovtJobsCacheHeaders, asyncHandler(async (req, res) => {
+  if (!ensureDatabaseConfig(res)) return;
+
+  const canTrackGovtJobs = req.user?.role === ROLES.STUDENT;
+  const result = await listGovtJobs({
+    userId: canTrackGovtJobs ? req.user.id : '',
+    filters: {
+      page: req.query.page,
+      limit: req.query.limit,
+      search: req.query.search || req.query.q,
+      category: req.query.category,
+      state: req.query.state,
+      qualLevel: req.query.qualLevel || req.query.qual_level,
+      postType: req.query.postType || req.query.post_type,
+      status: req.query.status,
+      tracked: canTrackGovtJobs ? req.query.tracked : false
+    }
+  });
+
+  res.send({
+    status: true,
+    viewer: { canTrackGovtJobs },
+    ...result
+  });
+}));
+
+app.get('/public/govt-jobs/:jobId', automationProtection, publicCatalogRateLimiter, setGovtJobsCacheHeaders, asyncHandler(async (req, res) => {
+  if (!ensureDatabaseConfig(res)) return;
+
+  const { jobId } = req.params;
+  if (!isValidUuid(jobId)) {
+    res.status(400).send({ status: false, message: 'Invalid government job id' });
+    return;
+  }
+
+  const canTrackGovtJobs = req.user?.role === ROLES.STUDENT;
+  const job = await getGovtJobById({ userId: canTrackGovtJobs ? req.user.id : '', jobId });
+  if (!job) {
+    res.status(404).send({ status: false, message: 'Government job not found' });
+    return;
+  }
+
+  res.send({ status: true, viewer: { canTrackGovtJobs }, job });
+}));
+
 mountRoute('/admin', safeRequireRoute('./src/routes/admin', 'admin'));
 mountRoute('/hr', safeRequireRoute('./src/routes/hr', 'hr'));
 mountRoute('/interviews', safeRequireRoute('./src/routes/interviews', 'interviews'));

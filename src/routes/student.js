@@ -82,6 +82,16 @@ const getTargetStudentId = (req, source = 'query') => {
     : req.user.id;
 };
 
+const ensureGovtJobTrackerStudent = (req, res) => {
+  if (req.user?.role === ROLES.STUDENT) return true;
+
+  res.status(403).send({
+    status: false,
+    message: 'Only registered student accounts can track government job forms.'
+  });
+  return false;
+};
+
 const toNullableText = (value) => {
   if (value === undefined) return undefined;
   if (value === null) return null;
@@ -968,6 +978,8 @@ router.get('/govt-jobs/:jobId', asyncHandler(async (req, res) => {
 }));
 
 router.put('/govt-jobs/:jobId/tracker', asyncHandler(async (req, res) => {
+  if (!ensureGovtJobTrackerStudent(req, res)) return;
+
   const targetUserId = getTargetStudentId(req, 'body');
   const { jobId } = req.params;
 
@@ -996,6 +1008,8 @@ router.put('/govt-jobs/:jobId/tracker', asyncHandler(async (req, res) => {
 }));
 
 router.post('/govt-jobs/:jobId/mark-applied', asyncHandler(async (req, res) => {
+  if (!ensureGovtJobTrackerStudent(req, res)) return;
+
   const targetUserId = getTargetStudentId(req, 'body');
   const { jobId } = req.params;
 
@@ -1017,6 +1031,8 @@ router.post('/govt-jobs/:jobId/mark-applied', asyncHandler(async (req, res) => {
 }));
 
 router.post('/govt-jobs/:jobId/reminder', asyncHandler(async (req, res) => {
+  if (!ensureGovtJobTrackerStudent(req, res)) return;
+
   const targetUserId = getTargetStudentId(req, 'body');
   const { jobId } = req.params;
 
