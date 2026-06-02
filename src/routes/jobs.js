@@ -10,6 +10,7 @@ const { normalizeEmail, clamp, asyncHandler } = require('../utils/helpers');
 const { applyJobFilters, createHrJob, updateHrJob, deleteHrJob, getJobByIdAndOptionallyTrackView } = require('../services/jobs');
 const { applyToJob } = require('../services/applications');
 const { buildCompanyBrandIndex, resolveCompanyBrand } = require('../services/companyBranding');
+const { getPool } = require('../mysqlDatabaseAdapter');
 
 const router = express.Router();
 const publicJobsReadLimiter = createRateLimitMiddleware({
@@ -42,6 +43,96 @@ const mapJobWithBrand = (job, brandIndex) => {
   return {
     ...mappedJob,
     companyLogo: brand.logoUrl
+  };
+};
+
+const OPEN_JOBS_WHERE = `
+  WHERE LOWER(COALESCE(status, '')) = 'open'
+    AND (valid_till IS NULL OR valid_till >= NOW(3))
+    AND (approval_status IS NULL OR LOWER(approval_status) <> 'rejected')
+`;
+
+const normalizeFacetRows = (rows = []) => rows
+  .map((row) => ({
+    name: String(row.name || '').trim(),
+    count: Number(row.count || 0)
+  }))
+  .filter((row) => row.name && row.count > 0);
+
+const getFacetLimit = (value, fallback, maximum) => {
+  const parsed = parseInt(value || fallback, 10);
+  return clamp(Number.isFinite(parsed) ? parsed : fallback, 1, maximum);
+};
+
+const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLimit }) => {
+  const db = getPool();
+  const [roles, sectors, cities, pincodes, totals] = await Promise.all([
+    db.execute(`
+      SELECT MIN(TRIM(job_title)) AS name, COUNT(*) AS count
+      FROM jobs
+      ${OPEN_JOBS_WHERE}
+        AND NULLIF(TRIM(job_title), '') IS NOT NULL
+      GROUP BY LOWER(TRIM(job_title))
+      ORDER BY count DESC, name ASC
+      LIMIT ${roleLimit}
+    `),
+    db.execute(`
+      SELECT MIN(label) AS name, COUNT(*) AS count
+      FROM (
+        SELECT COALESCE(NULLIF(TRIM(sector_name), ''), NULLIF(TRIM(category), '')) AS label
+        FROM jobs
+        ${OPEN_JOBS_WHERE}
+      ) sector_jobs
+      WHERE label IS NOT NULL
+        AND LOWER(label) NOT IN ('all industry type', 'all industries', 'all', 'unassigned')
+      GROUP BY LOWER(label)
+      ORDER BY count DESC, name ASC
+      LIMIT ${sectorLimit}
+    `),
+    db.execute(`
+      SELECT MIN(label) AS name, COUNT(*) AS count
+      FROM (
+        SELECT COALESCE(
+          NULLIF(TRIM(city_name), ''),
+          NULLIF(TRIM(district_name), ''),
+          NULLIF(TRIM(SUBSTRING_INDEX(job_location, ',', 1)), '')
+        ) AS label
+        FROM jobs
+        ${OPEN_JOBS_WHERE}
+      ) city_jobs
+      WHERE label IS NOT NULL
+        AND LOWER(label) NOT IN ('remote', 'work from home', 'wfh', 'india', 'all india', 'not specified')
+      GROUP BY LOWER(label)
+      ORDER BY count DESC, name ASC
+      LIMIT ${cityLimit}
+    `),
+    db.execute(`
+      SELECT MIN(TRIM(pincode)) AS name, COUNT(*) AS count
+      FROM jobs
+      ${OPEN_JOBS_WHERE}
+        AND NULLIF(TRIM(pincode), '') IS NOT NULL
+      GROUP BY LOWER(TRIM(pincode))
+      ORDER BY count DESC, name ASC
+      LIMIT ${pincodeLimit}
+    `),
+    db.execute(`
+      SELECT
+        COUNT(*) AS openJobs,
+        COUNT(DISTINCT LOWER(TRIM(company_name))) AS companies
+      FROM jobs
+      ${OPEN_JOBS_WHERE}
+    `)
+  ]);
+
+  return {
+    roles: normalizeFacetRows(roles[0]),
+    sectors: normalizeFacetRows(sectors[0]),
+    cities: normalizeFacetRows(cities[0]),
+    pincodes: normalizeFacetRows(pincodes[0]),
+    totals: {
+      openJobs: Number(totals[0]?.[0]?.openJobs || 0),
+      companies: Number(totals[0]?.[0]?.companies || 0)
+    }
   };
 };
 
@@ -150,6 +241,22 @@ router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCa
   res.send({ status: true, districts: data || [] });
 }));
 
+router.get('/meta/homepage-facets', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+  if (!Database) {
+    res.send({ status: true, roles: [], sectors: [], cities: [], pincodes: [], totals: { openJobs: 0, companies: 0 } });
+    return;
+  }
+
+  const facets = await getHomepageFacets({
+    roleLimit: getFacetLimit(req.query.roleLimit || req.query.role_limit, 60, 100),
+    sectorLimit: getFacetLimit(req.query.sectorLimit || req.query.sector_limit, 90, 120),
+    cityLimit: getFacetLimit(req.query.cityLimit || req.query.city_limit, 70, 120),
+    pincodeLimit: getFacetLimit(req.query.pincodeLimit || req.query.pincode_limit, 40, 80)
+  });
+
+  res.send({ status: true, ...facets });
+}));
+
 router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!Database) {
     res.status(503).send({
@@ -171,10 +278,15 @@ router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHead
     stateName: String(req.query.stateName || req.query.state_name || '').trim(),
     district: String(req.query.district || '').trim(),
     districtName: String(req.query.districtName || req.query.district_name || '').trim(),
+    city: String(req.query.city || '').trim(),
+    cityName: String(req.query.cityName || req.query.city_name || '').trim(),
+    pincode: String(req.query.pincode || req.query.pinCode || req.query.pin_code || '').trim(),
     companyLocation: String(req.query.companyLocation || req.query.company_location || '').trim(),
     employmentType: String(req.query.employmentType || '').trim(),
     experienceLevel: String(req.query.experienceLevel || '').trim(),
     salaryType: String(req.query.salaryType || '').trim(),
+    sector: String(req.query.sector || '').trim(),
+    sectorName: String(req.query.sectorName || req.query.sector_name || '').trim(),
     category: String(req.query.category || '').trim(),
     status: String(req.query.status || JOB_STATUSES.OPEN).trim().toLowerCase(),
     includeUnapproved: String(req.query.includeUnapproved || '').trim().toLowerCase() === 'true'
@@ -255,10 +367,15 @@ router.get('/all', automationProtection, publicJobsReadLimiter, setCatalogCacheH
     stateName: String(req.query.stateName || req.query.state_name || '').trim(),
     district: String(req.query.district || '').trim(),
     districtName: String(req.query.districtName || req.query.district_name || '').trim(),
+    city: String(req.query.city || '').trim(),
+    cityName: String(req.query.cityName || req.query.city_name || '').trim(),
+    pincode: String(req.query.pincode || req.query.pinCode || req.query.pin_code || '').trim(),
     companyLocation: String(req.query.companyLocation || req.query.company_location || '').trim(),
     employmentType: String(req.query.employmentType || '').trim(),
     experienceLevel: String(req.query.experienceLevel || '').trim(),
     salaryType: String(req.query.salaryType || '').trim(),
+    sector: String(req.query.sector || '').trim(),
+    sectorName: String(req.query.sectorName || req.query.sector_name || '').trim(),
     category: String(req.query.category || '').trim()
   });
 

@@ -21,8 +21,8 @@ router.get('/', asyncHandler(async (req, res) => {
 
   const rawSearch = String(req.query.search || req.query.q || '').trim();
   const search = rawSearch.replace(/[,().]/g, '');
-  const category = String(req.query.category || '').trim();
-  const location = String(req.query.location || '').trim();
+  const category = String(req.query.category || req.query.sector || req.query.sectorName || req.query.sector_name || '').trim();
+  const location = String(req.query.location || req.query.city || req.query.cityName || req.query.city_name || req.query.pincode || req.query.pinCode || req.query.pin_code || '').trim();
   const sourceKey = String(req.query.source || '').trim();
   const isRemoteOnly = req.query.remote === 'true';
 

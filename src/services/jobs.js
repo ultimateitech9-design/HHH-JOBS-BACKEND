@@ -155,8 +155,8 @@ const optionalText = (value) => {
   return text || null;
 };
 
-const buildLocationLabel = ({ districtName = '', stateName = '', fallback = '' } = {}) => {
-  const structured = [districtName, stateName]
+const buildLocationLabel = ({ cityName = '', districtName = '', stateName = '', fallback = '' } = {}) => {
+  const structured = [cityName || districtName, stateName]
     .map((item) => String(item || '').trim())
     .filter(Boolean)
     .join(', ');
@@ -178,7 +178,10 @@ const buildJobPayload = (body = {}) => {
   const locations = extractLocationsFromBody(body);
   const stateName = optionalText(body.stateName ?? body.state_name);
   const districtName = optionalText(body.districtName ?? body.district_name);
+  const cityName = optionalText(body.cityName ?? body.city_name ?? body.city);
+  const pincode = optionalText(body.pincode ?? body.pinCode ?? body.pin_code);
   const primaryLocation = locations[0] || buildLocationLabel({
+    cityName,
     districtName,
     stateName,
     fallback: body.jobLocation ?? body.job_location
@@ -204,6 +207,8 @@ const buildJobPayload = (body = {}) => {
     district_id: optionalUuid(body.districtId ?? body.district_id),
     state_name: stateName,
     district_name: districtName,
+    city_name: cityName || districtName,
+    pincode,
     is_featured: body.isFeatured ?? body.is_featured,
     description: body.description,
     status: body.status ?? undefined,
@@ -346,33 +351,45 @@ const applyJobFilters = (query, filters = {}) => {
     stateName,
     district,
     districtName,
+    city,
+    cityName,
+    pincode,
     companyLocation,
     employmentType,
     experienceLevel,
     salaryType,
     status,
+    sector,
+    sectorName,
     category,
     includeUnapproved = false
   } = filters;
 
   if (search) {
-    query = applyIlikeAny(query, ['job_title', 'company_name', 'description', 'sector_name', 'category'], search);
+    query = applyIlikeAny(query, ['job_title', 'company_name', 'description', 'sector_name', 'category', 'city_name', 'district_name', 'pincode'], search);
   }
   if (location) {
-    query = applyIlikeAny(query, ['job_location', 'state_name', 'district_name'], location);
+    query = applyIlikeAny(query, ['job_location', 'state_name', 'district_name', 'city_name', 'pincode'], location);
   }
   if (state || stateName) {
     query = applyIlikeAny(query, ['state_name', 'job_location'], stateName || state);
   }
   if (district || districtName) {
-    query = applyIlikeAny(query, ['district_name', 'job_location'], districtName || district);
+    query = applyIlikeAny(query, ['district_name', 'city_name', 'job_location'], districtName || district);
+  }
+  if (city || cityName) {
+    query = applyIlikeAny(query, ['city_name', 'district_name', 'job_location'], cityName || city);
+  }
+  if (pincode) {
+    query = applyIlikeAny(query, ['pincode', 'job_location'], pincode);
   }
   if (companyLocation) {
-    query = applyIlikeAny(query, ['job_location', 'state_name', 'district_name'], companyLocation);
+    query = applyIlikeAny(query, ['job_location', 'state_name', 'district_name', 'city_name', 'pincode'], companyLocation);
   }
   if (employmentType) query = query.eq('employment_type', employmentType);
   if (experienceLevel) query = query.eq('experience_level', experienceLevel);
   if (salaryType) query = query.eq('salary_type', salaryType);
+  if (sector || sectorName) query = applyIlikeAny(query, ['sector_name', 'category'], sectorName || sector);
   if (category) query = applyIlikeAny(query, ['category', 'sector_name'], category);
   if (status) query = query.eq('status', status);
   if (status === JOB_STATUSES.OPEN) {

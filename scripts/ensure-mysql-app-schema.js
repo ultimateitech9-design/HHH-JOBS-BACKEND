@@ -309,6 +309,39 @@ const ensureMissingFeatureTables = async (db) => {
   `);
 };
 
+const ensureJobFacetSchema = async (db) => {
+  if (!(await tableExists(db, 'jobs'))) return;
+
+  await addColumnIfMissing(db, 'jobs', 'city_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'jobs', 'pincode', 'VARCHAR(32) NULL');
+
+  await db.execute(`
+    UPDATE ${tableName('jobs')}
+    SET ${columnName('city_name')} = COALESCE(NULLIF(${columnName('city_name')}, ''), NULLIF(${columnName('district_name')}, ''))
+    WHERE (${columnName('city_name')} IS NULL OR ${columnName('city_name')} = '')
+      AND (${columnName('district_name')} IS NOT NULL AND ${columnName('district_name')} <> '')
+  `);
+
+  await addIndexIfMissing(
+    db,
+    'jobs',
+    'jobs_status_sector_idx',
+    '(`status`(32), `sector_name`(128), `category`(128), `created_at`)'
+  );
+  await addIndexIfMissing(
+    db,
+    'jobs',
+    'jobs_status_city_idx',
+    '(`status`(32), `city_name`(128), `district_name`(128), `created_at`)'
+  );
+  await addIndexIfMissing(
+    db,
+    'jobs',
+    'jobs_status_pincode_idx',
+    '(`status`(32), `pincode`, `created_at`)'
+  );
+};
+
 const ensureSupportChatSchema = async (db) => {
   await db.execute(`
     CREATE TABLE IF NOT EXISTS ${tableName('support_chats')} (
@@ -528,6 +561,7 @@ const ensureMySqlAppSchema = async () => {
 
   try {
     await ensureMissingFeatureTables(db);
+    await ensureJobFacetSchema(db);
     await ensureSupportChatSchema(db);
     await ensureIndexesForExistingTables(db);
     const relaxedColumns = await relaxMigratedTextJsonColumns(db);

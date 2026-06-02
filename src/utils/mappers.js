@@ -49,6 +49,8 @@ const mapJobFromRow = (row) => ({
   districtId: row.district_id || null,
   stateName: row.state_name || '',
   districtName: row.district_name || '',
+  cityName: row.city_name || row.district_name || '',
+  pincode: row.pincode || '',
   isPaid: row.is_paid,
   isFeatured: row.is_featured,
   planSlug: row.plan_slug,

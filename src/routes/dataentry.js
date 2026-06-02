@@ -198,6 +198,8 @@ const prepareDataEntryHrJob = async ({ title = '', entryData = {}, registeredCom
   const jobLocation = String(entryData.location || entryData.jobLocation || entryData.job_location || '').trim();
   const stateName = String(entryData.stateName || entryData.state_name || registeredCompany?.stateName || '').trim();
   const districtName = String(entryData.districtName || entryData.district_name || registeredCompany?.districtName || '').trim();
+  const cityName = String(entryData.cityName || entryData.city_name || entryData.city || districtName || '').trim();
+  const pincode = String(entryData.pincode || entryData.pinCode || entryData.pin_code || '').trim();
   const sectorName = String(entryData.sectorName || entryData.sector_name || registeredCompany?.sectorName || '').trim();
   const description = String(entryData.description || '').trim();
   const maxPrice = readEntrySalaryValue(entryData.salaryMax ?? entryData.maxPrice ?? entryData.max_price);
@@ -254,6 +256,8 @@ const prepareDataEntryHrJob = async ({ title = '', entryData = {}, registeredCom
       district_id: entryData.districtId || entryData.district_id || registeredCompany.districtId || null,
       state_name: stateName || null,
       district_name: districtName || null,
+      city_name: cityName || null,
+      pincode: pincode || null,
       sector_id: entryData.sectorId || entryData.sector_id || registeredCompany.sectorId || null,
       sector_name: sectorName || null,
       category: sectorName || null,
@@ -282,6 +286,8 @@ const prepareDataEntryHrJob = async ({ title = '', entryData = {}, registeredCom
       district_id: entryData.districtId || entryData.district_id || registeredCompany.districtId || null,
       state_name: stateName || null,
       district_name: districtName || null,
+      city_name: cityName || null,
+      pincode: pincode || null,
       sector_id: entryData.sectorId || entryData.sector_id || registeredCompany.sectorId || null,
       sector_name: sectorName || null,
       category: sectorName || null,
