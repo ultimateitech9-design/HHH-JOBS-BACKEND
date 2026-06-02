@@ -18,11 +18,44 @@ const UUID_FRAGMENT_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const extractUuidFromSlug = (value = '') => {
-  const match = String(value || '').match(UUID_FRAGMENT_PATTERN);
-  return match ? match[0].toLowerCase() : '';
+  const rawValue = String(value || '').trim();
+  const match = rawValue.match(UUID_FRAGMENT_PATTERN);
+  if (match) return match[0].toLowerCase();
+
+  const lastSegment = rawValue
+    .replace(/^\/+|\/+$/g, '')
+    .split('/')
+    .filter(Boolean)
+    .pop() || '';
+
+  if (!lastSegment || !lastSegment.includes('-')) return lastSegment;
+
+  const parts = lastSegment.split('-').filter(Boolean);
+  const candidate = parts[parts.length - 1] || '';
+  return /^[a-z0-9]{6,}$/i.test(candidate) ? candidate : lastSegment;
 };
 
 const isValidUuid = (value = '') => UUID_PATTERN.test(String(value || '').trim());
+
+const slugify = (value = '') => String(value || '')
+  .normalize('NFKD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/&/g, ' and ')
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '')
+  .slice(0, 120);
+
+const buildSeoSlug = (...parts) => {
+  const slug = parts
+    .map(slugify)
+    .filter(Boolean)
+    .join('-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return slug || null;
+};
 
 const maskEmail = (email = '') => {
   const value = String(email || '').trim();
@@ -61,6 +94,8 @@ module.exports = {
   toArray,
   extractUuidFromSlug,
   isValidUuid,
+  slugify,
+  buildSeoSlug,
   maskEmail,
   maskMobile,
   asyncHandler
