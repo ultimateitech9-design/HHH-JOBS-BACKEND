@@ -446,7 +446,7 @@ const getRoleSyncSummary = async ({ Database }) => {
     .select('*')
     .order('role');
 
-  if (!summaryError && Array.isArray(summaryRows)) {
+  if (!summaryError && Array.isArray(summaryRows) && summaryRows.length > 0) {
     return summaryRows.map(mapRoleSyncSummaryRow);
   }
 

@@ -961,11 +961,18 @@ router.post('/chats', asyncHandler(async (req, res) => {
     const { data: created, error } = await Database
       .from('support_chats')
       .insert({
+        visitor: req.user?.name || req.user?.email || 'Customer',
+        customer_role: req.user?.role || null,
+        contact_email: req.user?.email || null,
+        state: stateName || null,
+        issue_area: subject || 'Live support',
         requester_id: req.user?.id,
         requester_name: req.user?.name || null,
         requester_email: req.user?.email || null,
         requester_role: req.user?.role || null,
         assigned_department: 'support',
+        assigned_to: assignee?.id || null,
+        assigned_name: assignee?.name || assignee?.email || null,
         assignee_id: assignee?.id || null,
         assignee_name: assignee?.name || assignee?.email || null,
         status: isWaiting ? 'waiting' : 'open',
