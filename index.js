@@ -350,6 +350,7 @@ const logStartupMode = () => {
 let server = null;
 let externalJobsScheduler = null;
 let autoApplyScheduler = null;
+let govtJobsScheduler = null;
 let schedulerDisabledKeepAlive = null;
 
 const startExternalJobsScheduler = () => {
@@ -399,6 +400,30 @@ const startAutoApplyScheduler = () => {
   }
 };
 
+const startGovtJobsScheduler = () => {
+  if (config.disableSchedulers) {
+    console.warn('[GovtJobs Scheduler] Skipped - schedulers are disabled');
+    return;
+  }
+
+  if (shouldUseUpstreamProxy) {
+    console.warn('[GovtJobs Scheduler] Skipped - local proxy mode is enabled');
+    return;
+  }
+
+  if (!Database) {
+    console.warn('[GovtJobs Scheduler] Skipped - database not configured');
+    return;
+  }
+
+  try {
+    govtJobsScheduler = require('./src/modules/govt-jobs/scheduler');
+    govtJobsScheduler.start();
+  } catch (error) {
+    console.error('[GovtJobs Scheduler] Failed to start:', error.message);
+  }
+};
+
 const startSchedulerDisabledKeepAlive = () => {
   if (!config.disableSchedulers || schedulerDisabledKeepAlive) return;
 
@@ -417,6 +442,7 @@ const startServer = () => {
     startSideEffectWorkers();
     startExternalJobsScheduler();
     startAutoApplyScheduler();
+    startGovtJobsScheduler();
     startSchedulerDisabledKeepAlive();
   });
 
@@ -443,6 +469,9 @@ const shutdown = async (signal) => {
   }
   if (autoApplyScheduler) {
     try { autoApplyScheduler.stop(); } catch {}
+  }
+  if (govtJobsScheduler) {
+    try { govtJobsScheduler.stop(); } catch {}
   }
   if (schedulerDisabledKeepAlive) {
     clearInterval(schedulerDisabledKeepAlive);

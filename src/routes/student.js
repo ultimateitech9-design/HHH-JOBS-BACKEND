@@ -28,6 +28,12 @@ const {
   processAutoApplyForStudentJobs,
   sendStudentAutoApplyDigest
 } = require('../services/autoApply');
+const {
+  getGovtJobById,
+  getGovtJobTrackingSummary,
+  listGovtJobs,
+  updateGovtJobTracker
+} = require('../services/govtJobs');
 const { enqueueRecommendationDigest } = require('../services/sideEffectQueue');
 const {
   getCompanySubscriptionStatus,
@@ -866,6 +872,19 @@ router.get('/overview', asyncHandler(async (req, res) => {
   }
 
   const recommendedJobs = recommendedMatches.map((item) => item.job).filter(Boolean);
+  let govtJobSummary = {
+    tracked: 0,
+    applied: 0,
+    reminders: 0,
+    expiringSoon: 0,
+    recent: []
+  };
+
+  try {
+    govtJobSummary = await getGovtJobTrackingSummary(targetUserId);
+  } catch (error) {
+    console.warn('[STUDENT OVERVIEW GOVT JOBS]', error.message || error);
+  }
 
   const unreadNotifications = notifications.filter((notification) => !notification.is_read).length;
   const upcomingInterviews = interviews
@@ -888,7 +907,10 @@ router.get('/overview', asyncHandler(async (req, res) => {
         savedJobs: savedJobs.length,
         upcomingInterviews: upcomingInterviews.length,
         unreadNotifications,
-        atsChecks: atsResp.count || 0
+        atsChecks: atsResp.count || 0,
+        govtJobsApplied: govtJobSummary.applied,
+        govtJobReminders: govtJobSummary.reminders,
+        govtJobsExpiringSoon: govtJobSummary.expiringSoon
       },
       pipeline,
       recommendedJobs,
@@ -900,9 +922,119 @@ router.get('/overview', asyncHandler(async (req, res) => {
       upcomingInterviews: upcomingInterviews.slice(0, 6),
       recentNotifications: notifications.slice(0, 6),
       nextInterview: upcomingInterviews[0] || null,
+      govtJobs: govtJobSummary,
       campusConnect: campusConnectResponse.data || buildStudentCampusConnectPayload()
     }
   });
+}));
+
+router.get('/govt-jobs', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'query');
+
+  const result = await listGovtJobs({
+    userId: targetUserId,
+    filters: {
+      page: req.query.page,
+      limit: req.query.limit,
+      search: req.query.search || req.query.q,
+      category: req.query.category,
+      state: req.query.state,
+      qualLevel: req.query.qualLevel || req.query.qual_level,
+      postType: req.query.postType || req.query.post_type,
+      status: req.query.status,
+      tracked: req.query.tracked
+    }
+  });
+
+  res.send({ status: true, ...result });
+}));
+
+router.get('/govt-jobs/:jobId', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'query');
+  const { jobId } = req.params;
+
+  if (!isValidUuid(jobId)) {
+    res.status(400).send({ status: false, message: 'Invalid government job id' });
+    return;
+  }
+
+  const job = await getGovtJobById({ userId: targetUserId, jobId });
+  if (!job) {
+    res.status(404).send({ status: false, message: 'Government job not found' });
+    return;
+  }
+
+  res.send({ status: true, job });
+}));
+
+router.put('/govt-jobs/:jobId/tracker', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'body');
+  const { jobId } = req.params;
+
+  if (!isValidUuid(jobId)) {
+    res.status(400).send({ status: false, message: 'Invalid government job id' });
+    return;
+  }
+
+  try {
+    const job = await updateGovtJobTracker({
+      userId: targetUserId,
+      jobId,
+      status: req.body?.status,
+      reminderEnabled: req.body?.reminderEnabled,
+      reminderDaysBefore: req.body?.reminderDaysBefore,
+      notes: req.body?.notes
+    });
+
+    res.send({ status: true, job, tracker: job?.tracker || null });
+  } catch (error) {
+    res.status(error.statusCode || 500).send({
+      status: false,
+      message: error.message || 'Unable to update government job tracker'
+    });
+  }
+}));
+
+router.post('/govt-jobs/:jobId/mark-applied', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'body');
+  const { jobId } = req.params;
+
+  if (!isValidUuid(jobId)) {
+    res.status(400).send({ status: false, message: 'Invalid government job id' });
+    return;
+  }
+
+  const job = await updateGovtJobTracker({
+    userId: targetUserId,
+    jobId,
+    status: 'applied',
+    reminderEnabled: req.body?.reminderEnabled ?? false,
+    reminderDaysBefore: req.body?.reminderDaysBefore,
+    notes: req.body?.notes
+  });
+
+  res.send({ status: true, job, tracker: job?.tracker || null });
+}));
+
+router.post('/govt-jobs/:jobId/reminder', asyncHandler(async (req, res) => {
+  const targetUserId = getTargetStudentId(req, 'body');
+  const { jobId } = req.params;
+
+  if (!isValidUuid(jobId)) {
+    res.status(400).send({ status: false, message: 'Invalid government job id' });
+    return;
+  }
+
+  const job = await updateGovtJobTracker({
+    userId: targetUserId,
+    jobId,
+    status: req.body?.status || 'interested',
+    reminderEnabled: true,
+    reminderDaysBefore: req.body?.reminderDaysBefore,
+    notes: req.body?.notes
+  });
+
+  res.send({ status: true, job, tracker: job?.tracker || null });
 }));
 
 router.get('/campus-connect', asyncHandler(async (req, res) => {
