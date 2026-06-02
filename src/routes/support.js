@@ -41,8 +41,8 @@ const MODERATION_LIFTED_STATUS = 'lifted';
 const DEFAULT_BAN_HOURS = 24;
 
 const isSupportChatSchemaError = (error = {}) => {
-  const code = String(error.code || '').toUpperCase();
-  const message = String(error.message || '').toLowerCase();
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '').toLowerCase();
   return ['42P01', '42703', '42S02', '42S22', 'PGRST204', 'ER_NO_SUCH_TABLE', 'ER_BAD_FIELD_ERROR'].includes(code)
     || message.includes('unknown column')
     || message.includes('support_chats')
@@ -51,8 +51,8 @@ const isSupportChatSchemaError = (error = {}) => {
 const isMemoryChatId = (value = '') => String(value || '').startsWith('MEM-CHAT-');
 
 const isModerationSchemaError = (error = {}) => {
-  const code = String(error.code || '').toUpperCase();
-  const message = String(error.message || '').toLowerCase();
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '').toLowerCase();
   return ['42P01', '42703', '42S02', '42S22', 'PGRST204', 'ER_NO_SUCH_TABLE', 'ER_BAD_FIELD_ERROR'].includes(code)
     || message.includes('unknown column')
     || message.includes('support_chat_moderations');
