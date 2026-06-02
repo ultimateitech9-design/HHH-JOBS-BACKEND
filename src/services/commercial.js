@@ -9,8 +9,10 @@ const {
   isRazorpayConfigured,
   createRazorpayPlan,
   createRazorpaySubscription,
+  fetchPlanDetails: fetchRazorpayPlanDetails,
   fetchSubscriptionDetails: fetchRazorpaySubscriptionDetails,
   verifyRazorpaySubscriptionSignature,
+  verifySuccessfulSubscriptionPayment,
   fetchPaymentDetails
 } = require('./razorpay');
 
@@ -1147,7 +1149,15 @@ const ensureRolePlanTrialSubscription = async ({ userId, audienceRole = '', user
 
 const createOrReuseRazorpayPlanForRolePlan = async (plan = {}) => {
   const existingPlanId = normalizeText(plan?.meta?.razorpayPlanId);
-  if (existingPlanId) return existingPlanId;
+  if (existingPlanId) {
+    try {
+      const existingPlan = await fetchRazorpayPlanDetails(existingPlanId);
+      if (existingPlan?.id) return existingPlanId;
+    } catch (error) {
+      const statusCode = Number(error?.statusCode || 0);
+      if (![400, 404].includes(statusCode)) throw error;
+    }
+  }
 
   const billingProfile = resolveRolePlanBillingProfile(plan);
   const razorpayPlan = await createRazorpayPlan({
@@ -1166,7 +1176,10 @@ const createOrReuseRazorpayPlanForRolePlan = async (plan = {}) => {
   const nextMeta = mergeMeta(plan.meta, {
     razorpayPlanId: razorpayPlan.id,
     razorpayPeriod: billingProfile.period,
-    razorpayInterval: billingProfile.interval
+    razorpayInterval: billingProfile.interval,
+    razorpayPlanRecreatedAt: existingPlanId ? new Date().toISOString() : null,
+    previousRazorpayPlanId: existingPlanId || null,
+    razorpayKeyMode: getRazorpayPublicConfig().keyMode
   });
 
   await Database
@@ -1368,7 +1381,8 @@ const activateAutopayPlanChangeSubscription = async ({
   razorpaySubscriptionId,
   razorpayPaymentId,
   razorpaySignature,
-  remoteSubscription
+  remoteSubscription,
+  verifiedPayment = null
 } = {}) => {
   const existingMeta = subscription.meta || {};
   const planSlug = normalizeLower(existingMeta.renewalRolePlanSlug || subscription.role_plan_slug);
@@ -1424,6 +1438,7 @@ const activateAutopayPlanChangeSubscription = async ({
         businessRule: 'existing_user_upgrade_no_trial',
         providerSubscriptionId: razorpaySubscriptionId,
         razorpayPaymentId,
+        razorpayPaymentStatus: verifiedPayment?.status || null,
         previousSubscriptionId: existingMeta.planChangeFromSubscriptionId || null,
         previousRolePlanSlug: existingMeta.previousRolePlanSlug || null
       }
@@ -1447,6 +1462,8 @@ const activateAutopayPlanChangeSubscription = async ({
     renewalAmount: quote.totalAmount,
     razorpayPaymentId,
     razorpaySignature,
+    razorpayPaymentStatus: verifiedPayment?.status || null,
+    razorpayPaymentAmount: verifiedPayment?.amount ? roundMoney(Number(verifiedPayment.amount) / 100) : null,
     razorpayCustomerId: remoteSubscription.customer_id || null,
     razorpaySubscriptionStatus: remoteSubscription.status,
     autopayAuthenticatedAt: nowIso
@@ -1564,7 +1581,8 @@ const activateAutopayTrialSubscription = async ({
   razorpaySubscriptionId,
   razorpayPaymentId,
   razorpaySignature,
-  remoteSubscription
+  remoteSubscription,
+  verifiedPayment = null
 } = {}) => {
   const existingMeta = subscription.meta || {};
   const planSlug = normalizeLower(existingMeta.renewalRolePlanSlug || subscription.role_plan_slug);
@@ -1621,6 +1639,7 @@ const activateAutopayTrialSubscription = async ({
         businessRule: 'autopay_required_before_trial',
         providerSubscriptionId: razorpaySubscriptionId,
         razorpayPaymentId,
+        razorpayPaymentStatus: verifiedPayment?.status || null,
         renewalAmount: quote.totalAmount
       }
     };
@@ -1645,6 +1664,8 @@ const activateAutopayTrialSubscription = async ({
     renewalAmount: quote.totalAmount,
     razorpayPaymentId,
     razorpaySignature,
+    razorpayPaymentStatus: verifiedPayment?.status || null,
+    razorpayPaymentAmount: verifiedPayment?.amount ? roundMoney(Number(verifiedPayment.amount) / 100) : null,
     razorpayCustomerId: remoteSubscription.customer_id || null,
     razorpaySubscriptionStatus: remoteSubscription.status,
     autopayAuthenticatedAt: nowIso
@@ -1993,6 +2014,24 @@ const confirmRolePlanAutopayPayment = async ({
   }
 
   const remoteSubscription = await fetchRazorpaySubscriptionDetails(razorpaySubscriptionId);
+  if (String(remoteSubscription?.id || '') !== String(razorpaySubscriptionId)) {
+    const error = new Error('Razorpay subscription verification returned a different subscription.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const remoteStatus = normalizeLower(remoteSubscription.status);
+  if (!['authenticated', 'active'].includes(remoteStatus)) {
+    const error = new Error('Razorpay auto-pay is not authenticated yet. Plan will unlock only after successful payment/auto-pay verification.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const verifiedPayment = await verifySuccessfulSubscriptionPayment({
+    paymentId: razorpayPaymentId,
+    subscriptionId: razorpaySubscriptionId
+  });
+
   const { data: existingSubscription, error: lookupError } = await Database
     .from('role_plan_subscriptions')
     .select('*')
@@ -2020,7 +2059,8 @@ const confirmRolePlanAutopayPayment = async ({
         razorpaySubscriptionId,
         razorpayPaymentId,
         razorpaySignature,
-        remoteSubscription
+        remoteSubscription,
+        verifiedPayment
       });
     }
 
@@ -2031,13 +2071,16 @@ const confirmRolePlanAutopayPayment = async ({
       razorpaySubscriptionId,
       razorpayPaymentId,
       razorpaySignature,
-      remoteSubscription
+      remoteSubscription,
+      verifiedPayment
     });
   }
 
   const nextMeta = mergeMeta(existingSubscription.meta, {
     razorpayPaymentId,
     razorpaySignature,
+    razorpayPaymentStatus: verifiedPayment?.status || null,
+    razorpayPaymentAmount: verifiedPayment?.amount ? roundMoney(Number(verifiedPayment.amount) / 100) : null,
     razorpayCustomerId: remoteSubscription.customer_id || null,
     razorpaySubscriptionStatus: remoteSubscription.status,
     autopayAuthenticatedAt: new Date().toISOString()
@@ -2220,6 +2263,7 @@ const handleRoleSubscriptionWebhook = async (event = {}) => {
 
   const remoteSubscription = event?.payload?.subscription?.entity;
   if (!remoteSubscription?.id) return { handled: false };
+  const remoteStatus = normalizeLower(remoteSubscription.status);
 
   const { data: localSubscription, error: localLookupError } = await Database
     .from('role_plan_subscriptions')
@@ -2230,6 +2274,38 @@ const handleRoleSubscriptionWebhook = async (event = {}) => {
   if (localLookupError) throw localLookupError;
   if (!localSubscription) {
     return { handled: false, reason: 'local_subscription_not_found', subscriptionId: remoteSubscription.id };
+  }
+
+  const webhookPayment = event?.payload?.payment?.entity || null;
+  const webhookPaymentStatus = normalizeLower(webhookPayment?.status);
+  const hasSuccessfulWebhookPayment = Boolean(webhookPayment?.id)
+    && ['authorized', 'captured'].includes(webhookPaymentStatus)
+    && ['authenticated', 'active'].includes(remoteStatus);
+  const isPendingSetup = Boolean(
+    normalizeLower(localSubscription.status) === 'pending'
+    || localSubscription?.meta?.pendingAutopaySetup
+    || localSubscription?.meta?.pendingPlanChangeSetup
+  );
+
+  if (eventType === 'subscription.authenticated' && isPendingSetup && hasSuccessfulWebhookPayment) {
+    const activationPayload = {
+      subscription: localSubscription,
+      userId: localSubscription.user_id,
+      audienceRole: localSubscription.audience_role,
+      razorpaySubscriptionId: remoteSubscription.id,
+      razorpayPaymentId: webhookPayment.id,
+      razorpaySignature: '',
+      remoteSubscription,
+      verifiedPayment: webhookPayment
+    };
+
+    if (localSubscription?.meta?.pendingPlanChangeSetup) {
+      await activateAutopayPlanChangeSubscription(activationPayload);
+    } else {
+      await activateAutopayTrialSubscription(activationPayload);
+    }
+
+    return { handled: true, subscriptionId: remoteSubscription.id, eventType, activatedViaWebhook: true };
   }
 
   if (eventType === 'subscription.charged' || eventType === 'subscription.completed') {
@@ -2256,19 +2332,23 @@ const handleRoleSubscriptionWebhook = async (event = {}) => {
   });
 
   const nextStatus = (() => {
-    const normalizedRemoteStatus = normalizeLower(remoteSubscription.status);
-    if (['cancelled', 'completed', 'expired'].includes(normalizedRemoteStatus)) return 'expired';
-    if (['paused', 'halted', 'pending'].includes(normalizedRemoteStatus)) return 'pending';
+    if (isPendingSetup && !hasSuccessfulWebhookPayment) return 'pending';
+    if (['cancelled', 'completed', 'expired'].includes(remoteStatus)) return 'expired';
+    if (['created', 'paused', 'halted', 'pending'].includes(remoteStatus)) return 'pending';
     return 'active';
   })();
+  const nextAutopayEnabled = Boolean(
+    localSubscription.autopay_enabled
+    || (!isPendingSetup && ['authenticated', 'active'].includes(remoteStatus))
+  );
 
   await Database
     .from('role_plan_subscriptions')
     .update({
       status: nextStatus,
       provider_customer_id: remoteSubscription.customer_id || localSubscription.provider_customer_id || null,
-      autopay_enabled: true,
-      autopay_status: normalizeLower(remoteSubscription.status) || localSubscription.autopay_status || AUTOPAY_STATUSES.ACTIVE,
+      autopay_enabled: nextAutopayEnabled,
+      autopay_status: remoteStatus || localSubscription.autopay_status || AUTOPAY_STATUSES.ACTIVE,
       starts_at: toIsoFromUnix(remoteSubscription.current_start) || localSubscription.starts_at,
       ends_at: toIsoFromUnix(remoteSubscription.current_end) || localSubscription.ends_at,
       last_renewed_at: ['subscription.charged', 'subscription.completed'].includes(eventType)

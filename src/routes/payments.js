@@ -14,7 +14,7 @@ const {
 const router = express.Router();
 
 router.get('/config', (req, res) => {
-  res.json({ configured: razorpay.isRazorpayConfigured(), keyId: process.env.RAZORPAY_KEY_ID || '' });
+  res.json(razorpay.getPublicConfig());
 });
 
 router.post('/create-order', requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN), asyncHandler(async (req, res) => {

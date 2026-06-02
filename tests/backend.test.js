@@ -304,6 +304,15 @@ test('core constants stay stable', () => {
   assert.equal(PRICING_PLAN_SLUGS.FREE, 'free');
 });
 
+test('razorpay key mode detection separates test and live keys', () => {
+  const { getRazorpayKeyMode } = require('../src/services/razorpay');
+
+  assert.equal(getRazorpayKeyMode('rzp_live_abc123'), 'live');
+  assert.equal(getRazorpayKeyMode('rzp_test_abc123'), 'test');
+  assert.equal(getRazorpayKeyMode('rzp_unknown_abc123'), 'unknown');
+  assert.equal(getRazorpayKeyMode(''), 'missing');
+});
+
 test('ensureRoleProfile seeds missing student profiles from legacy users without extra writes', async () => {
   const { ensureRoleProfile, buildProfileSeedFromUser } = require('../src/services/profileTables');
   const { Database, calls } = createProfileTablesDatabaseDouble();

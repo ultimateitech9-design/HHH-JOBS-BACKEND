@@ -161,6 +161,11 @@ const config = {
   razorpayKeyId: normalizeText(process.env.RAZORPAY_KEY_ID),
   razorpayKeySecret: normalizeText(process.env.RAZORPAY_KEY_SECRET),
   razorpayWebhookSecret: normalizeText(process.env.RAZORPAY_WEBHOOK_SECRET),
+  razorpayEnv: normalizeText(process.env.RAZORPAY_ENV || process.env.RAZORPAY_MODE).toLowerCase(),
+  razorpayRequireLive: parseBoolean(
+    process.env.RAZORPAY_REQUIRE_LIVE,
+    isProduction || ['live', 'production', 'prod'].includes(normalizeText(process.env.RAZORPAY_ENV || process.env.RAZORPAY_MODE).toLowerCase())
+  ),
 
   // ── Web Push (VAPID) ───────────────────────────────────────────────────────
   vapidPublicKey: normalizeText(process.env.VAPID_PUBLIC_KEY),

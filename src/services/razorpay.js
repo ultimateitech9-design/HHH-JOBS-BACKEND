@@ -6,18 +6,43 @@ const RAZORPAY_KEY_ID = config.razorpayKeyId || '';
 const RAZORPAY_KEY_SECRET = config.razorpayKeySecret || '';
 const RAZORPAY_WEBHOOK_SECRET = config.razorpayWebhookSecret || '';
 const RAZORPAY_API = 'https://api.razorpay.com/v1';
+const SUCCESSFUL_PAYMENT_STATUSES = new Set(['captured', 'authorized']);
 
 const isRazorpayConfigured = () => Boolean(RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET);
+const getRazorpayKeyMode = (keyId = RAZORPAY_KEY_ID) => {
+  const normalizedKeyId = String(keyId || '').trim();
+  if (normalizedKeyId.startsWith('rzp_live_')) return 'live';
+  if (normalizedKeyId.startsWith('rzp_test_')) return 'test';
+  return normalizedKeyId ? 'unknown' : 'missing';
+};
+const isRazorpayLiveModeRequired = () => Boolean(config.razorpayRequireLive);
+const isRazorpayReadyForCheckout = () =>
+  isRazorpayConfigured()
+  && (!isRazorpayLiveModeRequired() || getRazorpayKeyMode() === 'live');
 
 const getPublicConfig = () => ({
   configured: isRazorpayConfigured(),
-  keyId: RAZORPAY_KEY_ID
+  ready: isRazorpayReadyForCheckout(),
+  keyId: RAZORPAY_KEY_ID,
+  keyMode: getRazorpayKeyMode(),
+  requireLive: isRazorpayLiveModeRequired()
 });
 
-const razorpayFetch = async (path, { method = 'GET', body } = {}) => {
+const assertRazorpayReady = () => {
   if (!isRazorpayConfigured()) {
     throw Object.assign(new Error('Razorpay is not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.'), { statusCode: 500 });
   }
+
+  if (isRazorpayLiveModeRequired() && getRazorpayKeyMode() !== 'live') {
+    throw Object.assign(
+      new Error('Razorpay live mode is required on production. Set RAZORPAY_KEY_ID to an rzp_live key and update RAZORPAY_KEY_SECRET.'),
+      { statusCode: 503 }
+    );
+  }
+};
+
+const razorpayFetch = async (path, { method = 'GET', body } = {}) => {
+  assertRazorpayReady();
 
   const credentials = Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64');
   const options = {
@@ -125,6 +150,7 @@ const verifyWebhookSignature = (rawBody, webhookSignature) => {
 };
 
 const fetchPaymentDetails = async (paymentId) => razorpayFetch(`/payments/${paymentId}`);
+const fetchPlanDetails = async (planId) => razorpayFetch(`/plans/${planId}`);
 const fetchSubscriptionDetails = async (subscriptionId) => razorpayFetch(`/subscriptions/${subscriptionId}`);
 const cancelRazorpaySubscription = async (subscriptionId, { cancelAtCycleEnd = false } = {}) =>
   razorpayFetch(`/subscriptions/${subscriptionId}/cancel`, {
@@ -184,13 +210,28 @@ const confirmCheckoutPayment = async ({ razorpayOrderId, razorpayPaymentId, razo
     throw Object.assign(new Error('Payment signature verification failed'), { statusCode: 400 });
   }
 
+  const payment = await fetchPaymentDetails(razorpayPaymentId);
+  const paymentStatus = String(payment?.status || '').toLowerCase();
+  if (payment?.order_id && String(payment.order_id) !== String(razorpayOrderId)) {
+    throw Object.assign(new Error('Payment does not belong to this Razorpay order.'), { statusCode: 400 });
+  }
+  if (paymentStatus !== 'captured') {
+    throw Object.assign(new Error('Payment is not captured yet. Plan will unlock only after successful payment capture.'), { statusCode: 400 });
+  }
+
   const { data: purchase, error } = await Database
     .from('job_plan_purchases')
     .update({
       status: 'paid',
       paid_at: new Date().toISOString(),
       reference_id: razorpayPaymentId,
-      meta: { razorpayOrderId, razorpayPaymentId, razorpaySignature, verifiedAt: new Date().toISOString() }
+      meta: {
+        razorpayOrderId,
+        razorpayPaymentId,
+        razorpaySignature,
+        razorpayPaymentStatus: paymentStatus,
+        verifiedAt: new Date().toISOString()
+      }
     })
     .eq('id', purchaseId)
     .select('*')
@@ -205,6 +246,31 @@ const confirmCheckoutPayment = async ({ razorpayOrderId, razorpayPaymentId, razo
   }
 
   return { purchase, grantedCreditId, verified: true };
+};
+
+const verifySuccessfulSubscriptionPayment = async ({ paymentId, subscriptionId } = {}) => {
+  if (!paymentId) {
+    throw Object.assign(new Error('Razorpay payment id is required for auto-pay verification.'), { statusCode: 400 });
+  }
+
+  const payment = await fetchPaymentDetails(paymentId);
+  const paymentStatus = String(payment?.status || '').toLowerCase();
+  if (!SUCCESSFUL_PAYMENT_STATUSES.has(paymentStatus)) {
+    throw Object.assign(new Error('Razorpay payment is not successful yet. Plan will unlock only after payment/auto-pay is verified.'), { statusCode: 400 });
+  }
+
+  const paymentSubscriptionId = String(
+    payment?.subscription_id
+    || payment?.notes?.subscriptionId
+    || payment?.notes?.providerSubscriptionId
+    || ''
+  ).trim();
+
+  if (paymentSubscriptionId && subscriptionId && paymentSubscriptionId !== String(subscriptionId)) {
+    throw Object.assign(new Error('Payment does not belong to this Razorpay subscription.'), { statusCode: 400 });
+  }
+
+  return payment;
 };
 
 const handleWebhookEvent = async (event) => {
@@ -263,13 +329,18 @@ const handleWebhookEvent = async (event) => {
 module.exports = {
   getPublicConfig,
   isRazorpayConfigured,
+  isRazorpayReadyForCheckout,
+  isRazorpayLiveModeRequired,
+  getRazorpayKeyMode,
   createRazorpayOrder,
   createRazorpayPlan,
   createRazorpaySubscription,
   verifyRazorpayOrderSignature,
   verifyRazorpaySubscriptionSignature,
   verifyWebhookSignature,
+  verifySuccessfulSubscriptionPayment,
   fetchPaymentDetails,
+  fetchPlanDetails,
   fetchSubscriptionDetails,
   cancelRazorpaySubscription,
   initiateRefund,

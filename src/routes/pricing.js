@@ -313,6 +313,10 @@ router.post('/role-plans/checkout', requireAuth, requireActiveUser, requireRole(
     res.status(400).send({ status: false, message: 'paymentStatus must be pending or paid' });
     return;
   }
+  if (req.user.role !== ROLES.ADMIN && provider !== 'razorpay' && paymentStatus === PURCHASE_STATUSES.PAID) {
+    res.status(403).send({ status: false, message: 'Plan can be activated only after verified Razorpay payment or admin approval.' });
+    return;
+  }
 
   try {
     const plan = await getRolePlanOrThrow(req.body?.planSlug || req.body?.plan_slug, {
