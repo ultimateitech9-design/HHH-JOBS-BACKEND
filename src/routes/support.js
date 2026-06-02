@@ -20,6 +20,7 @@ const CHAT_AGENT_ROLES = new Set([ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT,
 const TRANSFER_DEPARTMENTS = new Set(['support', 'dataentry', 'sales', 'accounts']);
 const SUPPORT_ACTIVE_CHAT_STATUSES = ['open', 'active', 'pending'];
 const CUSTOMER_OPEN_CHAT_STATUSES = ['open', 'active', 'pending', 'waiting'];
+const VISIBLE_CHAT_STATUSES = ['open', 'active', 'pending', 'waiting'];
 const SUPPORT_AGENT_MAX_ACTIVE_CHATS = Math.max(1, parseInt(process.env.SUPPORT_AGENT_MAX_ACTIVE_CHATS || '1', 10) || 1);
 const normalizeDepartment = (value = '') => {
   const normalized = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, '');
@@ -169,10 +170,10 @@ const mapChatRow = (row = {}) => ({
   visitor: row.requester_name || row.requester_email || 'Customer',
   company: row.company || row.meta?.company || row.requester_role || 'Portal user',
   assignedDepartment: row.assigned_department || 'support',
-  assignedTo: row.assignee_name || row.assigned_department || 'Support',
-  assigneeId: row.assignee_id,
-  assigneeName: row.assignee_name,
-  queueStatus: row.meta?.queueStatus || (row.status === 'waiting' ? 'waiting' : (row.assignee_id ? 'assigned' : 'unassigned')),
+  assignedTo: row.assignee_name || row.assigned_name || row.assigned_department || 'Support',
+  assigneeId: row.assignee_id || row.assigned_to || '',
+  assigneeName: row.assignee_name || row.assigned_name || '',
+  queueStatus: row.meta?.queueStatus || (row.status === 'waiting' ? 'waiting' : ((row.assignee_id || row.assigned_to) ? 'assigned' : 'unassigned')),
   waitingMessage: row.meta?.waitingMessage || (row.status === 'waiting' ? 'All support agents are busy. You are in the waiting queue.' : ''),
   stateName: row.state_name || row.meta?.stateName || '',
   status: row.status || 'open',
@@ -258,6 +259,8 @@ const assignWaitingSupportChats = async ({ stateName = '' } = {}) => {
   const { error: updateError } = await Database
     .from('support_chats')
     .update({
+      assigned_to: assignee.id,
+      assigned_name: assignee.name || assignee.email || 'Support',
       assignee_id: assignee.id,
       assignee_name: assignee.name || assignee.email || 'Support',
       status: 'open',
@@ -772,7 +775,6 @@ router.get('/chats', asyncHandler(async (req, res) => {
   const department = requestedDepartment
     ? normalizeDepartment(requestedDepartment)
     : getRoleDepartment(req.user?.role);
-  const shouldShowAllDepartmentsForSupport = req.user?.role === ROLES.SUPPORT && (!department || department === 'support');
 
   if (!department || department === 'support') {
     await assignWaitingSupportChats({ stateName });
@@ -781,14 +783,12 @@ router.get('/chats', asyncHandler(async (req, res) => {
   let query = Database
     .from('support_chats')
     .select('*')
+    .in('status', VISIBLE_CHAT_STATUSES)
     .order('updated_at', { ascending: false })
     .limit(100);
 
-  if (!shouldShowAllDepartmentsForSupport && department && TRANSFER_DEPARTMENTS.has(department)) query = query.eq('assigned_department', department);
+  if (department && TRANSFER_DEPARTMENTS.has(department)) query = query.eq('assigned_department', department);
   if (stateName) query = query.eq('state_name', stateName);
-  if (req.user?.role === ROLES.SUPPORT) {
-    query = query.or(`assignee_id.eq.${req.user.id},assignee_id.is.null`);
-  }
 
   const { data, error } = await query;
 
@@ -962,42 +962,43 @@ router.post('/chats', asyncHandler(async (req, res) => {
     const assignee = await chooseSupportAssignee(stateName);
     const isWaiting = !assignee;
     const chatId = randomUUID();
+    const chatPayload = {
+      id: chatId,
+      visitor: req.user?.name || req.user?.email || 'Customer',
+      customer_role: req.user?.role || null,
+      contact_email: req.user?.email || null,
+      state: stateName || null,
+      issue_area: subject || 'Live support',
+      requester_id: req.user?.id,
+      requester_name: req.user?.name || null,
+      requester_email: req.user?.email || null,
+      requester_role: req.user?.role || null,
+      assigned_department: 'support',
+      assigned_to: assignee?.id || null,
+      assigned_name: assignee?.name || assignee?.email || null,
+      assignee_id: assignee?.id || null,
+      assignee_name: assignee?.name || assignee?.email || null,
+      status: isWaiting ? 'waiting' : 'open',
+      subject,
+      state_name: stateName || null,
+      company: company || null,
+      last_message: message,
+      meta: {
+        stateName,
+        company,
+        autoAssigned: Boolean(assignee),
+        queueStatus: isWaiting ? 'waiting' : 'assigned',
+        waitingMessage: isWaiting ? 'All support agents are busy. You are in the waiting queue.' : ''
+      }
+    };
     const { data: created, error } = await Database
       .from('support_chats')
-      .insert({
-        id: chatId,
-        visitor: req.user?.name || req.user?.email || 'Customer',
-        customer_role: req.user?.role || null,
-        contact_email: req.user?.email || null,
-        state: stateName || null,
-        issue_area: subject || 'Live support',
-        requester_id: req.user?.id,
-        requester_name: req.user?.name || null,
-        requester_email: req.user?.email || null,
-        requester_role: req.user?.role || null,
-        assigned_department: 'support',
-        assigned_to: assignee?.id || null,
-        assigned_name: assignee?.name || assignee?.email || null,
-        assignee_id: assignee?.id || null,
-        assignee_name: assignee?.name || assignee?.email || null,
-        status: isWaiting ? 'waiting' : 'open',
-        subject,
-        state_name: stateName || null,
-        company: company || null,
-        last_message: message,
-        meta: {
-          stateName,
-          company,
-          autoAssigned: Boolean(assignee),
-          queueStatus: isWaiting ? 'waiting' : 'assigned',
-          waitingMessage: isWaiting ? 'All support agents are busy. You are in the waiting queue.' : ''
-        }
-      })
+      .insert(chatPayload)
       .select('*')
       .single();
 
     if (error) { sendDatabaseError(res, error); return; }
-    chatRow = created || { id: chatId, assignee_id: assignee?.id || null };
+    chatRow = created || chatPayload;
   }
 
   const messageResult = await insertChatMessage({ chatId: chatRow.id, user: req.user, message });
@@ -1167,8 +1168,10 @@ router.post('/chats/:id/messages', asyncHandler(async (req, res) => {
   };
 
   if (isAgentMessage && !chat.assignee_id && req.user?.role === ROLES.SUPPORT) {
+    updatePayload.assigned_to = req.user.id;
+    updatePayload.assigned_name = req.user.name || req.user.email || 'Support';
     updatePayload.assignee_id = req.user.id;
-    updatePayload.assignee_name = req.user.name || 'Support';
+    updatePayload.assignee_name = req.user.name || req.user.email || 'Support';
     updatePayload.status = 'active';
     updatePayload.meta = {
       ...nextMeta,
@@ -1475,6 +1478,8 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
       transfer_reason: reason || null,
       transferred_at: new Date().toISOString(),
       transferred_by: req.user?.id || null,
+      assigned_to: targetDepartment === 'support' ? (supportAssignee?.id || null) : null,
+      assigned_name: targetDepartment === 'support' ? (supportAssignee?.name || supportAssignee?.email || null) : null,
       assignee_id: targetDepartment === 'support' ? (supportAssignee?.id || null) : null,
       assignee_name: targetDepartment === 'support' ? (supportAssignee?.name || supportAssignee?.email || null) : null,
       status: isWaitingForSupport ? 'waiting' : 'open',
@@ -1646,6 +1651,7 @@ router.patch('/chats/:id/moderation', asyncHandler(async (req, res) => {
     const { data: inserted, error: insertError } = await Database
       .from('support_chat_moderations')
       .insert({
+        id: randomUUID(),
         user_id: chat.requester_id,
         user_role: chat.requester_role || null,
         user_email: chat.requester_email || null,

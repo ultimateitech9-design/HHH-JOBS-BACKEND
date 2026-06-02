@@ -293,7 +293,7 @@ class MySqlQuery {
     if (this.filters.length === 0) return { sql: '', params: [] };
     return {
       sql: ` WHERE ${this.filters.map((filter) => `(${filter.sql})`).join(' AND ')}`,
-      params: this.filters.flatMap((filter) => filter.params)
+      params: this.filters.flatMap((filter) => filter.params.map(serializeValue))
     };
   }
 
@@ -434,8 +434,23 @@ class MySqlQuery {
   }
 }
 
+const ISO_DATE_STRING_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+const formatMySqlDateTime = (date) => {
+  const pad = (number, size = 2) => String(number).padStart(size, '0');
+  return [
+    `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`,
+    `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${pad(date.getUTCMilliseconds(), 3)}`
+  ].join(' ');
+};
+
 const serializeValue = (value) => {
   if (value === undefined) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return formatMySqlDateTime(value);
+  if (typeof value === 'string' && ISO_DATE_STRING_PATTERN.test(value)) {
+    const parsedDate = new Date(value);
+    if (!Number.isNaN(parsedDate.getTime())) return formatMySqlDateTime(parsedDate);
+  }
   if (Array.isArray(value) || (value && typeof value === 'object' && !(value instanceof Date) && !Buffer.isBuffer(value))) {
     return JSON.stringify(value);
   }
