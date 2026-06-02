@@ -2,12 +2,11 @@ const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const dotenv = require('dotenv');
-const { createClient } = require('@supabase/supabase-js');
 
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
 const { ROLES, USER_STATUSES } = require('../src/constants');
-const config = require('../src/config');
+const { Database } = require('../src/db');
 const { ensureRoleProfile } = require('../src/services/profileTables');
 
 const DEFAULT_EMAIL = 'superadmin@hhh-jobs.com';
@@ -38,20 +37,18 @@ const isEnumRoleError = (error) => {
   return message.includes('invalid input value for enum') || message.includes('user_role');
 };
 
-const createSupabaseAdminClient = () => {
-  if (!config.supabaseUrl || !config.supabaseServiceRoleKey) {
-    throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in backend .env');
+const createDatabaseAdminClient = () => {
+  if (!Database) {
+    throw new Error('Missing MySQL/JWT configuration in backend .env');
   }
 
-  return createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
-    auth: { persistSession: false }
-  });
+  return Database;
 };
 
-const findAuthUserByEmail = async (supabase, email) => {
+const findAuthUserByEmail = async (Database, email) => {
   const perPage = 200;
   for (let page = 1; page <= 10; page += 1) {
-    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage });
+    const { data, error } = await Database.auth.admin.listUsers({ page, perPage });
     if (error) throw error;
 
     const users = Array.isArray(data?.users) ? data.users : [];
@@ -62,11 +59,11 @@ const findAuthUserByEmail = async (supabase, email) => {
   return null;
 };
 
-const ensureAuthUser = async ({ supabase, email, password, name, role }) => {
-  const existingAuthUser = await findAuthUserByEmail(supabase, email);
+const ensureAuthUser = async ({ Database, email, password, name, role }) => {
+  const existingAuthUser = await findAuthUserByEmail(Database, email);
 
   if (existingAuthUser?.id) {
-    const { data, error } = await supabase.auth.admin.updateUserById(existingAuthUser.id, {
+    const { data, error } = await Database.auth.admin.updateUserById(existingAuthUser.id, {
       password,
       email_confirm: true,
       user_metadata: {
@@ -80,7 +77,7 @@ const ensureAuthUser = async ({ supabase, email, password, name, role }) => {
     return { user: data.user, created: false };
   }
 
-  const { data, error } = await supabase.auth.admin.createUser({
+  const { data, error } = await Database.auth.admin.createUser({
     email,
     password,
     email_confirm: true,
@@ -91,7 +88,7 @@ const ensureAuthUser = async ({ supabase, email, password, name, role }) => {
   return { user: data.user, created: true };
 };
 
-const upsertDatabaseUser = async ({ supabase, userId, name, email, password, role }) => {
+const upsertDatabaseUser = async ({ Database, userId, name, email, password, role }) => {
   const passwordHash = await bcrypt.hash(password, 12);
   const payload = {
     id: userId,
@@ -106,7 +103,7 @@ const upsertDatabaseUser = async ({ supabase, userId, name, email, password, rol
     updated_at: new Date().toISOString()
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('users')
     .upsert(payload, { onConflict: 'id' })
     .select('id, email, role, status, is_email_verified')
@@ -116,9 +113,9 @@ const upsertDatabaseUser = async ({ supabase, userId, name, email, password, rol
   return data;
 };
 
-const writeSystemLog = async ({ supabase, actorName, actorRole, email, role }) => {
+const writeSystemLog = async ({ Database, actorName, actorRole, email, role }) => {
   try {
-    await supabase.from('system_logs').insert({
+    await Database.from('system_logs').insert({
       action: 'bootstrap_admin_user',
       module: 'superadmin',
       level: 'info',
@@ -142,11 +139,11 @@ const main = async () => {
     throw new Error('email, name, and password must be non-empty');
   }
 
-  const supabase = createSupabaseAdminClient();
+  const Database = createDatabaseAdminClient();
 
   let effectiveRole = requestedRole;
   const authResult = await ensureAuthUser({
-    supabase,
+    Database,
     email: requestedEmail,
     password,
     name: requestedName,
@@ -155,7 +152,7 @@ const main = async () => {
 
   try {
     await upsertDatabaseUser({
-      supabase,
+      Database,
       userId: authResult.user.id,
       name: requestedName,
       email: requestedEmail,
@@ -163,7 +160,7 @@ const main = async () => {
       role: effectiveRole
     });
     await ensureRoleProfile({
-      supabase,
+      Database,
       role: effectiveRole,
       userId: authResult.user.id,
       reqBody: {}
@@ -172,7 +169,7 @@ const main = async () => {
     if (requestedRole === ROLES.SUPER_ADMIN && isEnumRoleError(error)) {
       effectiveRole = ROLES.ADMIN;
       await upsertDatabaseUser({
-        supabase,
+        Database,
         userId: authResult.user.id,
         name: requestedName,
         email: requestedEmail,
@@ -180,12 +177,12 @@ const main = async () => {
         role: effectiveRole
       });
       await ensureRoleProfile({
-        supabase,
+        Database,
         role: effectiveRole,
         userId: authResult.user.id,
         reqBody: {}
       });
-      await supabase.auth.admin.updateUserById(authResult.user.id, {
+      await Database.auth.admin.updateUserById(authResult.user.id, {
         user_metadata: {
           ...(authResult.user.user_metadata || {}),
           name: requestedName,
@@ -198,7 +195,7 @@ const main = async () => {
   }
 
   await writeSystemLog({
-    supabase,
+    Database,
     actorName: 'bootstrap-script',
     actorRole: effectiveRole,
     email: requestedEmail,

@@ -10,7 +10,7 @@ const {
   PAYMENT_STATUSES,
   AUDIT_ACTIONS
 } = require('../constants');
-const { supabase, countRows, sendSupabaseError } = require('../supabase');
+const { Database, countRows, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { mapJobFromRow, mapApplicationFromRow, mapReportFromRow } = require('../utils/mappers');
@@ -161,7 +161,7 @@ router.get('/users', asyncHandler(async (req, res) => {
   const status = String(req.query.status || '').toLowerCase();
   const search = String(req.query.search || '').trim();
 
-  let query = supabase
+  let query = Database
     .from('users')
     .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at')
     .order('created_at', { ascending: false });
@@ -172,7 +172,7 @@ router.get('/users', asyncHandler(async (req, res) => {
 
   const { data, error } = await query;
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -188,7 +188,7 @@ router.patch('/users/:id/status', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('users')
     .update({ status: newStatus })
     .eq('id', userId)
@@ -196,7 +196,7 @@ router.patch('/users/:id/status', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -220,14 +220,14 @@ router.patch('/hr/:id/approve', asyncHandler(async (req, res) => {
   const userId = req.params.id;
   const approved = Boolean(req.body?.approved);
 
-  const { data: user, error: userErr } = await supabase
+  const { data: user, error: userErr } = await Database
     .from('users')
     .select('id, role')
     .eq('id', userId)
     .maybeSingle();
 
   if (userErr) {
-    sendSupabaseError(res, userErr);
+    sendDatabaseError(res, userErr);
     return;
   }
   if (!user || user.role !== ROLES.HR) {
@@ -235,7 +235,7 @@ router.patch('/hr/:id/approve', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('users')
     .update({ is_hr_approved: approved, status: USER_STATUSES.ACTIVE })
     .eq('id', userId)
@@ -243,7 +243,7 @@ router.patch('/hr/:id/approve', asyncHandler(async (req, res) => {
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -264,12 +264,12 @@ router.patch('/hr/:id/approve', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/jobs', asyncHandler(async (req, res) => {
   const status = String(req.query.status || '').toLowerCase();
-  let query = supabase.from('jobs').select('*').order('created_at', { ascending: false });
+  let query = Database.from('jobs').select('*').order('created_at', { ascending: false });
   if ([JOB_STATUSES.OPEN, JOB_STATUSES.CLOSED, JOB_STATUSES.DELETED].includes(status)) query = query.eq('status', status);
 
   const { data, error } = await query;
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -285,7 +285,7 @@ router.patch('/jobs/:id/status', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('jobs')
     .update({
       status: newStatus,
@@ -296,7 +296,7 @@ router.patch('/jobs/:id/status', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -337,7 +337,7 @@ router.patch('/companies/:id/sponsor', asyncHandler(async (req, res) => {
     updateDoc.sponsor_sort_order = null;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('companies')
     .update(updateDoc)
     .eq('id', req.params.id)
@@ -345,7 +345,7 @@ router.patch('/companies/:id/sponsor', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -360,14 +360,14 @@ router.patch('/companies/:id/sponsor', asyncHandler(async (req, res) => {
 router.delete('/jobs/:id', asyncHandler(async (req, res) => {
   const jobId = req.params.id;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('jobs')
     .delete()
     .eq('id', jobId)
     .select('id');
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -379,12 +379,12 @@ router.delete('/jobs/:id', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/reports', asyncHandler(async (req, res) => {
   const status = String(req.query.status || '').toLowerCase();
-  let query = supabase.from('reports').select('*').order('created_at', { ascending: false });
+  let query = Database.from('reports').select('*').order('created_at', { ascending: false });
   if (REPORT_STATUSES.includes(status)) query = query.eq('status', status);
 
   const { data, error } = await query;
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -401,7 +401,7 @@ router.patch('/reports/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('reports')
     .update({ status: newStatus, admin_note: adminNote, handled_by: req.user.id })
     .eq('id', reportId)
@@ -409,7 +409,7 @@ router.patch('/reports/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -434,12 +434,12 @@ router.patch('/reports/:id', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/applications', asyncHandler(async (req, res) => {
   const status = String(req.query.status || '').toLowerCase();
-  let query = supabase.from('applications').select('*').order('created_at', { ascending: false });
+  let query = Database.from('applications').select('*').order('created_at', { ascending: false });
   if (APPLICATION_STATUSES.includes(status)) query = query.eq('status', status);
 
   const { data, error } = await query;
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -450,13 +450,13 @@ router.get('/applications', asyncHandler(async (req, res) => {
 // Master Data: Categories & Locations (existing)
 // =============================================
 router.get('/categories', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_categories')
     .select('*')
     .order('name', { ascending: true });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   res.send({ status: true, categories: data || [] });
@@ -469,14 +469,14 @@ router.post('/categories', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_categories')
     .insert({ name, created_by: req.user.id, is_active: req.body?.isActive !== false })
     .select('*')
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   res.status(201).send({ status: true, category: data });
@@ -487,7 +487,7 @@ router.patch('/categories/:id', asyncHandler(async (req, res) => {
   if (req.body?.name !== undefined) updateDoc.name = String(req.body.name).trim();
   if (req.body?.isActive !== undefined) updateDoc.is_active = Boolean(req.body.isActive);
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_categories')
     .update(updateDoc)
     .eq('id', req.params.id)
@@ -495,7 +495,7 @@ router.patch('/categories/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -506,14 +506,14 @@ router.patch('/categories/:id', asyncHandler(async (req, res) => {
 }));
 
 router.delete('/categories/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_categories')
     .delete()
     .eq('id', req.params.id)
     .select('id');
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -521,13 +521,13 @@ router.delete('/categories/:id', asyncHandler(async (req, res) => {
 }));
 
 router.get('/locations', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_locations')
     .select('*')
     .order('name', { ascending: true });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   res.send({ status: true, locations: data || [] });
@@ -540,14 +540,14 @@ router.post('/locations', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_locations')
     .insert({ name, created_by: req.user.id, is_active: req.body?.isActive !== false })
     .select('*')
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   res.status(201).send({ status: true, location: data });
@@ -558,7 +558,7 @@ router.patch('/locations/:id', asyncHandler(async (req, res) => {
   if (req.body?.name !== undefined) updateDoc.name = String(req.body.name).trim();
   if (req.body?.isActive !== undefined) updateDoc.is_active = Boolean(req.body.isActive);
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_locations')
     .update(updateDoc)
     .eq('id', req.params.id)
@@ -566,7 +566,7 @@ router.patch('/locations/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -577,14 +577,14 @@ router.patch('/locations/:id', asyncHandler(async (req, res) => {
 }));
 
 router.delete('/locations/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_locations')
     .delete()
     .eq('id', req.params.id)
     .select('id');
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -597,8 +597,8 @@ router.delete('/locations/:id', asyncHandler(async (req, res) => {
 
 // --- States ---
 router.get('/states', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_states').select('*').order('name', { ascending: true });
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_states').select('*').order('name', { ascending: true });
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, states: data || [] });
 }));
 
@@ -607,11 +607,11 @@ router.post('/states', asyncHandler(async (req, res) => {
   const code = String(req.body?.code || '').trim() || null;
   if (!name) { res.status(400).send({ status: false, message: 'State name is required' }); return; }
 
-  const { data, error } = await supabase.from('master_states')
+  const { data, error } = await Database.from('master_states')
     .insert({ name, code, created_by: req.user.id, is_active: req.body?.isActive !== false })
     .select('*').single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.status(201).send({ status: true, state: data });
 }));
 
@@ -621,28 +621,28 @@ router.patch('/states/:id', asyncHandler(async (req, res) => {
   if (req.body?.code !== undefined) updateDoc.code = String(req.body.code).trim() || null;
   if (req.body?.isActive !== undefined) updateDoc.is_active = Boolean(req.body.isActive);
 
-  const { data, error } = await supabase.from('master_states')
+  const { data, error } = await Database.from('master_states')
     .update(updateDoc).eq('id', req.params.id).select('*').maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'State not found' }); return; }
   res.send({ status: true, state: data });
 }));
 
 router.delete('/states/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_states').delete().eq('id', req.params.id).select('id');
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_states').delete().eq('id', req.params.id).select('id');
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, deletedCount: data?.length || 0 });
 }));
 
 // --- Districts ---
 router.get('/districts', asyncHandler(async (req, res) => {
   const stateId = String(req.query.stateId || '').trim();
-  let query = supabase.from('master_districts').select('*').order('name', { ascending: true });
+  let query = Database.from('master_districts').select('*').order('name', { ascending: true });
   if (stateId) query = query.eq('state_id', stateId);
 
   const { data, error } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, districts: data || [] });
 }));
 
@@ -651,11 +651,11 @@ router.post('/districts', asyncHandler(async (req, res) => {
   const stateId = req.body?.stateId;
   if (!name || !stateId) { res.status(400).send({ status: false, message: 'name and stateId are required' }); return; }
 
-  const { data, error } = await supabase.from('master_districts')
+  const { data, error } = await Database.from('master_districts')
     .insert({ name, state_id: stateId, created_by: req.user.id, is_active: req.body?.isActive !== false })
     .select('*').single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.status(201).send({ status: true, district: data });
 }));
 
@@ -664,28 +664,28 @@ router.patch('/districts/:id', asyncHandler(async (req, res) => {
   if (req.body?.name !== undefined) updateDoc.name = String(req.body.name).trim();
   if (req.body?.isActive !== undefined) updateDoc.is_active = Boolean(req.body.isActive);
 
-  const { data, error } = await supabase.from('master_districts')
+  const { data, error } = await Database.from('master_districts')
     .update(updateDoc).eq('id', req.params.id).select('*').maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'District not found' }); return; }
   res.send({ status: true, district: data });
 }));
 
 router.delete('/districts/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_districts').delete().eq('id', req.params.id).select('id');
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_districts').delete().eq('id', req.params.id).select('id');
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, deletedCount: data?.length || 0 });
 }));
 
 // --- Tehsils ---
 router.get('/tehsils', asyncHandler(async (req, res) => {
   const districtId = String(req.query.districtId || '').trim();
-  let query = supabase.from('master_tehsils').select('*').order('name', { ascending: true });
+  let query = Database.from('master_tehsils').select('*').order('name', { ascending: true });
   if (districtId) query = query.eq('district_id', districtId);
 
   const { data, error } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, tehsils: data || [] });
 }));
 
@@ -694,11 +694,11 @@ router.post('/tehsils', asyncHandler(async (req, res) => {
   const districtId = req.body?.districtId;
   if (!name || !districtId) { res.status(400).send({ status: false, message: 'name and districtId are required' }); return; }
 
-  const { data, error } = await supabase.from('master_tehsils')
+  const { data, error } = await Database.from('master_tehsils')
     .insert({ name, district_id: districtId, created_by: req.user.id, is_active: req.body?.isActive !== false })
     .select('*').single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.status(201).send({ status: true, tehsil: data });
 }));
 
@@ -707,28 +707,28 @@ router.patch('/tehsils/:id', asyncHandler(async (req, res) => {
   if (req.body?.name !== undefined) updateDoc.name = String(req.body.name).trim();
   if (req.body?.isActive !== undefined) updateDoc.is_active = Boolean(req.body.isActive);
 
-  const { data, error } = await supabase.from('master_tehsils')
+  const { data, error } = await Database.from('master_tehsils')
     .update(updateDoc).eq('id', req.params.id).select('*').maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'Tehsil not found' }); return; }
   res.send({ status: true, tehsil: data });
 }));
 
 router.delete('/tehsils/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_tehsils').delete().eq('id', req.params.id).select('id');
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_tehsils').delete().eq('id', req.params.id).select('id');
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, deletedCount: data?.length || 0 });
 }));
 
 // --- Villages ---
 router.get('/villages', asyncHandler(async (req, res) => {
   const tehsilId = String(req.query.tehsilId || '').trim();
-  let query = supabase.from('master_villages').select('*').order('name', { ascending: true });
+  let query = Database.from('master_villages').select('*').order('name', { ascending: true });
   if (tehsilId) query = query.eq('tehsil_id', tehsilId);
 
   const { data, error } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, villages: data || [] });
 }));
 
@@ -738,11 +738,11 @@ router.post('/villages', asyncHandler(async (req, res) => {
   const pincode = String(req.body?.pincode || '').trim() || null;
   if (!name || !tehsilId) { res.status(400).send({ status: false, message: 'name and tehsilId are required' }); return; }
 
-  const { data, error } = await supabase.from('master_villages')
+  const { data, error } = await Database.from('master_villages')
     .insert({ name, tehsil_id: tehsilId, pincode, created_by: req.user.id, is_active: req.body?.isActive !== false })
     .select('*').single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.status(201).send({ status: true, village: data });
 }));
 
@@ -752,17 +752,17 @@ router.patch('/villages/:id', asyncHandler(async (req, res) => {
   if (req.body?.pincode !== undefined) updateDoc.pincode = String(req.body.pincode).trim() || null;
   if (req.body?.isActive !== undefined) updateDoc.is_active = Boolean(req.body.isActive);
 
-  const { data, error } = await supabase.from('master_villages')
+  const { data, error } = await Database.from('master_villages')
     .update(updateDoc).eq('id', req.params.id).select('*').maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'Village not found' }); return; }
   res.send({ status: true, village: data });
 }));
 
 router.delete('/villages/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_villages').delete().eq('id', req.params.id).select('id');
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_villages').delete().eq('id', req.params.id).select('id');
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, deletedCount: data?.length || 0 });
 }));
 
@@ -770,12 +770,12 @@ router.delete('/villages/:id', asyncHandler(async (req, res) => {
 router.get('/pincodes', asyncHandler(async (req, res) => {
   const districtId = String(req.query.districtId || '').trim();
   const stateId = String(req.query.stateId || '').trim();
-  let query = supabase.from('master_pincodes').select('*').order('pincode', { ascending: true });
+  let query = Database.from('master_pincodes').select('*').order('pincode', { ascending: true });
   if (districtId) query = query.eq('district_id', districtId);
   if (stateId) query = query.eq('state_id', stateId);
 
   const { data, error } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, pincodes: data || [] });
 }));
 
@@ -783,7 +783,7 @@ router.post('/pincodes', asyncHandler(async (req, res) => {
   const pincode = String(req.body?.pincode || '').trim();
   if (!pincode) { res.status(400).send({ status: false, message: 'pincode is required' }); return; }
 
-  const { data, error } = await supabase.from('master_pincodes')
+  const { data, error } = await Database.from('master_pincodes')
     .insert({
       pincode,
       village_id: req.body?.villageId || null,
@@ -794,13 +794,13 @@ router.post('/pincodes', asyncHandler(async (req, res) => {
     })
     .select('*').single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.status(201).send({ status: true, pincode: data });
 }));
 
 router.delete('/pincodes/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_pincodes').delete().eq('id', req.params.id).select('id');
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_pincodes').delete().eq('id', req.params.id).select('id');
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, deletedCount: data?.length || 0 });
 }));
 
@@ -810,8 +810,8 @@ router.delete('/pincodes/:id', asyncHandler(async (req, res) => {
 
 // --- Industries ---
 router.get('/industries', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_industries').select('*').order('name', { ascending: true });
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_industries').select('*').order('name', { ascending: true });
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, industries: data || [] });
 }));
 
@@ -819,11 +819,11 @@ router.post('/industries', asyncHandler(async (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (!name) { res.status(400).send({ status: false, message: 'Industry name is required' }); return; }
 
-  const { data, error } = await supabase.from('master_industries')
+  const { data, error } = await Database.from('master_industries')
     .insert({ name, created_by: req.user.id, is_active: req.body?.isActive !== false })
     .select('*').single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.status(201).send({ status: true, industry: data });
 }));
 
@@ -832,24 +832,24 @@ router.patch('/industries/:id', asyncHandler(async (req, res) => {
   if (req.body?.name !== undefined) updateDoc.name = String(req.body.name).trim();
   if (req.body?.isActive !== undefined) updateDoc.is_active = Boolean(req.body.isActive);
 
-  const { data, error } = await supabase.from('master_industries')
+  const { data, error } = await Database.from('master_industries')
     .update(updateDoc).eq('id', req.params.id).select('*').maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'Industry not found' }); return; }
   res.send({ status: true, industry: data });
 }));
 
 router.delete('/industries/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_industries').delete().eq('id', req.params.id).select('id');
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_industries').delete().eq('id', req.params.id).select('id');
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, deletedCount: data?.length || 0 });
 }));
 
 // --- Sectors ---
 router.get('/sectors', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_sectors').select('*').order('name', { ascending: true });
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_sectors').select('*').order('name', { ascending: true });
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, sectors: data || [] });
 }));
 
@@ -857,11 +857,11 @@ router.post('/sectors', asyncHandler(async (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (!name) { res.status(400).send({ status: false, message: 'Sector name is required' }); return; }
 
-  const { data, error } = await supabase.from('master_sectors')
+  const { data, error } = await Database.from('master_sectors')
     .insert({ name, created_by: req.user.id, is_active: req.body?.isActive !== false })
     .select('*').single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.status(201).send({ status: true, sector: data });
 }));
 
@@ -870,28 +870,28 @@ router.patch('/sectors/:id', asyncHandler(async (req, res) => {
   if (req.body?.name !== undefined) updateDoc.name = String(req.body.name).trim();
   if (req.body?.isActive !== undefined) updateDoc.is_active = Boolean(req.body.isActive);
 
-  const { data, error } = await supabase.from('master_sectors')
+  const { data, error } = await Database.from('master_sectors')
     .update(updateDoc).eq('id', req.params.id).select('*').maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'Sector not found' }); return; }
   res.send({ status: true, sector: data });
 }));
 
 router.delete('/sectors/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_sectors').delete().eq('id', req.params.id).select('id');
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_sectors').delete().eq('id', req.params.id).select('id');
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, deletedCount: data?.length || 0 });
 }));
 
 // --- Skills ---
 router.get('/skills', asyncHandler(async (req, res) => {
   const industryId = String(req.query.industryId || '').trim();
-  let query = supabase.from('master_skills').select('*').order('name', { ascending: true });
+  let query = Database.from('master_skills').select('*').order('name', { ascending: true });
   if (industryId) query = query.eq('industry_id', industryId);
 
   const { data, error } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, skills: data || [] });
 }));
 
@@ -899,7 +899,7 @@ router.post('/skills', asyncHandler(async (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (!name) { res.status(400).send({ status: false, message: 'Skill name is required' }); return; }
 
-  const { data, error } = await supabase.from('master_skills')
+  const { data, error } = await Database.from('master_skills')
     .insert({
       name,
       industry_id: req.body?.industryId || null,
@@ -908,7 +908,7 @@ router.post('/skills', asyncHandler(async (req, res) => {
     })
     .select('*').single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.status(201).send({ status: true, skill: data });
 }));
 
@@ -918,17 +918,17 @@ router.patch('/skills/:id', asyncHandler(async (req, res) => {
   if (req.body?.industryId !== undefined) updateDoc.industry_id = req.body.industryId || null;
   if (req.body?.isActive !== undefined) updateDoc.is_active = Boolean(req.body.isActive);
 
-  const { data, error } = await supabase.from('master_skills')
+  const { data, error } = await Database.from('master_skills')
     .update(updateDoc).eq('id', req.params.id).select('*').maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'Skill not found' }); return; }
   res.send({ status: true, skill: data });
 }));
 
 router.delete('/skills/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase.from('master_skills').delete().eq('id', req.params.id).select('id');
-  if (error) { sendSupabaseError(res, error); return; }
+  const { data, error } = await Database.from('master_skills').delete().eq('id', req.params.id).select('id');
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, deletedCount: data?.length || 0 });
 }));
 
@@ -945,7 +945,7 @@ router.get('/audit-logs', asyncHandler(async (req, res) => {
   const action = String(req.query.action || '').trim();
   const entityType = String(req.query.entityType || '').trim();
 
-  let query = supabase.from('audit_logs')
+  let query = Database.from('audit_logs')
     .select('*', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(from, to);
@@ -955,7 +955,7 @@ router.get('/audit-logs', asyncHandler(async (req, res) => {
   if (entityType) query = query.eq('entity_type', entityType);
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({
     status: true,
@@ -973,7 +973,7 @@ router.get('/audit-logs', asyncHandler(async (req, res) => {
 // Admin Settings
 // =============================================
 router.get('/settings', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('admin_settings')
     .select('*')
     .order('updated_at', { ascending: false })
@@ -982,7 +982,7 @@ router.get('/settings', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -998,14 +998,14 @@ router.get('/settings', asyncHandler(async (req, res) => {
 router.put('/settings', asyncHandler(async (req, res) => {
   const normalizedSettings = normalizeAdminSettings(req.body || {});
 
-  const existingResp = await supabase
+  const existingResp = await Database
     .from('admin_settings')
     .select('id')
     .order('created_at', { ascending: true })
     .limit(1);
 
   if (existingResp.error) {
-    sendSupabaseError(res, existingResp.error);
+    sendDatabaseError(res, existingResp.error);
     return;
   }
 
@@ -1017,20 +1017,20 @@ router.put('/settings', asyncHandler(async (req, res) => {
   };
 
   const result = existingId
-    ? await supabase
+    ? await Database
       .from('admin_settings')
       .update(upsertDoc)
       .eq('id', existingId)
       .select('*')
       .single()
-    : await supabase
+    : await Database
       .from('admin_settings')
       .insert(upsertDoc)
       .select('*')
       .single();
 
   if (result.error) {
-    sendSupabaseError(res, result.error);
+    sendDatabaseError(res, result.error);
     return;
   }
 
@@ -1055,12 +1055,12 @@ router.put('/settings', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/payments', asyncHandler(async (req, res) => {
   const status = String(req.query.status || '').toLowerCase();
-  let query = supabase.from('job_payments').select('*').order('created_at', { ascending: false });
+  let query = Database.from('job_payments').select('*').order('created_at', { ascending: false });
   if (PAYMENT_STATUSES.includes(status)) query = query.eq('status', status);
 
   const { data, error } = await query;
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -1082,7 +1082,7 @@ router.patch('/payments/:id', asyncHandler(async (req, res) => {
     paid_at: status === 'paid' ? new Date().toISOString() : null
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('job_payments')
     .update(updateDoc)
     .eq('id', req.params.id)
@@ -1090,7 +1090,7 @@ router.patch('/payments/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -1103,7 +1103,7 @@ router.patch('/payments/:id', asyncHandler(async (req, res) => {
   if (status === 'failed' || status === 'refunded') jobUpdateDoc.is_paid = false;
 
   if (Object.keys(jobUpdateDoc).length > 0) {
-    await supabase.from('jobs').update(jobUpdateDoc).eq('id', data.job_id);
+    await Database.from('jobs').update(jobUpdateDoc).eq('id', data.job_id);
   }
 
   res.send({ status: true, payment: data });
@@ -1116,8 +1116,8 @@ router.patch('/payments/:id', asyncHandler(async (req, res) => {
 // Each candidate: { name, email, mobile, password, role?, gender?, caste?, religion? }
 // =============================================
 router.post('/bulk-register', asyncHandler(async (req, res) => {
-  if (!supabase) {
-    res.status(503).send({ status: false, message: 'Supabase not configured' });
+  if (!Database) {
+    res.status(503).send({ status: false, message: 'Database not configured' });
     return;
   }
 
@@ -1153,7 +1153,7 @@ router.post('/bulk-register', asyncHandler(async (req, res) => {
     }
 
     // ── Check duplicate ───────────────────────────────────────
-    const { data: existing } = await supabase
+    const { data: existing } = await Database
       .from('users')
       .select('id, email, is_email_verified')
       .eq('email', email)
@@ -1192,7 +1192,7 @@ router.post('/bulk-register', asyncHandler(async (req, res) => {
       otp_expires_at:    null,
     };
 
-    const { data: newUser, error: insertErr } = await supabase
+    const { data: newUser, error: insertErr } = await Database
       .from('users')
       .insert(userPayload)
       .select('id, email, name, role')
@@ -1206,7 +1206,7 @@ router.post('/bulk-register', asyncHandler(async (req, res) => {
 
     try {
       await upsertRoleProfile({
-        supabase,
+        Database,
         role: newUser.role,
         userId: newUser.id,
         reqBody: {}

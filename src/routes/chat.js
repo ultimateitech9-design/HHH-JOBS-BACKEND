@@ -2,7 +2,7 @@ const express = require('express');
 const { ROLES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { asyncHandler, isValidUuid } = require('../utils/helpers');
 const { createNotification } = require('../services/notifications');
 
@@ -52,7 +52,7 @@ const canChatWith = (currentRole, otherRole) => {
 };
 
 router.get('/threads', asyncHandler(async (req, res) => {
-  const { data: rawMessages, error } = await supabase
+  const { data: rawMessages, error } = await Database
     .from('messages')
     .select('*')
     .or(`sender_id.eq.${req.user.id},recipient_id.eq.${req.user.id}`)
@@ -60,7 +60,7 @@ router.get('/threads', asyncHandler(async (req, res) => {
     .limit(300);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -84,13 +84,13 @@ router.get('/threads', asyncHandler(async (req, res) => {
   const otherUserIds = [...threadMap.keys()];
   let usersMap = {};
   if (otherUserIds.length > 0) {
-    const { data: users, error: userErr } = await supabase
+    const { data: users, error: userErr } = await Database
       .from('users')
       .select('id, name, email, role')
       .in('id', otherUserIds);
 
     if (userErr) {
-      sendSupabaseError(res, userErr);
+      sendDatabaseError(res, userErr);
       return;
     }
     usersMap = Object.fromEntries((users || []).map((u) => [u.id, u]));
@@ -114,14 +114,14 @@ router.get('/messages/:userId', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: targetUser, error: targetError } = await supabase
+  const { data: targetUser, error: targetError } = await Database
     .from('users')
     .select('id, role')
     .eq('id', userId)
     .maybeSingle();
 
   if (targetError) {
-    sendSupabaseError(res, targetError);
+    sendDatabaseError(res, targetError);
     return;
   }
   if (!targetUser) {
@@ -134,7 +134,7 @@ router.get('/messages/:userId', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('messages')
     .select('*')
     .or(`and(sender_id.eq.${req.user.id},recipient_id.eq.${userId}),and(sender_id.eq.${userId},recipient_id.eq.${req.user.id})`)
@@ -142,11 +142,11 @@ router.get('/messages/:userId', asyncHandler(async (req, res) => {
     .limit(300);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
-  await supabase
+  await Database
     .from('messages')
     .update({ is_read: true, read_at: new Date().toISOString() })
     .eq('sender_id', userId)
@@ -171,14 +171,14 @@ router.post('/messages/:userId', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: targetUser, error: targetError } = await supabase
+  const { data: targetUser, error: targetError } = await Database
     .from('users')
     .select('id, role')
     .eq('id', userId)
     .maybeSingle();
 
   if (targetError) {
-    sendSupabaseError(res, targetError);
+    sendDatabaseError(res, targetError);
     return;
   }
   if (!targetUser) {
@@ -190,7 +190,7 @@ router.post('/messages/:userId', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('messages')
     .insert({
       sender_id: req.user.id,
@@ -203,7 +203,7 @@ router.post('/messages/:userId', asyncHandler(async (req, res) => {
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 

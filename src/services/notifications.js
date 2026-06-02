@@ -1,5 +1,5 @@
 const { ROLES, USER_STATUSES } = require('../constants');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { pushNotificationEvent } = require('./notificationStream');
 
 const createNotification = async ({
@@ -12,7 +12,7 @@ const createNotification = async ({
 }) => {
   if (!userId || !title || !message) return;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('notifications')
     .insert({
       user_id: userId,
@@ -79,7 +79,7 @@ const isAlertMatch = (job, alert) => {
 };
 
 const notifyMatchingJobAlerts = async (job) => {
-  const { data: alerts } = await supabase
+  const { data: alerts } = await Database
     .from('job_alerts')
     .select('*')
     .eq('is_active', true);
@@ -96,7 +96,7 @@ const notifyMatchingJobAlerts = async (job) => {
     meta: { jobId: job.id, alertId: alert.id }
   }));
 
-  const { data } = await supabase
+  const { data } = await Database
     .from('notifications')
     .insert(payload)
     .select('*');
@@ -114,9 +114,9 @@ const notifyUsersByRoles = async ({
   link = null,
   meta = {}
 }) => {
-  if (!supabase || !title || !message || !Array.isArray(roles) || roles.length === 0) return [];
+  if (!Database || !title || !message || !Array.isArray(roles) || roles.length === 0) return [];
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('users')
     .select('id')
     .in('role', roles)

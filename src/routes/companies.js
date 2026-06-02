@@ -1,6 +1,6 @@
 const express = require('express');
 
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { asyncHandler } = require('../utils/helpers');
 const { JOB_APPROVAL_STATUSES, JOB_STATUSES, ROLES, USER_STATUSES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
@@ -156,7 +156,7 @@ const applyVisiblePortalJobFilters = (query) =>
     .or(`approval_status.is.null,approval_status.neq.${JOB_APPROVAL_STATUSES.REJECTED}`);
 
 const fetchCompanyProfiles = async () => {
-  const response = await supabase
+  const response = await Database
     .from('companies')
     .select(COMPANY_PROFILE_SELECT)
     .eq('is_active', true)
@@ -173,7 +173,7 @@ const fetchCompanyProfiles = async () => {
 
 const fetchPortalJobs = async () => {
   const response = await applyVisiblePortalJobFilters(
-    supabase
+    Database
       .from('jobs')
       .select(PORTAL_JOB_SELECT)
   );
@@ -181,7 +181,7 @@ const fetchPortalJobs = async () => {
   if (!response.error || !isOptionalCompanySchemaError(response.error)) return response;
 
   return applyVisiblePortalJobFilters(
-    supabase
+    Database
       .from('jobs')
       .select(LEGACY_PORTAL_JOB_SELECT)
   );
@@ -190,7 +190,7 @@ const fetchPortalJobs = async () => {
 const getDirectorySourceData = async () => {
   const [companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp] = await Promise.all([
     fetchCompanyProfiles(),
-    supabase
+    Database
       .from('sponsored_companies')
       .select(`
         id,
@@ -208,7 +208,7 @@ const getDirectorySourceData = async () => {
       `)
       .eq('is_active', true)
       .order('sort_order', { ascending: true }),
-    supabase
+    Database
       .from('hr_profiles')
       .select(`
         id,
@@ -234,7 +234,7 @@ const getDirectorySourceData = async () => {
       `)
       .order('created_at', { ascending: false }),
     fetchPortalJobs(),
-    supabase
+    Database
       .from('external_jobs')
       .select(`
         id,
@@ -341,7 +341,7 @@ const mapExternalCompanyJob = (job, brandIndex) => {
 };
 
 router.get('/', asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.status(503).send({
       status: false,
       message: 'Company directory backend is not configured'
@@ -354,27 +354,27 @@ router.get('/', asyncHandler(async (req, res) => {
   const { companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData();
 
   if (companyProfilesResp.error) {
-    sendSupabaseError(res, companyProfilesResp.error);
+    sendDatabaseError(res, companyProfilesResp.error);
     return;
   }
 
   if (sponsorsResp.error) {
-    sendSupabaseError(res, sponsorsResp.error);
+    sendDatabaseError(res, sponsorsResp.error);
     return;
   }
 
   if (profilesResp.error) {
-    sendSupabaseError(res, profilesResp.error);
+    sendDatabaseError(res, profilesResp.error);
     return;
   }
 
   if (portalJobsResp.error) {
-    sendSupabaseError(res, portalJobsResp.error);
+    sendDatabaseError(res, portalJobsResp.error);
     return;
   }
 
   if (externalJobsResp.error) {
-    sendSupabaseError(res, externalJobsResp.error);
+    sendDatabaseError(res, externalJobsResp.error);
     return;
   }
 
@@ -410,7 +410,7 @@ router.get('/', asyncHandler(async (req, res) => {
 }));
 
 router.get('/sponsors', asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.status(503).send({
       status: false,
       message: 'Company directory backend is not configured'
@@ -421,27 +421,27 @@ router.get('/sponsors', asyncHandler(async (req, res) => {
   const { companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData();
 
   if (companyProfilesResp.error) {
-    sendSupabaseError(res, companyProfilesResp.error);
+    sendDatabaseError(res, companyProfilesResp.error);
     return;
   }
 
   if (sponsorsResp.error) {
-    sendSupabaseError(res, sponsorsResp.error);
+    sendDatabaseError(res, sponsorsResp.error);
     return;
   }
 
   if (profilesResp.error) {
-    sendSupabaseError(res, profilesResp.error);
+    sendDatabaseError(res, profilesResp.error);
     return;
   }
 
   if (portalJobsResp.error) {
-    sendSupabaseError(res, portalJobsResp.error);
+    sendDatabaseError(res, portalJobsResp.error);
     return;
   }
 
   if (externalJobsResp.error) {
-    sendSupabaseError(res, externalJobsResp.error);
+    sendDatabaseError(res, externalJobsResp.error);
     return;
   }
 
@@ -534,7 +534,7 @@ router.put('/:companySlug/subscription', companySubscriptionAuth, asyncHandler(a
 }));
 
 router.get('/:companySlug', asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.status(503).send({
       status: false,
       message: 'Company directory backend is not configured'
@@ -546,27 +546,27 @@ router.get('/:companySlug', asyncHandler(async (req, res) => {
   const { companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData();
 
   if (companyProfilesResp.error) {
-    sendSupabaseError(res, companyProfilesResp.error);
+    sendDatabaseError(res, companyProfilesResp.error);
     return;
   }
 
   if (sponsorsResp.error) {
-    sendSupabaseError(res, sponsorsResp.error);
+    sendDatabaseError(res, sponsorsResp.error);
     return;
   }
 
   if (profilesResp.error) {
-    sendSupabaseError(res, profilesResp.error);
+    sendDatabaseError(res, profilesResp.error);
     return;
   }
 
   if (portalJobsResp.error) {
-    sendSupabaseError(res, portalJobsResp.error);
+    sendDatabaseError(res, portalJobsResp.error);
     return;
   }
 
   if (externalJobsResp.error) {
-    sendSupabaseError(res, externalJobsResp.error);
+    sendDatabaseError(res, externalJobsResp.error);
     return;
   }
 

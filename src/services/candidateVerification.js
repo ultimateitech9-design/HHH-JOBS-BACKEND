@@ -1,5 +1,5 @@
 const { ROLES } = require('../constants');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { normalizeEmail } = require('../utils/helpers');
 
 const VERIFIED_STATUSES = new Set(['verified', 'pending', 'rejected', 'unverified']);
@@ -53,7 +53,7 @@ const resolveCandidateUser = async ({ email, mobile, eimagerId }) => {
   const normalizedMobile = normalizeMobile(mobile || '');
 
   if (normalizedEmail) {
-    const { data, error } = await supabase
+    const { data, error } = await Database
       .from('users')
       .select('id, role, status, email, mobile')
       .eq('email', normalizedEmail)
@@ -63,7 +63,7 @@ const resolveCandidateUser = async ({ email, mobile, eimagerId }) => {
   }
 
   if (normalizedMobile) {
-    const { data, error } = await supabase
+    const { data, error } = await Database
       .from('users')
       .select('id, role, status, email, mobile')
       .eq('mobile', normalizedMobile)
@@ -73,14 +73,14 @@ const resolveCandidateUser = async ({ email, mobile, eimagerId }) => {
   }
 
   if (normalizeText(eimagerId)) {
-    const { data: profile, error } = await supabase
+    const { data: profile, error } = await Database
       .from('student_profiles')
       .select('user_id')
       .eq('eimager_id', normalizeText(eimagerId))
       .maybeSingle();
     if (error) throw error;
     if (profile?.user_id) {
-      const { data, error: userError } = await supabase
+      const { data, error: userError } = await Database
         .from('users')
         .select('id, role, status, email, mobile')
         .eq('id', profile.user_id)
@@ -165,7 +165,7 @@ const syncCandidateVerificationFromEimager = async (payload = {}) => {
     ...buildCandidateVerificationPayload(payload)
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('student_profiles')
     .upsert(updatePayload, { onConflict: 'user_id' })
     .select('user_id, eimager_id, verification_status, identity_verified, address_verified, experience_verified, verified_experience_count, verification_synced_at')

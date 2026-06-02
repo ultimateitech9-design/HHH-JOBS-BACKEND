@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES } = require('../constants');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler, clamp, isValidUuid } = require('../utils/helpers');
@@ -158,7 +158,7 @@ const mapCustomization = (row = {}) => ({
 });
 
 const loadTenantNameMap = async () => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('tenants')
     .select('id, name');
 
@@ -184,16 +184,16 @@ const defaultCustomizationRow = (tenant = {}) => ({
 // =============================================
 router.get('/overview', asyncHandler(async (req, res) => {
   const [tenantsResp, ticketsResp, integrationsResp, invoicesResp, checksResp] = await Promise.all([
-    supabase.from('tenants').select('id, status'),
-    supabase.from('platform_support_tickets').select('status'),
-    supabase.from('platform_integrations').select('status'),
-    supabase.from('tenant_invoices').select('status, amount'),
-    supabase.from('platform_security_checks').select('status')
+    Database.from('tenants').select('id, status'),
+    Database.from('platform_support_tickets').select('status'),
+    Database.from('platform_integrations').select('status'),
+    Database.from('tenant_invoices').select('status, amount'),
+    Database.from('platform_security_checks').select('status')
   ]);
 
   const failedResp = [tenantsResp, ticketsResp, integrationsResp, invoicesResp, checksResp].find((item) => item.error);
   if (failedResp?.error) {
-    sendSupabaseError(res, failedResp.error);
+    sendDatabaseError(res, failedResp.error);
     return;
   }
 
@@ -241,13 +241,13 @@ router.get('/overview', asyncHandler(async (req, res) => {
 // Tenants
 // =============================================
 router.get('/tenants', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('tenants')
     .select('*')
     .order('created_at', { ascending: false });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -277,19 +277,19 @@ router.post('/tenants', asyncHandler(async (req, res) => {
     primary_color: '#215479'
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('tenants')
     .insert(insertDoc)
     .select('*')
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
   const customizationSeed = defaultCustomizationRow(data);
-  await supabase
+  await Database
     .from('tenant_customizations')
     .upsert(customizationSeed, { onConflict: 'tenant_id' });
 
@@ -340,7 +340,7 @@ router.patch('/tenants/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('tenants')
     .update(updateDoc)
     .eq('id', tenantId)
@@ -348,7 +348,7 @@ router.patch('/tenants/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -357,7 +357,7 @@ router.patch('/tenants/:id', asyncHandler(async (req, res) => {
   }
 
   if (updateDoc.domain !== undefined) {
-    await supabase
+    await Database
       .from('tenant_customizations')
       .upsert({
         tenant_id: tenantId,
@@ -375,14 +375,14 @@ router.delete('/tenants/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('tenants')
     .delete()
     .eq('id', tenantId)
     .select('id');
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -393,13 +393,13 @@ router.delete('/tenants/:id', asyncHandler(async (req, res) => {
 // Plans and invoices
 // =============================================
 router.get('/plans', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('billing_plans')
     .select('*')
     .order('price', { ascending: true });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -423,14 +423,14 @@ router.post('/plans', asyncHandler(async (req, res) => {
     is_active: req.body?.isActive === undefined ? true : Boolean(req.body.isActive)
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('billing_plans')
     .upsert(payload, { onConflict: 'key' })
     .select('*')
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -439,12 +439,12 @@ router.post('/plans', asyncHandler(async (req, res) => {
 
 router.get('/invoices', asyncHandler(async (req, res) => {
   const [invoiceResp, tenantNameById] = await Promise.all([
-    supabase.from('tenant_invoices').select('*').order('created_at', { ascending: false }),
+    Database.from('tenant_invoices').select('*').order('created_at', { ascending: false }),
     loadTenantNameMap()
   ]);
 
   if (invoiceResp.error) {
-    sendSupabaseError(res, invoiceResp.error);
+    sendDatabaseError(res, invoiceResp.error);
     return;
   }
 
@@ -473,7 +473,7 @@ router.patch('/invoices/:id/status', asyncHandler(async (req, res) => {
   };
   if (req.body?.note !== undefined) updateDoc.note = normalizeString(req.body.note) || null;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('tenant_invoices')
     .update(updateDoc)
     .eq('id', invoiceId)
@@ -481,7 +481,7 @@ router.patch('/invoices/:id/status', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -497,13 +497,13 @@ router.patch('/invoices/:id/status', asyncHandler(async (req, res) => {
 // Integrations
 // =============================================
 router.get('/integrations', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_integrations')
     .select('*')
     .order('name', { ascending: true });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -542,7 +542,7 @@ router.patch('/integrations/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_integrations')
     .update(updateDoc)
     .eq('id', integrationId)
@@ -550,7 +550,7 @@ router.patch('/integrations/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -575,7 +575,7 @@ router.post('/integrations/:id/sync', asyncHandler(async (req, res) => {
     updateDoc.latency_ms = clamp(parseInt(req.body.latencyMs || 0, 10) || 0, 0, 600000);
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_integrations')
     .update(updateDoc)
     .eq('id', integrationId)
@@ -583,7 +583,7 @@ router.post('/integrations/:id/sync', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -599,12 +599,12 @@ router.post('/integrations/:id/sync', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/support-tickets', asyncHandler(async (req, res) => {
   const [ticketResp, tenantNameById] = await Promise.all([
-    supabase.from('platform_support_tickets').select('*').order('updated_at', { ascending: false }),
+    Database.from('platform_support_tickets').select('*').order('updated_at', { ascending: false }),
     loadTenantNameMap()
   ]);
 
   if (ticketResp.error) {
-    sendSupabaseError(res, ticketResp.error);
+    sendDatabaseError(res, ticketResp.error);
     return;
   }
 
@@ -650,7 +650,7 @@ router.patch('/support-tickets/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_support_tickets')
     .update(updateDoc)
     .eq('id', ticketId)
@@ -658,7 +658,7 @@ router.patch('/support-tickets/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -674,13 +674,13 @@ router.patch('/support-tickets/:id', asyncHandler(async (req, res) => {
 // Security checks
 // =============================================
 router.get('/security-checks', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_security_checks')
     .select('*')
     .order('created_at', { ascending: false });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -714,7 +714,7 @@ router.patch('/security-checks/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_security_checks')
     .update(updateDoc)
     .eq('id', checkId)
@@ -722,7 +722,7 @@ router.patch('/security-checks/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -743,14 +743,14 @@ router.get('/customization/:tenantId', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: tenant, error: tenantError } = await supabase
+  const { data: tenant, error: tenantError } = await Database
     .from('tenants')
     .select('id, name, domain, logo_url, primary_color')
     .eq('id', tenantId)
     .maybeSingle();
 
   if (tenantError) {
-    sendSupabaseError(res, tenantError);
+    sendDatabaseError(res, tenantError);
     return;
   }
   if (!tenant) {
@@ -758,28 +758,28 @@ router.get('/customization/:tenantId', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('tenant_customizations')
     .select('*')
     .eq('tenant_id', tenantId)
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
   let row = data;
   if (!row) {
     const seed = defaultCustomizationRow(tenant);
-    const insertedResp = await supabase
+    const insertedResp = await Database
       .from('tenant_customizations')
       .insert(seed)
       .select('*')
       .single();
 
     if (insertedResp.error) {
-      sendSupabaseError(res, insertedResp.error);
+      sendDatabaseError(res, insertedResp.error);
       return;
     }
     row = insertedResp.data;
@@ -795,14 +795,14 @@ router.put('/customization/:tenantId', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: tenant, error: tenantError } = await supabase
+  const { data: tenant, error: tenantError } = await Database
     .from('tenants')
     .select('id, name, domain, logo_url, primary_color')
     .eq('id', tenantId)
     .maybeSingle();
 
   if (tenantError) {
-    sendSupabaseError(res, tenantError);
+    sendDatabaseError(res, tenantError);
     return;
   }
   if (!tenant) {
@@ -810,14 +810,14 @@ router.put('/customization/:tenantId', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: existing, error: existingError } = await supabase
+  const { data: existing, error: existingError } = await Database
     .from('tenant_customizations')
     .select('*')
     .eq('tenant_id', tenantId)
     .maybeSingle();
 
   if (existingError) {
-    sendSupabaseError(res, existingError);
+    sendDatabaseError(res, existingError);
     return;
   }
 
@@ -845,14 +845,14 @@ router.put('/customization/:tenantId', asyncHandler(async (req, res) => {
   delete updateDoc.created_at;
   delete updateDoc.updated_at;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('tenant_customizations')
     .upsert(updateDoc, { onConflict: 'tenant_id' })
     .select('*')
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 

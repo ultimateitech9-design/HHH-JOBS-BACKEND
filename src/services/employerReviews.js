@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const REVIEW_STATUSES = { PENDING: 'pending', APPROVED: 'approved', REJECTED: 'rejected' };
 
@@ -6,7 +6,7 @@ const submitReview = async ({ userId, companyName, companyId = null, rating, tit
   if (!rating || rating < 1 || rating > 5) throw Object.assign(new Error('Rating must be 1-5'), { statusCode: 400 });
   if (!companyName?.trim()) throw Object.assign(new Error('Company name is required'), { statusCode: 400 });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('employer_reviews')
     .insert({
       user_id: userId,
@@ -29,7 +29,7 @@ const submitReview = async ({ userId, companyName, companyId = null, rating, tit
 };
 
 const getCompanyReviews = async ({ companyName, companyId, page = 1, limit = 10 }) => {
-  let query = supabase
+  let query = Database
     .from('employer_reviews')
     .select('id, company_name, rating, title, pros, cons, is_current_employee, designation, is_anonymous, created_at, user_id')
     .eq('status', REVIEW_STATUSES.APPROVED)
@@ -54,7 +54,7 @@ const getCompanyReviews = async ({ companyName, companyId, page = 1, limit = 10 
 };
 
 const getCompanyRatingSummary = async ({ companyName, companyId }) => {
-  let query = supabase
+  let query = Database
     .from('employer_reviews')
     .select('rating')
     .eq('status', REVIEW_STATUSES.APPROVED);
@@ -84,7 +84,7 @@ const moderateReview = async ({ reviewId, status, moderatorId }) => {
     throw Object.assign(new Error('Invalid status'), { statusCode: 400 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('employer_reviews')
     .update({ status, moderated_by: moderatorId, moderated_at: new Date().toISOString() })
     .eq('id', reviewId)
@@ -96,7 +96,7 @@ const moderateReview = async ({ reviewId, status, moderatorId }) => {
 };
 
 const getUserReviews = async (userId) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('employer_reviews')
     .select('*')
     .eq('user_id', userId)

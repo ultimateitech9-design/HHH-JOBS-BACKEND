@@ -4,7 +4,7 @@ This backend implements a plan-driven posting model based on the provided pricin
 
 ## Plan Catalog
 
-Seeded in `supabase/migrations/005_job_pricing_engine.sql`:
+Seeded in the MySQL database catalog:
 
 - `hot_vacancy`: `1650 INR`, 3 locations, unlimited applies, 90-day apply window, 30-day validity, contact visible, boost + branding
 - `classified`: `850 INR`, 3 locations, unlimited applies, 90-day apply window, 30-day validity, contact visible
@@ -48,11 +48,11 @@ GST:
 
 - Purchases stored in `job_plan_purchases`
 - On paid status, credits are granted into `hr_posting_credits`
-- SQL function `grant_hr_credits_for_purchase` ensures idempotent credit grant
+- Backend database function `grant_hr_credits_for_purchase` ensures idempotent credit grant
 
 ### 3. Atomic credit consumption
 
-- SQL function `consume_hr_posting_credit(hr_id, plan_slug)` consumes 1 remaining credit safely
+- Backend database function `consume_hr_posting_credit(hr_id, plan_slug)` consumes 1 remaining credit safely
 - If job insert fails, backend calls `release_hr_posting_credit(credit_id)` rollback
 
 ### 4. Plan-enforced job posting
@@ -108,12 +108,12 @@ Admin only:
 
 ## Migration Impact
 
-`005_job_pricing_engine.sql` adds:
+The database cutover expects these MySQL tables/columns:
 
 - `job_posting_plans`
 - `job_plan_purchases`
 - `hr_posting_credits`
 - new columns in `jobs` for entitlement tracking
-- SQL functions for consume/release/grant credit lifecycle
+- Backend functions for consume/release/grant credit lifecycle
 
-Run migration before deploying backend changes.
+Run `npm run migrate:postgres-to-mysql` before deploying backend changes.

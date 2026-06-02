@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const config = require('../config');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const VAPID_PUBLIC_KEY = config.vapidPublicKey || '';
 const VAPID_PRIVATE_KEY = config.vapidPrivateKey || '';
@@ -63,7 +63,7 @@ const saveSubscription = async ({ userId, subscription }) => {
     throw Object.assign(new Error('Invalid push subscription'), { statusCode: 400 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('push_subscriptions')
     .upsert({
       user_id: userId,
@@ -80,7 +80,7 @@ const saveSubscription = async ({ userId, subscription }) => {
 };
 
 const removeSubscription = async ({ userId, endpoint }) => {
-  const { error } = await supabase
+  const { error } = await Database
     .from('push_subscriptions')
     .delete()
     .eq('user_id', userId)
@@ -93,7 +93,7 @@ const removeSubscription = async ({ userId, endpoint }) => {
 const sendPushToUser = async ({ userId, title, body, icon = '/icons/icon-192x192.png', url = '/', tag = '', data = {} }) => {
   if (!isWebPushConfigured()) return { sent: 0, failed: 0 };
 
-  const { data: subscriptions, error } = await supabase
+  const { data: subscriptions, error } = await Database
     .from('push_subscriptions')
     .select('endpoint, keys')
     .eq('user_id', userId);
@@ -122,7 +122,7 @@ const sendPushToUser = async ({ userId, title, body, icon = '/icons/icon-192x192
   }
 
   if (expiredEndpoints.length > 0) {
-    await supabase
+    await Database
       .from('push_subscriptions')
       .delete()
       .eq('user_id', userId)

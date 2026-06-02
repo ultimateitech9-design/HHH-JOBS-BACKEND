@@ -1,13 +1,13 @@
-const { supabase } = require('../../supabase');
+const { Database } = require('../../db');
 
 const loadExistingFingerprints = async (sourceKey, fingerprints = []) => {
   const [sourceRes, fingerprintRes] = await Promise.all([
-    supabase
+    Database
       .from('external_jobs')
       .select('fingerprint, external_id, id, source_key')
       .eq('source_key', sourceKey),
     fingerprints.length
-      ? supabase
+      ? Database
           .from('external_jobs')
           .select('fingerprint, source_key, external_id')
           .in('fingerprint', fingerprints)

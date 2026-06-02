@@ -1,4 +1,4 @@
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { JOB_STATUSES, JOB_APPROVAL_STATUSES, ROLES } = require('../constants');
 const { normalizeEmail, stripUndefined, toArray, isValidUuid } = require('../utils/helpers');
 const { mapJobFromRow } = require('../utils/mappers');
@@ -67,7 +67,7 @@ const assertRolePlanPostingAllowance = async ({ userId, subscription = null, job
     throw error;
   }
 
-  let query = supabase
+  let query = Database
     .from('jobs')
     .select('id', { count: 'exact', head: true })
     .eq('created_by', userId)
@@ -245,9 +245,9 @@ const validateNewJobPayload = (payload) => {
 const normalizeLogoInput = (value = '') => String(value || '').trim();
 
 const getHrProfileCompanyForUser = async (userId) => {
-  if (!supabase || !userId) return '';
+  if (!Database || !userId) return '';
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_profiles')
     .select('company_name')
     .eq('user_id', userId)
@@ -258,9 +258,9 @@ const getHrProfileCompanyForUser = async (userId) => {
 };
 
 const getHrProfileLogoForUser = async (userId, companyName) => {
-  if (!supabase || !userId) return '';
+  if (!Database || !userId) return '';
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_profiles')
     .select('company_name, logo_url')
     .eq('user_id', userId)
@@ -313,14 +313,14 @@ const resolvePlanForJob = async (job = {}) => {
 };
 
 const assertJobOwnership = async (jobId, reqUser, res) => {
-  const { data: job, error } = await supabase
+  const { data: job, error } = await Database
     .from('jobs')
     .select('*')
     .eq('id', jobId)
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return null;
   }
 
@@ -396,7 +396,7 @@ const createHrJob = async (req, res) => {
     }
   } catch (error) {
     if (error?.code) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
     res.status(error.statusCode || 500).send({ status: false, message: error.message || 'Unable to load HR company profile' });
@@ -520,14 +520,14 @@ const createHrJob = async (req, res) => {
       skills: Array.isArray(payload.skills) ? payload.skills : []
     };
 
-    const { data, error } = await supabase
+    const { data, error } = await Database
       .from('jobs')
       .insert(jobInsert)
       .select('*')
       .single();
 
     if (error) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
@@ -550,7 +550,7 @@ const createHrJob = async (req, res) => {
     });
   } catch (error) {
     if (error?.code) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
@@ -573,7 +573,7 @@ const updateHrJob = async (req, res) => {
     }
   } catch (error) {
     if (error?.code) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
     res.status(error.statusCode || 500).send({ status: false, message: error.message || 'Unable to load HR company profile' });
@@ -695,7 +695,7 @@ const updateHrJob = async (req, res) => {
           payload.company_name !== undefined ? payload.company_name : existingJob.company_name
         );
     } catch (error) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
@@ -707,7 +707,7 @@ const updateHrJob = async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('jobs')
     .update(updateDoc)
     .eq('id', jobId)
@@ -715,7 +715,7 @@ const updateHrJob = async (req, res) => {
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -732,7 +732,7 @@ const deleteHrJob = async (req, res) => {
   const existingJob = await assertJobOwnership(jobId, req.user, res);
   if (!existingJob) return;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('jobs')
     .update({ status: JOB_STATUSES.DELETED, closed_at: new Date().toISOString() })
     .eq('id', jobId)
@@ -740,7 +740,7 @@ const deleteHrJob = async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -755,7 +755,7 @@ const autoCloseExpiredJob = async (job) => {
   if (!job || job.status !== JOB_STATUSES.OPEN) return job;
   if (!isJobExpiredByValidity(job)) return job;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('jobs')
     .update({ status: JOB_STATUSES.CLOSED, closed_at: new Date().toISOString() })
     .eq('id', job.id)
@@ -778,7 +778,7 @@ const autoCloseExpiredJob = async (job) => {
 };
 
 const getJobByIdAndOptionallyTrackView = async (jobId, trackView = false) => {
-  const { data: job, error } = await supabase
+  const { data: job, error } = await Database
     .from('jobs')
     .select('*')
     .eq('id', jobId)
@@ -795,7 +795,7 @@ const getJobByIdAndOptionallyTrackView = async (jobId, trackView = false) => {
   }
 
   const updatedViews = (currentJob.views_count || 0) + 1;
-  const { data: updated, error: updateError } = await supabase
+  const { data: updated, error: updateError } = await Database
     .from('jobs')
     .update({ views_count: updatedViews })
     .eq('id', jobId)

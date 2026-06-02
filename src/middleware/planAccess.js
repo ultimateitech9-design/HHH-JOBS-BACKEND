@@ -1,5 +1,5 @@
 const { ROLES } = require('../constants');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const PLAN_TIERS = {
   free: 0,
@@ -54,7 +54,7 @@ const FEATURE_PLAN_REQUIREMENTS = {
 };
 
 const getUserActiveSubscription = async (userId, audienceRole) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('role_plan_subscriptions')
     .select('*, role_plans(*)')
     .eq('user_id', userId)

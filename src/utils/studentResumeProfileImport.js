@@ -302,7 +302,7 @@ const parseRoleLine = (line = '') => {
 const inferTechStackFromText = (text = '', skillCandidates = []) => {
   const defaultTerms = [
     'Java', 'JavaScript', 'TypeScript', 'React.js', 'Next.js', 'Node.js', 'Express.js', 'Spring Boot',
-    'Spring MVC', 'Spring Security', 'Hibernate/JPA', 'REST APIs', 'MySQL', 'PostgreSQL', 'Supabase',
+    'Spring MVC', 'Spring Security', 'Hibernate/JPA', 'REST APIs', 'MySQL', 'PostgreSQL', 'Database',
     'MongoDB', 'JWT', 'OAuth 2.0', 'RBAC', 'Git', 'Docker', 'Linux', 'CI/CD', 'Razorpay', 'Tailwind CSS'
   ];
   const terms = uniqueList([...skillCandidates, ...defaultTerms]);

@@ -1,6 +1,6 @@
 const { createNotification } = require('./notifications');
 const { notifyUser, CHANNELS } = require('./notificationOrchestrator');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const notifyPlanPurchased = async ({ userId, planName, planSlug, amount, currency = 'INR' }) => {
   const title = `Plan activated: ${planName}`;
@@ -127,7 +127,7 @@ const checkExpiringSubscriptions = async () => {
   const oneDayFromNow = new Date();
   oneDayFromNow.setDate(oneDayFromNow.getDate() + 1);
 
-  const { data: expiringSubs } = await supabase
+  const { data: expiringSubs } = await Database
     .from('role_plan_subscriptions')
     .select('*, role_plans(name, slug)')
     .in('status', ['active', 'trialing'])

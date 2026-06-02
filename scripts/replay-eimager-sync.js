@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { supabase } = require('../src/supabase');
+const { Database } = require('../src/db');
 const { getProfileTableForRole } = require('../src/services/profileTables');
 const { syncHhhCandidateToEimager } = require('../src/services/eimagerSync');
 
@@ -16,11 +16,11 @@ const main = async () => {
     fail('Usage: npm run sync:eimager-user -- user@example.com');
   }
 
-  if (!supabase) {
-    fail('Supabase is not configured in this environment.');
+  if (!Database) {
+    fail('Database is not configured in this environment.');
   }
 
-  const { data: user, error: userError } = await supabase
+  const { data: user, error: userError } = await Database
     .from('users')
     .select('*')
     .eq('email', email)
@@ -38,7 +38,7 @@ const main = async () => {
   let profile = user;
 
   if (profileTable) {
-    const { data: roleProfile, error: profileError } = await supabase
+    const { data: roleProfile, error: profileError } = await Database
       .from(profileTable)
       .select('*')
       .eq('user_id', user.id)

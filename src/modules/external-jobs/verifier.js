@@ -1,6 +1,6 @@
 const _fetchPromise = import('node-fetch').then(({ default: f }) => f).catch(() => globalThis.fetch);
 const fetch = (...args) => _fetchPromise.then((f) => f(...args));
-const { supabase } = require('../../supabase');
+const { Database } = require('../../db');
 
 const ALIVE_STATUSES = new Set([200, 201, 301, 302, 303, 307, 308]);
 const DEAD_STATUSES = new Set([404, 410, 451]);
@@ -102,11 +102,11 @@ const applyVerificationResults = async (verificationResults) => {
   }
 
   const updatePromises = jobUpdates.map(({ id, ...fields }) =>
-    supabase.from('external_jobs').update(fields).eq('id', id)
+    Database.from('external_jobs').update(fields).eq('id', id)
   );
 
   const logInsert = logs.length > 0
-    ? supabase.from('job_verification_logs').insert(logs)
+    ? Database.from('job_verification_logs').insert(logs)
     : Promise.resolve({ error: null });
 
   await Promise.all([...updatePromises, logInsert]);
@@ -119,7 +119,7 @@ const applyVerificationResults = async (verificationResults) => {
 };
 
 const verifyPendingJobs = async () => {
-  const { data: jobs, error } = await supabase
+  const { data: jobs, error } = await Database
     .from('external_jobs')
     .select('id, apply_url, source_key')
     .or(`verification_status.eq.pending,last_verified_at.lt."${new Date(Date.now() - 30 * 60 * 1000).toISOString()}"`)

@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES, USER_STATUSES, JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
-const { supabase, countRows, sendSupabaseError } = require('../supabase');
+const { Database, countRows, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { resetMaintenanceModeCache } = require('../middleware/maintenance');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
@@ -47,7 +47,7 @@ const enrichManagedUsers = async (users = []) => {
   }, {});
 
   await Promise.all(Object.entries(grouped).map(async ([table, ids]) => {
-    const { data } = await supabase
+    const { data } = await Database
       .from(table)
       .select('user_id, meta')
       .in('user_id', ids);
@@ -176,7 +176,7 @@ const sortLogsByTime = (left, right) => {
 // Dashboard
 // =============================================
 router.get('/dashboard', asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.send({
       status: true,
       dashboard: portalStore.superAdmin.dashboard()
@@ -203,9 +203,9 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
     countRows('jobs', (q) => q.neq('status', JOB_STATUSES.DELETED)),
     countRows('applications'),
     countRows('support_tickets', (q) => q.in('status', ['open', 'pending'])),
-    supabase.from('accounts_transactions').select('amount').eq('type', 'credit').eq('status', 'completed'),
+    Database.from('accounts_transactions').select('amount').eq('type', 'credit').eq('status', 'completed'),
     countRows('accounts_subscriptions', (q) => q.eq('status', 'active')),
-    getRoleSyncSummary({ supabase })
+    getRoleSyncSummary({ Database })
   ]);
 
   const monthlyRevenue = totalRevenue.data
@@ -218,26 +218,26 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
         .reduce((sum, t) => sum + Number(t.amount || 0), 0)
     : 0;
 
-  const { data: recentUsers } = await supabase
+  const { data: recentUsers } = await Database
     .from('users')
     .select('id, name, email, role, status, created_at')
     .neq('role', ROLES.CAMPUS_CONNECT)
     .order('created_at', { ascending: false })
     .limit(10);
 
-  const { data: recentJobs } = await supabase
+  const { data: recentJobs } = await Database
     .from('jobs')
     .select('id, title, status, approval_status, created_at')
     .order('created_at', { ascending: false })
     .limit(10);
 
-  const { data: recentTickets } = await supabase
+  const { data: recentTickets } = await Database
     .from('support_tickets')
     .select('id, ticket_number, title, status, priority, created_at')
     .order('created_at', { ascending: false })
     .limit(10);
 
-  const { data: recentLogs } = await supabase
+  const { data: recentLogs } = await Database
     .from('system_logs')
     .select('id, action, module, level, actor_name, details, created_at')
     .order('created_at', { ascending: false })
@@ -270,17 +270,17 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
 }));
 
 router.get('/role-sync-summary', asyncHandler(async (_req, res) => {
-  const summary = await getRoleSyncSummary({ supabase });
+  const summary = await getRoleSyncSummary({ Database });
   res.send({ status: true, summary });
 }));
 
 router.post('/role-sync-repair', asyncHandler(async (req, res) => {
   const role = String(req.body?.role || '').trim().toLowerCase();
   const result = await repairRoleProfiles({
-    supabase,
+    Database,
     roles: role ? [role] : []
   });
-  const summary = await getRoleSyncSummary({ supabase });
+  const summary = await getRoleSyncSummary({ Database });
 
   res.send({
     status: true,
@@ -302,7 +302,7 @@ router.get('/users', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('users')
     .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -313,7 +313,7 @@ router.get('/users', asyncHandler(async (req, res) => {
   if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const users = await enrichManagedUsers(data || []);
   res.send({ status: true, users, total: count || 0, page, limit });
@@ -343,19 +343,19 @@ router.post('/users', asyncHandler(async (req, res) => {
     return res.status(400).send({ status: false, message: passwordError });
   }
 
-  const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+  const { data: authData, error: authError } = await Database.auth.admin.createUser({
     email: String(email).trim().toLowerCase(),
     password: String(password),
     email_confirm: true,
     user_metadata: { name: String(name).trim(), role: String(role).trim() }
   });
 
-  if (authError) { sendSupabaseError(res, authError, 400); return; }
+  if (authError) { sendDatabaseError(res, authError, 400); return; }
 
   const bcrypt = require('bcryptjs');
   const passwordHash = await bcrypt.hash(String(password), 12);
 
-  const { data: user, error: dbError } = await supabase
+  const { data: user, error: dbError } = await Database
     .from('users')
     .insert({
       id: authData.user.id,
@@ -370,21 +370,21 @@ router.post('/users', asyncHandler(async (req, res) => {
     .select('id, name, email, role, status, created_at')
     .single();
 
-  if (dbError) { sendSupabaseError(res, dbError); return; }
+  if (dbError) { sendDatabaseError(res, dbError); return; }
 
   try {
     await upsertRoleProfile({
-      supabase,
+      Database,
       role: normalizedRole,
       userId: user.id,
       reqBody: req.body || {}
     });
   } catch (profileError) {
-    sendSupabaseError(res, profileError);
+    sendDatabaseError(res, profileError);
     return;
   }
 
-  await supabase.from('system_logs').insert({
+  await Database.from('system_logs').insert({
     action: 'user_created',
     module: 'superadmin',
     level: 'info',
@@ -413,14 +413,14 @@ router.patch('/users/:id/status', asyncHandler(async (req, res) => {
     return res.status(400).send({ status: false, message: 'Invalid status value' });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('users')
     .update({ status: newStatus, updated_at: new Date().toISOString() })
     .eq('id', userId)
     .select('id, name, email, role, status')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'User not found' });
 
   res.send({ status: true, user: data });
@@ -429,15 +429,15 @@ router.patch('/users/:id/status', asyncHandler(async (req, res) => {
 router.delete('/users/:id', asyncHandler(async (req, res) => {
   const userId = req.params.id;
 
-  const { data: user } = await supabase.from('users').select('id, email, role').eq('id', userId).maybeSingle();
+  const { data: user } = await Database.from('users').select('id, email, role').eq('id', userId).maybeSingle();
   if (!user) return res.status(404).send({ status: false, message: 'User not found' });
 
-  const { error } = await supabase.from('users').delete().eq('id', userId);
-  if (error) { sendSupabaseError(res, error); return; }
+  const { error } = await Database.from('users').delete().eq('id', userId);
+  if (error) { sendDatabaseError(res, error); return; }
 
-  await supabase.auth.admin.deleteUser(userId).catch(() => {});
+  await Database.auth.admin.deleteUser(userId).catch(() => {});
 
-  await supabase.from('system_logs').insert({
+  await Database.from('system_logs').insert({
     action: 'user_deleted',
     module: 'superadmin',
     level: 'warning',
@@ -459,7 +459,7 @@ router.get('/companies', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('hr_profiles')
     .select(`
       id, company_name, company_website, company_size, location, about, logo_url, is_verified, created_at,
@@ -471,7 +471,7 @@ router.get('/companies', asyncHandler(async (req, res) => {
   if (search) query = query.ilike('company_name', `%${search}%`);
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const companies = data || [];
   const ownerIds = companies
@@ -485,12 +485,12 @@ router.get('/companies', asyncHandler(async (req, res) => {
   let applicationCountByOwner = {};
 
   if (ownerIds.length > 0) {
-    const { data: jobsData, error: jobsError } = await supabase
+    const { data: jobsData, error: jobsError } = await Database
       .from('jobs')
       .select('id, created_by')
       .in('created_by', ownerIds);
 
-    if (jobsError) { sendSupabaseError(res, jobsError); return; }
+    if (jobsError) { sendDatabaseError(res, jobsError); return; }
 
     const jobs = jobsData || [];
     jobCountByOwner = jobs.reduce((acc, job) => {
@@ -504,12 +504,12 @@ router.get('/companies', asyncHandler(async (req, res) => {
     }, {});
 
     if (jobs.length > 0) {
-      const { data: applicationsData, error: applicationsError } = await supabase
+      const { data: applicationsData, error: applicationsError } = await Database
         .from('applications')
         .select('job_id')
         .in('job_id', jobs.map((job) => job.id));
 
-      if (applicationsError) { sendSupabaseError(res, applicationsError); return; }
+      if (applicationsError) { sendDatabaseError(res, applicationsError); return; }
 
       applicationCountByOwner = (applicationsData || []).reduce((acc, application) => {
         const ownerId = jobOwnerById[application.job_id];
@@ -543,7 +543,7 @@ router.get('/campuses', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('colleges')
     .select(`
       id, name, city, state, affiliation, created_at, user_id,
@@ -557,7 +557,7 @@ router.get('/campuses', asyncHandler(async (req, res) => {
   }
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const campuses = data || [];
   const campusIds = campuses.map((campus) => campus.id).filter(Boolean);
@@ -568,14 +568,14 @@ router.get('/campuses', asyncHandler(async (req, res) => {
 
   if (campusIds.length > 0) {
     const [studentsResponse, drivesResponse, connectionsResponse] = await Promise.all([
-      supabase.from('campus_students').select('college_id, is_placed').in('college_id', campusIds),
-      supabase.from('campus_drives').select('college_id, status').in('college_id', campusIds),
-      supabase.from('campus_connections').select('college_id, status').in('college_id', campusIds)
+      Database.from('campus_students').select('college_id, is_placed').in('college_id', campusIds),
+      Database.from('campus_drives').select('college_id, status').in('college_id', campusIds),
+      Database.from('campus_connections').select('college_id, status').in('college_id', campusIds)
     ]);
 
-    if (studentsResponse.error) { sendSupabaseError(res, studentsResponse.error); return; }
-    if (drivesResponse.error) { sendSupabaseError(res, drivesResponse.error); return; }
-    if (connectionsResponse.error) { sendSupabaseError(res, connectionsResponse.error); return; }
+    if (studentsResponse.error) { sendDatabaseError(res, studentsResponse.error); return; }
+    if (drivesResponse.error) { sendDatabaseError(res, drivesResponse.error); return; }
+    if (connectionsResponse.error) { sendDatabaseError(res, connectionsResponse.error); return; }
 
     studentsByCampus = (studentsResponse.data || []).reduce((acc, student) => {
       const key = student.college_id;
@@ -611,21 +611,21 @@ router.get('/campuses', asyncHandler(async (req, res) => {
   }
 
   const [summaryCollegesResponse, summaryStudentsResponse, summaryDrivesResponse, summaryConnectionsResponse] = await Promise.all([
-    supabase
+    Database
       .from('colleges')
       .select(`
         id, user_id,
         users!inner(status)
       `),
-    supabase.from('campus_students').select('is_placed'),
-    supabase.from('campus_drives').select('status'),
-    supabase.from('campus_connections').select('college_id, status')
+    Database.from('campus_students').select('is_placed'),
+    Database.from('campus_drives').select('status'),
+    Database.from('campus_connections').select('college_id, status')
   ]);
 
-  if (summaryCollegesResponse.error) { sendSupabaseError(res, summaryCollegesResponse.error); return; }
-  if (summaryStudentsResponse.error) { sendSupabaseError(res, summaryStudentsResponse.error); return; }
-  if (summaryDrivesResponse.error) { sendSupabaseError(res, summaryDrivesResponse.error); return; }
-  if (summaryConnectionsResponse.error) { sendSupabaseError(res, summaryConnectionsResponse.error); return; }
+  if (summaryCollegesResponse.error) { sendDatabaseError(res, summaryCollegesResponse.error); return; }
+  if (summaryStudentsResponse.error) { sendDatabaseError(res, summaryStudentsResponse.error); return; }
+  if (summaryDrivesResponse.error) { sendDatabaseError(res, summaryDrivesResponse.error); return; }
+  if (summaryConnectionsResponse.error) { sendDatabaseError(res, summaryConnectionsResponse.error); return; }
 
   const summaryColleges = summaryCollegesResponse.data || [];
   const summaryStudents = summaryStudentsResponse.data || [];
@@ -689,7 +689,7 @@ router.get('/jobs', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('jobs')
     .select('id, title, job_title, company_name, status, approval_status, location, job_location, category, applications_count, employment_type, created_at, poster_name, poster_email', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -699,7 +699,7 @@ router.get('/jobs', asyncHandler(async (req, res) => {
   if (search) query = query.ilike('title', `%${search}%`);
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, jobs: data || [], total: count || 0, page, limit });
 }));
@@ -724,14 +724,14 @@ router.patch('/jobs/:id/status', asyncHandler(async (req, res) => {
   const updatePayload = {};
   updatePayload.status = newStatus;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('jobs')
     .update({ ...updatePayload, updated_at: new Date().toISOString() })
     .eq('id', jobId)
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Job not found' });
 
   res.send({ status: true, job: data });
@@ -745,13 +745,13 @@ router.get('/applications', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  const { data, error, count } = await supabase
+  const { data, error, count } = await Database
     .from('applications')
     .select('id, status, created_at, job_id, applicant_id, applicant_name, applicant_email', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const applications = data || [];
   const jobIds = [...new Set(applications.map((application) => application.job_id).filter(Boolean))];
@@ -761,24 +761,24 @@ router.get('/applications', asyncHandler(async (req, res) => {
   let scoresMap = {};
 
   if (jobIds.length > 0) {
-    const { data: jobsData, error: jobsError } = await supabase
+    const { data: jobsData, error: jobsError } = await Database
       .from('jobs')
       .select('id, title, job_title, company_name')
       .in('id', jobIds);
 
-    if (jobsError) { sendSupabaseError(res, jobsError); return; }
+    if (jobsError) { sendDatabaseError(res, jobsError); return; }
 
     jobsMap = Object.fromEntries((jobsData || []).map((job) => [job.id, job]));
   }
 
   if (applicationIds.length > 0) {
-    const { data: scoresData, error: scoresError } = await supabase
+    const { data: scoresData, error: scoresError } = await Database
       .from('ats_checks')
       .select('application_id, score, created_at')
       .in('application_id', applicationIds)
       .order('created_at', { ascending: false });
 
-    if (scoresError) { sendSupabaseError(res, scoresError); return; }
+    if (scoresError) { sendDatabaseError(res, scoresError); return; }
 
     for (const scoreRow of (scoresData || [])) {
       if (!scoresMap[scoreRow.application_id]) {
@@ -809,7 +809,7 @@ router.get('/payments', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  const { data, error, count } = await supabase
+  const { data, error, count } = await Database
     .from('job_plan_purchases')
     .select(`
       id, plan_slug, quantity, total_amount, currency, status, provider, paid_at, created_at,
@@ -818,7 +818,7 @@ router.get('/payments', asyncHandler(async (req, res) => {
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, payments: data || [], total: count || 0, page, limit });
 }));
@@ -827,14 +827,14 @@ router.patch('/payments/:id/status', asyncHandler(async (req, res) => {
   const paymentId = req.params.id;
   const newStatus = String(req.body?.status || '').toLowerCase();
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('job_plan_purchases')
     .update({ status: newStatus, updated_at: new Date().toISOString() })
     .eq('id', paymentId)
     .select('id, plan_slug, status, total_amount')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Payment not found' });
 
   res.send({ status: true, payment: data });
@@ -844,12 +844,12 @@ router.patch('/payments/:id/status', asyncHandler(async (req, res) => {
 // Subscriptions
 // =============================================
 router.get('/subscriptions', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_subscriptions')
     .select('*')
     .order('created_at', { ascending: false });
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, subscriptions: data || [] });
 }));
@@ -864,7 +864,7 @@ router.get('/reports', asyncHandler(async (req, res) => {
     countRows('applications'),
     countRows('support_tickets'),
     countRows('support_tickets', (q) => q.in('status', ['open', 'pending'])),
-    supabase.from('accounts_transactions').select('amount').eq('type', 'credit').eq('status', 'completed')
+    Database.from('accounts_transactions').select('amount').eq('type', 'credit').eq('status', 'completed')
   ]);
 
   const totalRevenue = (revenue.data || []).reduce((sum, t) => sum + Number(t.amount || 0), 0);
@@ -886,13 +886,13 @@ router.get('/reports', asyncHandler(async (req, res) => {
 // Support Tickets
 // =============================================
 router.get('/support-tickets', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_tickets')
     .select('id, ticket_number, title, status, priority, category, requester_name, assignee_name, created_at')
     .order('created_at', { ascending: false })
     .limit(100);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, tickets: data || [] });
 }));
@@ -908,7 +908,7 @@ router.get('/system-logs', asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
 
-  let systemQuery = supabase
+  let systemQuery = Database
     .from('system_logs')
     .select('id, action, module, level, actor_id, actor_name, actor_role, details, created_at')
     .order('created_at', { ascending: false })
@@ -919,27 +919,27 @@ router.get('/system-logs', asyncHandler(async (req, res) => {
 
   const [systemLogsResponse, auditLogsResponse] = await Promise.all([
     systemQuery,
-    supabase
+    Database
       .from('audit_logs')
       .select('id, user_id, action, entity_type, entity_id, details, ip_address, created_at')
       .order('created_at', { ascending: false })
       .limit(SYSTEM_LOG_FETCH_LIMIT)
   ]);
 
-  if (systemLogsResponse.error) { sendSupabaseError(res, systemLogsResponse.error); return; }
-  if (auditLogsResponse.error) { sendSupabaseError(res, auditLogsResponse.error); return; }
+  if (systemLogsResponse.error) { sendDatabaseError(res, systemLogsResponse.error); return; }
+  if (auditLogsResponse.error) { sendDatabaseError(res, auditLogsResponse.error); return; }
 
   const auditRows = auditLogsResponse.data || [];
   const userIds = [...new Set(auditRows.map((row) => row.user_id).filter(Boolean))];
 
   let userLookup = new Map();
   if (userIds.length) {
-    const { data: users, error: usersError } = await supabase
+    const { data: users, error: usersError } = await Database
       .from('users')
       .select('id, name, email, role')
       .in('id', userIds);
 
-    if (usersError) { sendSupabaseError(res, usersError); return; }
+    if (usersError) { sendDatabaseError(res, usersError); return; }
 
     userLookup = new Map((users || []).map((user) => [user.id, user]));
   }
@@ -990,12 +990,12 @@ router.get('/system-logs', asyncHandler(async (req, res) => {
 // Roles & Permissions
 // =============================================
 router.get('/roles-permissions', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('role_permissions')
     .select('*')
     .order('role');
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, roles: data || [] });
 }));
@@ -1012,12 +1012,12 @@ router.put('/roles-permissions', asyncHandler(async (req, res) => {
 
   if (!upserts.length) return res.status(400).send({ status: false, message: 'No valid roles provided' });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('role_permissions')
     .upsert(upserts, { onConflict: 'role' })
     .select('*');
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, roles: data || [] });
 }));
@@ -1026,11 +1026,11 @@ router.put('/roles-permissions', asyncHandler(async (req, res) => {
 // Platform Settings
 // =============================================
 router.get('/settings', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_settings')
     .select('key, value, updated_at');
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const settings = (data || []).reduce((acc, row) => {
     acc[row.key] = row.value;
@@ -1053,12 +1053,12 @@ router.put('/settings', asyncHandler(async (req, res) => {
     updated_at: new Date().toISOString()
   })).filter((e) => e.key);
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_settings')
     .upsert(upserts, { onConflict: 'key' })
     .select('key, value');
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const settings = (data || []).reduce((acc, row) => {
     acc[row.key] = row.value;
@@ -1069,7 +1069,7 @@ router.put('/settings', asyncHandler(async (req, res) => {
     resetMaintenanceModeCache();
   }
 
-  await supabase.from('system_logs').insert({
+  await Database.from('system_logs').insert({
     action: 'settings_updated',
     module: 'superadmin',
     level: 'info',

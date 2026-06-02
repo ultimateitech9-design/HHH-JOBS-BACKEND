@@ -6,7 +6,7 @@ const config = require('../config');
 const { OTP_EXPIRY_MINUTES, ROLES, USER_STATUSES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
-const { supabase, ensureServerConfig, sendSupabaseError } = require('../supabase');
+const { Database, ensureDatabaseConfig, sendDatabaseError } = require('../db');
 const { isValidUuid, asyncHandler, normalizeEmail, stripUndefined } = require('../utils/helpers');
 const { createNotification } = require('../services/notifications');
 const { notifyUser } = require('../services/notificationOrchestrator');
@@ -46,7 +46,7 @@ router.use(requireAuth, requireActiveUser, requireRole(ROLES.CAMPUS_CONNECT, ROL
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const getCollegeId = async (userId) => {
-  const { data } = await supabase
+  const { data } = await Database
     .from('colleges')
     .select('id')
     .eq('user_id', userId)
@@ -55,7 +55,7 @@ const getCollegeId = async (userId) => {
 };
 
 const ensureCollegeProfile = async (userId) => {
-  let { data, error } = await supabase
+  let { data, error } = await Database
     .from('colleges')
     .select('*')
     .eq('user_id', userId)
@@ -64,7 +64,7 @@ const ensureCollegeProfile = async (userId) => {
   if (error) return { data: null, error };
 
   if (!data) {
-    const inserted = await supabase
+    const inserted = await Database
       .from('colleges')
       .insert({ user_id: userId })
       .select('*')
@@ -84,7 +84,7 @@ const buildPortalUrl = (path = '/') => {
 };
 
 const getCollegeProfileByUserId = async (userId) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('colleges')
     .select('*')
     .eq('user_id', userId)
@@ -183,7 +183,7 @@ const buildCampusApplicationUpdatePayload = ({
 const markCampusStudentPlaced = async ({ drive, application, nextStatus }) => {
   if (nextStatus !== 'selected' || !application?.campus_student_id) return;
 
-  await supabase
+  await Database
     .from('campus_students')
     .update({
       is_placed: true,
@@ -311,7 +311,7 @@ const pickPreferredConnection = (current, candidate) => {
 
 const listCompanyDirectoryForCollege = async ({ collegeId }) => {
   const [profilesResponse, connectionsResponse, jobsResponse] = await Promise.all([
-    supabase
+    Database
       .from('hr_profiles')
       .select(`
         user_id,
@@ -328,11 +328,11 @@ const listCompanyDirectoryForCollege = async ({ collegeId }) => {
         updated_at,
         users!inner(id, name, email, status, is_hr_approved, created_at, last_login_at)
       `),
-    supabase
+    Database
       .from('campus_connections')
       .select('*')
       .eq('college_id', collegeId),
-    supabase
+    Database
       .from('jobs')
       .select('created_by, company_name, status, valid_till')
       .eq('status', 'open')
@@ -663,7 +663,7 @@ const buildCampusStatusNotification = ({ drive, nextStatus, currentRound = '' } 
   };
 };
 const loadDriveApplicationOverview = async ({ collegeId, driveId }) => {
-  const applicationsResponse = await supabase
+  const applicationsResponse = await Database
     .from('campus_drive_applications')
     .select('*')
     .eq('college_id', collegeId)
@@ -697,13 +697,13 @@ const loadDriveApplicationOverview = async ({ collegeId, driveId }) => {
 
   const [campusStudentsResponse, usersResponse] = await Promise.all([
     campusStudentIds.length > 0
-      ? supabase
+      ? Database
         .from('campus_students')
         .select('id, name, email, phone, degree, branch, graduation_year, cgpa, is_placed')
         .in('id', campusStudentIds)
       : Promise.resolve({ data: [], error: null }),
     userIds.length > 0
-      ? supabase
+      ? Database
         .from('users')
         .select('id, name, email, mobile')
         .in('id', userIds)
@@ -755,7 +755,7 @@ const loadDriveApplicationOverview = async ({ collegeId, driveId }) => {
 const findAuthUserByEmail = async (email) => {
   const perPage = 200;
   for (let page = 1; page <= 10; page += 1) {
-    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage });
+    const { data, error } = await Database.auth.admin.listUsers({ page, perPage });
     if (error) throw error;
 
     const users = Array.isArray(data?.users) ? data.users : [];
@@ -774,7 +774,7 @@ const ensureCampusStudentUser = async ({ email, name, phone }) => {
   let authUser = null;
   let created = false;
 
-  const { data: createdUserResp, error: authCreateError } = await supabase.auth.admin.createUser({
+  const { data: createdUserResp, error: authCreateError } = await Database.auth.admin.createUser({
     email,
     password: temporaryPassword,
     email_confirm: false,
@@ -793,7 +793,7 @@ const ensureCampusStudentUser = async ({ email, name, phone }) => {
     authUser = await findAuthUserByEmail(email);
     if (!authUser?.id) throw authCreateError;
 
-    const { data: updatedAuthUser, error: authUpdateError } = await supabase.auth.admin.updateUserById(authUser.id, {
+    const { data: updatedAuthUser, error: authUpdateError } = await Database.auth.admin.updateUserById(authUser.id, {
       password: temporaryPassword,
       email_confirm: false,
       user_metadata: {
@@ -810,7 +810,7 @@ const ensureCampusStudentUser = async ({ email, name, phone }) => {
     created = true;
   }
 
-  const { data: userRecord, error: userUpsertError } = await supabase
+  const { data: userRecord, error: userUpsertError } = await Database
     .from('users')
     .upsert({
       id: authUser.id,
@@ -832,7 +832,7 @@ const ensureCampusStudentUser = async ({ email, name, phone }) => {
   if (userUpsertError) throw userUpsertError;
 
   await ensureRoleProfile({
-    supabase,
+    Database,
     role: ROLES.STUDENT,
     userId: userRecord.id,
     reqBody: {
@@ -850,7 +850,7 @@ const ensureCampusStudentUser = async ({ email, name, phone }) => {
   };
 };
 const notifyEligibleCampusStudents = async ({ collegeId, drive, actorUserId }) => {
-  const { data: students, error } = await supabase
+  const { data: students, error } = await Database
     .from('campus_students')
     .select('id, name, branch, cgpa, is_placed, student_user_id, account_status')
     .eq('college_id', collegeId)
@@ -879,7 +879,7 @@ const notifyEligibleCampusStudents = async ({ collegeId, drive, actorUserId }) =
     }))
   );
 
-  await supabase
+  await Database
     .from('campus_students')
     .update({ last_drive_notification_at: new Date().toISOString() })
     .eq('college_id', collegeId)
@@ -908,18 +908,18 @@ const notifyEligibleCampusStudents = async ({ collegeId, drive, actorUserId }) =
 // ── College Profile ────────────────────────────────────────────────────────────
 
 router.get('/profile', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const userId = req.user.id;
   const { data, error } = await ensureCollegeProfile(userId);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, profile: data });
 }));
 
 router.put('/profile', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const userId = req.user.id;
 
@@ -938,13 +938,13 @@ router.put('/profile', asyncHandler(async (req, res) => {
     placement_officer_name: req.body?.placementOfficerName || undefined
   });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('colleges')
     .upsert(payload, { onConflict: 'user_id' })
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, profile: data });
 }));
@@ -954,7 +954,7 @@ router.use(requireCampusService);
 // ── Students ──────────────────────────────────────────────────────────────────
 
 router.get('/students', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) {
@@ -970,7 +970,7 @@ router.get('/students', asyncHandler(async (req, res) => {
   const graduationYear = req.query.graduationYear ? parseInt(req.query.graduationYear, 10) : null;
   const isPlaced = req.query.isPlaced !== undefined ? req.query.isPlaced === 'true' : null;
 
-  let query = supabase
+  let query = Database
     .from('campus_students')
     .select('*', { count: 'exact' })
     .eq('college_id', collegeId)
@@ -984,7 +984,7 @@ router.get('/students', asyncHandler(async (req, res) => {
 
   const { data, error, count } = await query;
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({
     status: true,
@@ -997,7 +997,7 @@ router.get('/students', asyncHandler(async (req, res) => {
 }));
 
 router.post('/students/import', requirePlanFeature('campus.bulk_student_upload'), upload.single('csv'), asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) {
@@ -1049,14 +1049,14 @@ router.post('/students/import', requirePlanFeature('campus.bulk_student_upload')
   const emailList = preparedRows.map((student) => student.email);
 
   const [collegeResp, existingCampusResp, existingUsersResp] = await Promise.all([
-    supabase.from('colleges').select('id, name').eq('id', collegeId).maybeSingle(),
-    supabase.from('campus_students').select('*').eq('college_id', collegeId).in('email', emailList),
-    supabase.from('users').select('id, email, role, status, is_email_verified').in('email', emailList)
+    Database.from('colleges').select('id, name').eq('id', collegeId).maybeSingle(),
+    Database.from('campus_students').select('*').eq('college_id', collegeId).in('email', emailList),
+    Database.from('users').select('id, email, role, status, is_email_verified').in('email', emailList)
   ]);
 
-  if (collegeResp.error) { sendSupabaseError(res, collegeResp.error); return; }
-  if (existingCampusResp.error) { sendSupabaseError(res, existingCampusResp.error); return; }
-  if (existingUsersResp.error) { sendSupabaseError(res, existingUsersResp.error); return; }
+  if (collegeResp.error) { sendDatabaseError(res, collegeResp.error); return; }
+  if (existingCampusResp.error) { sendDatabaseError(res, existingCampusResp.error); return; }
+  if (existingUsersResp.error) { sendDatabaseError(res, existingUsersResp.error); return; }
 
   const collegeName = collegeResp.data?.name || 'Your college';
   const existingCampusByEmail = new Map((existingCampusResp.data || []).map((student) => [normalizeEmail(student.email), student]));
@@ -1127,7 +1127,7 @@ router.post('/students/import', requirePlanFeature('campus.bulk_student_upload')
 
     if (resolvedUser?.id) {
       await ensureRoleProfile({
-        supabase,
+        Database,
         role: resolvedUser.role || ROLES.STUDENT,
         userId: resolvedUser.id,
         reqBody: {
@@ -1161,12 +1161,12 @@ router.post('/students/import', requirePlanFeature('campus.bulk_student_upload')
     });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('campus_students')
     .upsert(studentPayloads, { onConflict: 'college_id,email', ignoreDuplicates: false })
     .select('id');
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.status(201).send({
     status: true,
@@ -1182,7 +1182,7 @@ router.post('/students/import', requirePlanFeature('campus.bulk_student_upload')
 }));
 
 router.patch('/students/:id', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
@@ -1201,7 +1201,7 @@ router.patch('/students/:id', asyncHandler(async (req, res) => {
     cgpa: req.body?.cgpa ? parseFloat(req.body.cgpa) : undefined
   });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('campus_students')
     .update(payload)
     .eq('id', id)
@@ -1209,14 +1209,14 @@ router.patch('/students/:id', asyncHandler(async (req, res) => {
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'Student not found.' }); return; }
 
   res.send({ status: true, student: data });
 }));
 
 router.delete('/students/:id', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
@@ -1224,13 +1224,13 @@ router.delete('/students/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid student id.' }); return; }
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('campus_students')
     .delete()
     .eq('id', id)
     .eq('college_id', collegeId);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, message: 'Student removed.' });
 }));
@@ -1238,24 +1238,24 @@ router.delete('/students/:id', asyncHandler(async (req, res) => {
 // ── Campus Drives ─────────────────────────────────────────────────────────────
 
 router.get('/drives', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('campus_drives')
     .select('*')
     .eq('college_id', collegeId)
     .order('drive_date', { ascending: false });
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   let driveCounts = {};
   const driveIds = (data || []).map((drive) => drive.id).filter(Boolean);
 
   if (driveIds.length > 0) {
-    const applicationsResponse = await supabase
+    const applicationsResponse = await Database
       .from('campus_drive_applications')
       .select('drive_id, status')
       .eq('college_id', collegeId)
@@ -1263,7 +1263,7 @@ router.get('/drives', asyncHandler(async (req, res) => {
 
     if (applicationsResponse.error) {
       if (!isMissingCampusDriveApplicationsTable(applicationsResponse.error)) {
-        sendSupabaseError(res, applicationsResponse.error);
+        sendDatabaseError(res, applicationsResponse.error);
         return;
       }
     } else {
@@ -1297,7 +1297,7 @@ router.get('/drives', asyncHandler(async (req, res) => {
 }));
 
 router.post('/drives', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
@@ -1328,7 +1328,7 @@ router.post('/drives', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('campus_drives')
     .insert({
       college_id: collegeId,
@@ -1349,7 +1349,7 @@ router.post('/drives', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const eligibleStudents = await countEligibleCampusStudentsForDrive({
     collegeId,
@@ -1372,7 +1372,7 @@ router.post('/drives', asyncHandler(async (req, res) => {
 }));
 
 router.patch('/drives/:id', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
@@ -1380,14 +1380,14 @@ router.patch('/drives/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid drive id.' }); return; }
 
-  const existingResponse = await supabase
+  const existingResponse = await Database
     .from('campus_drives')
     .select('*')
     .eq('id', id)
     .eq('college_id', collegeId)
     .maybeSingle();
 
-  if (existingResponse.error) { sendSupabaseError(res, existingResponse.error); return; }
+  if (existingResponse.error) { sendDatabaseError(res, existingResponse.error); return; }
   if (!existingResponse.data) { res.status(404).send({ status: false, message: 'Drive not found.' }); return; }
 
   const existingDrive = existingResponse.data;
@@ -1445,7 +1445,7 @@ router.patch('/drives/:id', asyncHandler(async (req, res) => {
         : undefined)
   });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('campus_drives')
     .update(payload)
     .eq('id', id)
@@ -1453,14 +1453,14 @@ router.patch('/drives/:id', asyncHandler(async (req, res) => {
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'Drive not found.' }); return; }
 
   res.send({ status: true, drive: data });
 }));
 
 router.get('/drives/:id/applications', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
@@ -1468,14 +1468,14 @@ router.get('/drives/:id/applications', asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid drive id.' }); return; }
 
-  const driveResponse = await supabase
+  const driveResponse = await Database
     .from('campus_drives')
     .select('*')
     .eq('id', id)
     .eq('college_id', collegeId)
     .maybeSingle();
 
-  if (driveResponse.error) { sendSupabaseError(res, driveResponse.error); return; }
+  if (driveResponse.error) { sendDatabaseError(res, driveResponse.error); return; }
   if (!driveResponse.data) { res.status(404).send({ status: false, message: 'Drive not found.' }); return; }
 
   try {
@@ -1491,12 +1491,12 @@ router.get('/drives/:id/applications', asyncHandler(async (req, res) => {
       summary: overview.summary
     });
   } catch (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
   }
 }));
 
 router.patch('/drives/:driveId/applications', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
@@ -1535,13 +1535,13 @@ router.patch('/drives/:driveId/applications', asyncHandler(async (req, res) => {
   }
 
   const [driveResponse, applicationsResponse] = await Promise.all([
-    supabase
+    Database
       .from('campus_drives')
       .select('*')
       .eq('id', driveId)
       .eq('college_id', collegeId)
       .maybeSingle(),
-    supabase
+    Database
       .from('campus_drive_applications')
       .select('*')
       .eq('drive_id', driveId)
@@ -1549,13 +1549,13 @@ router.patch('/drives/:driveId/applications', asyncHandler(async (req, res) => {
       .in('id', applicationIds)
   ]);
 
-  if (driveResponse.error) { sendSupabaseError(res, driveResponse.error); return; }
+  if (driveResponse.error) { sendDatabaseError(res, driveResponse.error); return; }
   if (applicationsResponse.error) {
     if (isMissingCampusDriveApplicationsTable(applicationsResponse.error)) {
       res.status(503).send({ status: false, message: 'Campus drive workflow tables are not available yet.' });
       return;
     }
-    sendSupabaseError(res, applicationsResponse.error);
+    sendDatabaseError(res, applicationsResponse.error);
     return;
   }
   if (!driveResponse.data) { res.status(404).send({ status: false, message: 'Drive not found.' }); return; }
@@ -1574,7 +1574,7 @@ router.patch('/drives/:driveId/applications', asyncHandler(async (req, res) => {
       reviewerUserId: req.user.id
     });
 
-    const updateResponse = await supabase
+    const updateResponse = await Database
       .from('campus_drive_applications')
       .update(updatePayload)
       .eq('id', existingApplication.id)
@@ -1584,7 +1584,7 @@ router.patch('/drives/:driveId/applications', asyncHandler(async (req, res) => {
       .single();
 
     if (updateResponse.error) {
-      sendSupabaseError(res, updateResponse.error);
+      sendDatabaseError(res, updateResponse.error);
       return;
     }
 
@@ -1616,7 +1616,7 @@ router.patch('/drives/:driveId/applications', asyncHandler(async (req, res) => {
 }));
 
 router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
@@ -1628,13 +1628,13 @@ router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async 
   }
 
   const [driveResponse, applicationResponse] = await Promise.all([
-    supabase
+    Database
       .from('campus_drives')
       .select('*')
       .eq('id', driveId)
       .eq('college_id', collegeId)
       .maybeSingle(),
-    supabase
+    Database
       .from('campus_drive_applications')
       .select('*')
       .eq('id', applicationId)
@@ -1643,13 +1643,13 @@ router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async 
       .maybeSingle()
   ]);
 
-  if (driveResponse.error) { sendSupabaseError(res, driveResponse.error); return; }
+  if (driveResponse.error) { sendDatabaseError(res, driveResponse.error); return; }
   if (applicationResponse.error) {
     if (isMissingCampusDriveApplicationsTable(applicationResponse.error)) {
       res.status(503).send({ status: false, message: 'Campus drive workflow tables are not available yet.' });
       return;
     }
-    sendSupabaseError(res, applicationResponse.error);
+    sendDatabaseError(res, applicationResponse.error);
     return;
   }
   if (!driveResponse.data) { res.status(404).send({ status: false, message: 'Drive not found.' }); return; }
@@ -1668,7 +1668,7 @@ router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async 
     reviewerUserId: req.user.id
   });
 
-  const updateResponse = await supabase
+  const updateResponse = await Database
     .from('campus_drive_applications')
     .update(updatePayload)
     .eq('id', applicationId)
@@ -1677,7 +1677,7 @@ router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async 
     .select('*')
     .single();
 
-  if (updateResponse.error) { sendSupabaseError(res, updateResponse.error); return; }
+  if (updateResponse.error) { sendDatabaseError(res, updateResponse.error); return; }
 
   const updatedApplication = updateResponse.data;
 
@@ -1702,7 +1702,7 @@ router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async 
 }));
 
 router.delete('/drives/:id', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
@@ -1710,13 +1710,13 @@ router.delete('/drives/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid drive id.' }); return; }
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('campus_drives')
     .delete()
     .eq('id', id)
     .eq('college_id', collegeId);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, message: 'Drive deleted.' });
 }));
@@ -1724,24 +1724,24 @@ router.delete('/drives/:id', asyncHandler(async (req, res) => {
 // ── Company Connections ───────────────────────────────────────────────────────
 
 router.get('/connections', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('campus_connections')
     .select('*')
     .eq('college_id', collegeId)
     .order('created_at', { ascending: false });
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, connections: data || [] });
 }));
 
 router.get('/connections/directory', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
@@ -1759,15 +1759,15 @@ router.get('/connections/directory', asyncHandler(async (req, res) => {
       }
     });
   } catch (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
   }
 }));
 
 router.post('/connections', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeProfileResponse = await getCollegeProfileByUserId(req.user.id);
-  if (collegeProfileResponse.error) { sendSupabaseError(res, collegeProfileResponse.error); return; }
+  if (collegeProfileResponse.error) { sendDatabaseError(res, collegeProfileResponse.error); return; }
   if (!collegeProfileResponse.data) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
   const { companyUserId, message } = req.body || {};
@@ -1776,7 +1776,7 @@ router.post('/connections', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: companyProfile, error: companyProfileError } = await supabase
+  const { data: companyProfile, error: companyProfileError } = await Database
     .from('hr_profiles')
     .select(`
       user_id,
@@ -1788,7 +1788,7 @@ router.post('/connections', asyncHandler(async (req, res) => {
     .eq('user_id', companyUserId)
     .maybeSingle();
 
-  if (companyProfileError) { sendSupabaseError(res, companyProfileError); return; }
+  if (companyProfileError) { sendDatabaseError(res, companyProfileError); return; }
 
   const companyUser = Array.isArray(companyProfile?.users) ? companyProfile.users[0] : companyProfile?.users;
   if (!companyProfile || !companyUser) { res.status(404).send({ status: false, message: 'Company contact not found.' }); return; }
@@ -1799,14 +1799,14 @@ router.post('/connections', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: existingConnection, error: existingConnectionError } = await supabase
+  const { data: existingConnection, error: existingConnectionError } = await Database
     .from('campus_connections')
     .select('*')
     .eq('college_id', collegeProfileResponse.data.id)
     .eq('company_user_id', companyUserId)
     .maybeSingle();
 
-  if (existingConnectionError) { sendSupabaseError(res, existingConnectionError); return; }
+  if (existingConnectionError) { sendDatabaseError(res, existingConnectionError); return; }
 
   if (existingConnection?.status === 'accepted') {
     res.status(409).send({ status: false, message: 'This company is already connected to your college.' });
@@ -1832,7 +1832,7 @@ router.post('/connections', asyncHandler(async (req, res) => {
   };
 
   const upsertResponse = existingConnection
-    ? await supabase
+    ? await Database
       .from('campus_connections')
       .update({
         ...payload,
@@ -1842,13 +1842,13 @@ router.post('/connections', asyncHandler(async (req, res) => {
       .eq('id', existingConnection.id)
       .select('*')
       .single()
-    : await supabase
+    : await Database
       .from('campus_connections')
       .insert(payload)
       .select('*')
       .single();
 
-  if (upsertResponse.error) { sendSupabaseError(res, upsertResponse.error); return; }
+  if (upsertResponse.error) { sendDatabaseError(res, upsertResponse.error); return; }
 
   const connection = upsertResponse.data;
   const preview = `${collegeProfileResponse.data.name || 'A college'} invited your company to collaborate on campus hiring through HHH Jobs.`;
@@ -1885,7 +1885,7 @@ router.post('/connections', asyncHandler(async (req, res) => {
 }));
 
 router.delete('/connections/:id', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
@@ -1893,14 +1893,14 @@ router.delete('/connections/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid connection id.' }); return; }
 
-  const connectionResponse = await supabase
+  const connectionResponse = await Database
     .from('campus_connections')
     .select('*')
     .eq('id', id)
     .eq('college_id', collegeId)
     .maybeSingle();
 
-  if (connectionResponse.error) { sendSupabaseError(res, connectionResponse.error); return; }
+  if (connectionResponse.error) { sendDatabaseError(res, connectionResponse.error); return; }
   if (!connectionResponse.data) { res.status(404).send({ status: false, message: 'Connection not found.' }); return; }
 
   if (connectionResponse.data.initiation_source !== CONNECTION_SOURCE.COLLEGE || connectionResponse.data.status !== 'pending') {
@@ -1908,7 +1908,7 @@ router.delete('/connections/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const deleteResponse = await supabase
+  const deleteResponse = await Database
     .from('campus_connections')
     .delete()
     .eq('id', id)
@@ -1916,18 +1916,18 @@ router.delete('/connections/:id', asyncHandler(async (req, res) => {
     .select('id')
     .maybeSingle();
 
-  if (deleteResponse.error) { sendSupabaseError(res, deleteResponse.error); return; }
+  if (deleteResponse.error) { sendDatabaseError(res, deleteResponse.error); return; }
 
   res.send({ status: true, id, message: 'Invite removed.' });
 }));
 
 router.patch('/connections/:id', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
   const collegeProfileResponse = await getCollegeProfileByUserId(req.user.id);
-  if (collegeProfileResponse.error) { sendSupabaseError(res, collegeProfileResponse.error); return; }
+  if (collegeProfileResponse.error) { sendDatabaseError(res, collegeProfileResponse.error); return; }
 
   const { id } = req.params;
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid connection id.' }); return; }
@@ -1938,7 +1938,7 @@ router.patch('/connections/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('campus_connections')
     .update({ status, responded_at: new Date().toISOString() })
     .eq('id', id)
@@ -1946,7 +1946,7 @@ router.patch('/connections/:id', asyncHandler(async (req, res) => {
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) { res.status(404).send({ status: false, message: 'Connection not found.' }); return; }
 
   const source = data.initiation_source || CONNECTION_SOURCE.COMPANY;
@@ -1996,18 +1996,18 @@ router.patch('/connections/:id', asyncHandler(async (req, res) => {
 // ── Placement Statistics ──────────────────────────────────────────────────────
 
 router.get('/stats', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
   const [studentsResp, drivesResp, connectionsResp] = await Promise.all([
-    supabase.from('campus_students').select('is_placed, placed_salary, graduation_year, branch').eq('college_id', collegeId),
-    supabase.from('campus_drives').select('status, company_name, drive_date').eq('college_id', collegeId),
-    supabase.from('campus_connections').select('status').eq('college_id', collegeId)
+    Database.from('campus_students').select('is_placed, placed_salary, graduation_year, branch').eq('college_id', collegeId),
+    Database.from('campus_drives').select('status, company_name, drive_date').eq('college_id', collegeId),
+    Database.from('campus_connections').select('status').eq('college_id', collegeId)
   ]);
 
-  if (studentsResp.error) { sendSupabaseError(res, studentsResp.error); return; }
+  if (studentsResp.error) { sendDatabaseError(res, studentsResp.error); return; }
 
   const students = studentsResp.data || [];
   const drives = drivesResp.data || [];
@@ -2062,18 +2062,18 @@ router.get('/stats', asyncHandler(async (req, res) => {
 // ── Placement Report Export ───────────────────────────────────────────────────
 
 router.get('/reports/export', requirePlanFeature('campus.reports_export'), asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  const { data: students, error } = await supabase
+  const { data: students, error } = await Database
     .from('campus_students')
     .select('*')
     .eq('college_id', collegeId)
     .order('name', { ascending: true });
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const rows = (students || []).map((s) => [
     s.name || '',

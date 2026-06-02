@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES, USER_STATUSES, JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
-const { supabase, countRows, sendSupabaseError } = require('../supabase');
+const { Database, countRows, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler, normalizeEmail } = require('../utils/helpers');
@@ -88,7 +88,7 @@ const getProfileUser = (profile = {}) =>
   Array.isArray(profile.users) ? profile.users[0] : profile.users;
 
 const listRegisteredHrCompanies = async () => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_profiles')
     .select(`
       user_id,
@@ -339,7 +339,7 @@ const persistPublishedDataEntryJob = async ({ entry, job, registeredCompany }) =
     publishedAt: currentData.publishedAt || new Date().toISOString()
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('dataentry_entries')
     .update({
       data: nextData,
@@ -366,7 +366,7 @@ const publishDataEntryJobForHr = async ({
   let created = false;
 
   if (publishedJobId) {
-    const updatedJob = await supabase
+    const updatedJob = await Database
       .from('jobs')
       .update(preparedJob.jobUpdate)
       .eq('id', publishedJobId)
@@ -378,7 +378,7 @@ const publishDataEntryJobForHr = async ({
   }
 
   if (!job) {
-    const insertedJob = await supabase
+    const insertedJob = await Database
       .from('jobs')
       .insert(preparedJob.jobInsert)
       .select('*')
@@ -502,7 +502,7 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
     countRows('dataentry_entries', (q) => q.eq('status', 'draft'))
   ]);
 
-  const { data: recent } = await supabase
+  const { data: recent } = await Database
     .from('dataentry_entries')
     .select('id, type, title, status, created_at')
     .order('created_at', { ascending: false })
@@ -550,7 +550,7 @@ router.post('/users', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+  const { data: authData, error: authError } = await Database.auth.admin.createUser({
     email,
     password,
     email_confirm: true,
@@ -558,14 +558,14 @@ router.post('/users', asyncHandler(async (req, res) => {
   });
 
   if (authError) {
-    sendSupabaseError(res, authError, 400);
+    sendDatabaseError(res, authError, 400);
     return;
   }
 
   const bcrypt = require('bcryptjs');
   const passwordHash = await bcrypt.hash(password, 12);
 
-  const { data: user, error: userError } = await supabase
+  const { data: user, error: userError } = await Database
     .from('users')
     .insert({
       id: authData.user.id,
@@ -582,13 +582,13 @@ router.post('/users', asyncHandler(async (req, res) => {
     .single();
 
   if (userError) {
-    sendSupabaseError(res, userError);
+    sendDatabaseError(res, userError);
     return;
   }
 
   try {
     await upsertRoleProfile({
-      supabase,
+      Database,
       role,
       userId: user.id,
       reqBody: {
@@ -598,11 +598,11 @@ router.post('/users', asyncHandler(async (req, res) => {
       }
     });
   } catch (profileError) {
-    sendSupabaseError(res, profileError);
+    sendDatabaseError(res, profileError);
     return;
   }
 
-  await supabase.from('system_logs').insert({
+  await Database.from('system_logs').insert({
     action: 'user_created',
     module: 'dataentry',
     level: 'info',
@@ -641,7 +641,7 @@ router.get('/registered-companies', asyncHandler(async (req, res) => {
       }))
     });
   } catch (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
   }
 }));
 
@@ -656,7 +656,7 @@ router.get('/entries', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('dataentry_entries')
     .select('id, type, title, status, submitted_by, reviewed_by, created_at, updated_at', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -670,71 +670,71 @@ router.get('/entries', asyncHandler(async (req, res) => {
   }
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, entries: data || [], total: count || 0, page, limit });
 }));
 
 router.get('/entries/drafts', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('dataentry_entries')
     .select('id, type, title, status, created_at, updated_at')
     .eq('status', 'draft')
     .order('created_at', { ascending: false })
     .limit(100);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, entries: data || [] });
 }));
 
 router.get('/entries/pending', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('dataentry_entries')
     .select('id, type, title, status, created_at, updated_at')
     .eq('status', 'pending')
     .order('created_at', { ascending: false })
     .limit(100);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, entries: data || [] });
 }));
 
 router.get('/entries/approved', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('dataentry_entries')
     .select('id, type, title, status, created_at, updated_at')
     .eq('status', 'approved')
     .order('created_at', { ascending: false })
     .limit(100);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, entries: data || [] });
 }));
 
 router.get('/entries/rejected', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('dataentry_entries')
     .select('id, type, title, status, created_at, updated_at')
     .eq('status', 'rejected')
     .order('created_at', { ascending: false })
     .limit(100);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, entries: data || [] });
 }));
 
 router.get('/entries/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('dataentry_entries')
     .select('*')
     .eq('id', req.params.id)
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Entry not found' });
 
   res.send({ status: true, entry: data });
@@ -744,18 +744,18 @@ router.get('/entries/:id', asyncHandler(async (req, res) => {
 // Records (approved entries for public view)
 // =============================================
 router.get('/records', asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.send({ status: true, records: portalStore.dataentry.records() });
     return;
   }
 
   const [entriesResp, notificationsResp] = await Promise.all([
-    supabase
+    Database
       .from('dataentry_entries')
       .select('id, type, title, data, status, submitted_by, reviewed_by, created_at, updated_at')
       .order('created_at', { ascending: false })
       .limit(200),
-    supabase
+    Database
       .from('system_logs')
       .select('id, action, details, created_at')
       .eq('actor_id', req.user?.id)
@@ -763,8 +763,8 @@ router.get('/records', asyncHandler(async (req, res) => {
       .limit(30)
   ]);
 
-  if (entriesResp.error) { sendSupabaseError(res, entriesResp.error); return; }
-  if (notificationsResp.error) { sendSupabaseError(res, notificationsResp.error); return; }
+  if (entriesResp.error) { sendDatabaseError(res, entriesResp.error); return; }
+  if (notificationsResp.error) { sendDatabaseError(res, notificationsResp.error); return; }
 
   const notifications = (notificationsResp.data || []).map((log) => ({
     id: log.id,
@@ -813,7 +813,7 @@ router.post('/jobs', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('dataentry_entries')
     .insert({
       type: 'job',
@@ -825,7 +825,7 @@ router.post('/jobs', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   try {
     const publication = await publishDataEntryJobForHr({
@@ -838,7 +838,7 @@ router.post('/jobs', asyncHandler(async (req, res) => {
     res.status(201).send({ status: true, entry: publication.entry, job: publication.job });
   } catch (publicationError) {
     if (publicationError?.code) {
-      sendSupabaseError(res, publicationError);
+      sendDatabaseError(res, publicationError);
       return;
     }
 
@@ -853,7 +853,7 @@ router.post('/properties', asyncHandler(async (req, res) => {
   const { title, ...rest } = req.body || {};
   if (!title) return res.status(400).send({ status: false, message: 'title is required' });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('dataentry_entries')
     .insert({
       type: 'property',
@@ -865,7 +865,7 @@ router.post('/properties', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.status(201).send({ status: true, entry: data });
 }));
@@ -890,13 +890,13 @@ router.patch('/entries/:id', asyncHandler(async (req, res) => {
   }
 
   if (shouldValidateJobCompany) {
-    const existingResponse = await supabase
+    const existingResponse = await Database
       .from('dataentry_entries')
       .select('id, type, title, data')
       .eq('id', req.params.id)
       .maybeSingle();
 
-    if (existingResponse.error) { sendSupabaseError(res, existingResponse.error); return; }
+    if (existingResponse.error) { sendDatabaseError(res, existingResponse.error); return; }
     if (!existingResponse.data) return res.status(404).send({ status: false, message: 'Entry not found' });
 
     if (String(existingResponse.data.type || '').trim().toLowerCase() === 'job') {
@@ -928,14 +928,14 @@ router.patch('/entries/:id', asyncHandler(async (req, res) => {
     }
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('dataentry_entries')
     .update(updates)
     .eq('id', req.params.id)
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Entry not found' });
 
   if (preparedJob && registeredJobCompany) {
@@ -951,7 +951,7 @@ router.patch('/entries/:id', asyncHandler(async (req, res) => {
       return;
     } catch (publicationError) {
       if (publicationError?.code) {
-        sendSupabaseError(res, publicationError);
+        sendDatabaseError(res, publicationError);
         return;
       }
 
@@ -972,7 +972,7 @@ router.patch('/entries/:id', asyncHandler(async (req, res) => {
 router.post('/entries/:id/images', asyncHandler(async (req, res) => {
   const images = Array.isArray(req.body?.images) ? req.body.images : [];
 
-  const { data: existing } = await supabase
+  const { data: existing } = await Database
     .from('dataentry_entries')
     .select('data')
     .eq('id', req.params.id)
@@ -984,12 +984,12 @@ router.post('/entries/:id/images', asyncHandler(async (req, res) => {
   const existingImages = Array.isArray(currentData.images) ? currentData.images : [];
   const merged = [...existingImages, ...images];
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('dataentry_entries')
     .update({ data: { ...currentData, images: merged }, updated_at: new Date().toISOString() })
     .eq('id', req.params.id);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, images: merged });
 }));
@@ -998,7 +998,7 @@ router.post('/entries/:id/images', asyncHandler(async (req, res) => {
 // Tasks assigned to this user
 // =============================================
 router.get('/tasks/assigned', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('dataentry_entries')
     .select('id, type, title, status, created_at, updated_at')
     .eq('submitted_by', req.user?.id)
@@ -1006,7 +1006,7 @@ router.get('/tasks/assigned', asyncHandler(async (req, res) => {
     .order('created_at', { ascending: false })
     .limit(50);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, tasks: data || [] });
 }));
@@ -1015,14 +1015,14 @@ router.get('/tasks/assigned', asyncHandler(async (req, res) => {
 // Notifications (using system_logs for this user)
 // =============================================
 router.get('/notifications', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('system_logs')
     .select('id, action, details, created_at')
     .eq('actor_id', req.user?.id)
     .order('created_at', { ascending: false })
     .limit(30);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({
     status: true,
@@ -1044,26 +1044,26 @@ router.patch('/notifications/:id/read', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/profile', asyncHandler(async (req, res) => {
   const [userResp, employeeResp, profileResp] = await Promise.all([
-    supabase
+    Database
       .from('users')
       .select('id, name, email, mobile, role, status, created_at')
       .eq('id', req.user?.id)
       .maybeSingle(),
-    supabase
+    Database
       .from('employee_profiles')
       .select('employee_code, office_location, designation, notes')
       .eq('user_id', req.user?.id)
       .maybeSingle(),
-    supabase
+    Database
       .from('dataentry_profiles')
       .select('queue_name, reviewer_level, target_volume, quality_score, notes, meta')
       .eq('user_id', req.user?.id)
       .maybeSingle()
   ]);
 
-  if (userResp.error) { sendSupabaseError(res, userResp.error); return; }
-  if (employeeResp.error) { sendSupabaseError(res, employeeResp.error); return; }
-  if (profileResp.error) { sendSupabaseError(res, profileResp.error); return; }
+  if (userResp.error) { sendDatabaseError(res, userResp.error); return; }
+  if (employeeResp.error) { sendDatabaseError(res, employeeResp.error); return; }
+  if (profileResp.error) { sendDatabaseError(res, profileResp.error); return; }
   if (!userResp.data) return res.status(404).send({ status: false, message: 'Profile not found' });
 
   res.send({
@@ -1102,38 +1102,38 @@ router.patch('/profile', asyncHandler(async (req, res) => {
     updates.mobile = `${selectedCountry.code}${digits}`;
   }
 
-  const { data: user, error } = await supabase
+  const { data: user, error } = await Database
     .from('users')
     .update(updates)
     .eq('id', req.user?.id)
     .select('id, name, email, mobile, role, status, created_at')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!user) return res.status(404).send({ status: false, message: 'Profile not found' });
 
   const [existingEmployeeResp, existingProfileResp] = await Promise.all([
-    supabase
+    Database
       .from('employee_profiles')
       .select('employee_code, office_location, designation, notes')
       .eq('user_id', req.user?.id)
       .maybeSingle(),
-    supabase
+    Database
       .from('dataentry_profiles')
       .select('queue_name, reviewer_level, target_volume, quality_score, notes, meta')
       .eq('user_id', req.user?.id)
       .maybeSingle()
   ]);
 
-  if (existingEmployeeResp.error) { sendSupabaseError(res, existingEmployeeResp.error); return; }
-  if (existingProfileResp.error) { sendSupabaseError(res, existingProfileResp.error); return; }
+  if (existingEmployeeResp.error) { sendDatabaseError(res, existingEmployeeResp.error); return; }
+  if (existingProfileResp.error) { sendDatabaseError(res, existingProfileResp.error); return; }
 
   const existingMeta = existingProfileResp.data?.meta && typeof existingProfileResp.data.meta === 'object'
     ? existingProfileResp.data.meta
     : {};
 
   await upsertRoleProfile({
-    supabase,
+    Database,
     role: ROLES.DATAENTRY,
     userId: req.user?.id,
     reqBody: {
@@ -1153,19 +1153,19 @@ router.patch('/profile', asyncHandler(async (req, res) => {
     }
   });
 
-  const refreshedEmployeeResp = await supabase
+  const refreshedEmployeeResp = await Database
     .from('employee_profiles')
     .select('employee_code, office_location, designation, notes')
     .eq('user_id', req.user?.id)
     .maybeSingle();
-  if (refreshedEmployeeResp.error) { sendSupabaseError(res, refreshedEmployeeResp.error); return; }
+  if (refreshedEmployeeResp.error) { sendDatabaseError(res, refreshedEmployeeResp.error); return; }
 
-  const refreshedProfileResp = await supabase
+  const refreshedProfileResp = await Database
     .from('dataentry_profiles')
     .select('queue_name, reviewer_level, target_volume, quality_score, notes, meta')
     .eq('user_id', req.user?.id)
     .maybeSingle();
-  if (refreshedProfileResp.error) { sendSupabaseError(res, refreshedProfileResp.error); return; }
+  if (refreshedProfileResp.error) { sendDatabaseError(res, refreshedProfileResp.error); return; }
 
   res.send({
     status: true,

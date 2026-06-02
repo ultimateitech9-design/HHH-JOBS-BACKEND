@@ -2,7 +2,7 @@ const express = require('express');
 const { ROLES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { runAtsAnalysis } = require('../utils/ats');
 const { extractResumeText } = require('../utils/resumeExtraction');
 const { clamp, isValidUuid, asyncHandler } = require('../utils/helpers');
@@ -77,7 +77,7 @@ const resolveResumeInput = async ({ req, source }) => {
   }
 
   if (source === 'profile_resume') {
-    const { data: profile, error: profileError } = await supabase
+    const { data: profile, error: profileError } = await Database
       .from('student_profiles')
       .select('resume_text, resume_url')
       .eq('user_id', req.user.id)
@@ -167,7 +167,7 @@ router.post('/check-preview', asyncHandler(async (req, res) => {
 
   const resumeInput = await resolveResumeInput({ req, source });
   if (resumeInput.dbError) {
-    sendSupabaseError(res, resumeInput.dbError);
+    sendDatabaseError(res, resumeInput.dbError);
     return;
   }
   if (resumeInput.error) {
@@ -202,14 +202,14 @@ router.post('/check/:jobId', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: jobRow, error: jobError } = await supabase
+  const { data: jobRow, error: jobError } = await Database
     .from('jobs')
     .select('*')
     .eq('id', jobId)
     .maybeSingle();
 
   if (jobError) {
-    sendSupabaseError(res, jobError);
+    sendDatabaseError(res, jobError);
     return;
   }
   if (!jobRow) {
@@ -224,7 +224,7 @@ router.post('/check/:jobId', asyncHandler(async (req, res) => {
 
   const resumeInput = await resolveResumeInput({ req, source });
   if (resumeInput.dbError) {
-    sendSupabaseError(res, resumeInput.dbError);
+    sendDatabaseError(res, resumeInput.dbError);
     return;
   }
   if (resumeInput.error) {
@@ -238,7 +238,7 @@ router.post('/check/:jobId', asyncHandler(async (req, res) => {
     resumeUrl: resumeInput.resumeUrl
   });
 
-  const { data: checkRow, error: checkError } = await supabase
+  const { data: checkRow, error: checkError } = await Database
     .from('ats_checks')
     .insert({
       user_id: req.user.id,
@@ -288,7 +288,7 @@ router.get('/history', asyncHandler(async (req, res) => {
     : req.user.id;
   const jobId = String(req.query.jobId || '').trim();
 
-  let query = supabase
+  let query = Database
     .from('ats_checks')
     .select('*')
     .eq('user_id', targetUserId)
@@ -298,7 +298,7 @@ router.get('/history', asyncHandler(async (req, res) => {
 
   const { data, error } = await query;
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -312,14 +312,14 @@ router.delete('/history/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: checkRow, error: checkError } = await supabase
+  const { data: checkRow, error: checkError } = await Database
     .from('ats_checks')
     .select('id, user_id')
     .eq('id', checkId)
     .maybeSingle();
 
   if (checkError) {
-    sendSupabaseError(res, checkError);
+    sendDatabaseError(res, checkError);
     return;
   }
 
@@ -333,13 +333,13 @@ router.delete('/history/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { error: deleteError } = await supabase
+  const { error: deleteError } = await Database
     .from('ats_checks')
     .delete()
     .eq('id', checkId);
 
   if (deleteError) {
-    sendSupabaseError(res, deleteError);
+    sendDatabaseError(res, deleteError);
     return;
   }
 

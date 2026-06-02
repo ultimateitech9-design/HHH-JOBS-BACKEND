@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES, JOB_STATUSES } = require('../constants');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('../middleware/roles');
 const { createRateLimitMiddleware, resolveRequestKey } = require('../middleware/rateLimit');
@@ -46,19 +46,19 @@ const mapJobWithBrand = (job, brandIndex) => {
 };
 
 router.get('/meta/categories', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.send({ status: true, categories: [] });
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_categories')
     .select('*')
     .eq('is_active', true)
     .order('name', { ascending: true });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -66,19 +66,19 @@ router.get('/meta/categories', automationProtection, publicJobsReadLimiter, setC
 }));
 
 router.get('/meta/locations', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.send({ status: true, locations: [] });
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_locations')
     .select('*')
     .eq('is_active', true)
     .order('name', { ascending: true });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -86,19 +86,19 @@ router.get('/meta/locations', automationProtection, publicJobsReadLimiter, setCa
 }));
 
 router.get('/meta/sectors', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.send({ status: true, sectors: [] });
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_sectors')
     .select('id, name, is_active')
     .eq('is_active', true)
     .order('name', { ascending: true });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -106,19 +106,19 @@ router.get('/meta/sectors', automationProtection, publicJobsReadLimiter, setCata
 }));
 
 router.get('/meta/states', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.send({ status: true, states: [] });
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('master_states')
     .select('id, name, code, is_active')
     .eq('is_active', true)
     .order('name', { ascending: true });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -126,13 +126,13 @@ router.get('/meta/states', automationProtection, publicJobsReadLimiter, setCatal
 }));
 
 router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.send({ status: true, districts: [] });
     return;
   }
 
   const stateId = String(req.query.stateId || req.query.state_id || '').trim();
-  let query = supabase
+  let query = Database
     .from('master_districts')
     .select('id, state_id, name, is_active')
     .eq('is_active', true)
@@ -143,7 +143,7 @@ router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCa
   const { data, error } = await query;
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -151,7 +151,7 @@ router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCa
 }));
 
 router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.status(503).send({
       status: false,
       message: 'Job listings backend is not configured'
@@ -180,7 +180,7 @@ router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHead
     includeUnapproved: String(req.query.includeUnapproved || '').trim().toLowerCase() === 'true'
   };
 
-  let query = supabase
+  let query = Database
     .from('jobs')
     .select('*', { count: 'exact' })
     .order('is_featured', { ascending: false })
@@ -191,27 +191,27 @@ router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHead
 
   const [{ data, error, count }, sponsorsResp, profilesResp] = await Promise.all([
     query,
-    supabase
+    Database
       .from('sponsored_companies')
       .select('company_name, logo_url, website_url')
       .eq('is_active', true),
-    supabase
+    Database
       .from('hr_profiles')
       .select('company_name, logo_url, company_website')
   ]);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
   if (sponsorsResp.error) {
-    sendSupabaseError(res, sponsorsResp.error);
+    sendDatabaseError(res, sponsorsResp.error);
     return;
   }
 
   if (profilesResp.error) {
-    sendSupabaseError(res, profilesResp.error);
+    sendDatabaseError(res, profilesResp.error);
     return;
   }
 
@@ -233,7 +233,7 @@ router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHead
 }));
 
 router.get('/all', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.status(503).send({
       status: false,
       message: 'Job listings backend is not configured'
@@ -241,7 +241,7 @@ router.get('/all', automationProtection, publicJobsReadLimiter, setCatalogCacheH
     return;
   }
 
-  let query = supabase
+  let query = Database
     .from('jobs')
     .select('*')
     .order('is_featured', { ascending: false })
@@ -264,27 +264,27 @@ router.get('/all', automationProtection, publicJobsReadLimiter, setCatalogCacheH
 
   const [{ data, error }, sponsorsResp, profilesResp] = await Promise.all([
     query,
-    supabase
+    Database
       .from('sponsored_companies')
       .select('company_name, logo_url, website_url')
       .eq('is_active', true),
-    supabase
+    Database
       .from('hr_profiles')
       .select('company_name, logo_url, company_website')
   ]);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
   if (sponsorsResp.error) {
-    sendSupabaseError(res, sponsorsResp.error);
+    sendDatabaseError(res, sponsorsResp.error);
     return;
   }
 
   if (profilesResp.error) {
-    sendSupabaseError(res, profilesResp.error);
+    sendDatabaseError(res, profilesResp.error);
     return;
   }
 
@@ -304,7 +304,7 @@ router.get('/mine/list/:email?', requireAuth, requireActiveUser, requireRole(ROL
     return;
   }
 
-  const { data: jobs, error } = await supabase
+  const { data: jobs, error } = await Database
     .from('jobs')
     .select('*')
     .eq('posted_by', emailParam)
@@ -312,7 +312,7 @@ router.get('/mine/list/:email?', requireAuth, requireActiveUser, requireRole(ROL
     .order('created_at', { ascending: false });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -326,7 +326,7 @@ router.delete('/legacy/job/:id', requireAuth, requireActiveUser, requireRole(ROL
 router.post('/legacy/job/:id/apply', automationProtection, browserWriteProtection, requireAuth, requireActiveUser, requireRole(ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, ROLES.ADMIN, ROLES.SUPER_ADMIN), jobApplicationLimiter, asyncHandler(applyToJob));
 
 router.get('/:id', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.status(503).send({
       status: false,
       message: 'Job listings backend is not configured'
@@ -341,22 +341,22 @@ router.get('/:id', automationProtection, publicJobsReadLimiter, setCatalogCacheH
   }
 
   const [sponsorsResp, profilesResp] = await Promise.all([
-    supabase
+    Database
       .from('sponsored_companies')
       .select('company_name, logo_url, website_url')
       .eq('is_active', true),
-    supabase
+    Database
       .from('hr_profiles')
       .select('company_name, logo_url, company_website')
   ]);
 
   if (sponsorsResp.error) {
-    sendSupabaseError(res, sponsorsResp.error);
+    sendDatabaseError(res, sponsorsResp.error);
     return;
   }
 
   if (profilesResp.error) {
-    sendSupabaseError(res, profilesResp.error);
+    sendDatabaseError(res, profilesResp.error);
     return;
   }
 

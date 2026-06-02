@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES } = require('../constants');
-const { supabase, countRows, sendSupabaseError } = require('../supabase');
+const { Database, countRows, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
@@ -202,7 +202,7 @@ const mapChatMessageRow = (row = {}) => {
 };
 
 const chooseSupportAssignee = async (stateName = '') => {
-  const { data: supportUsers, error } = await supabase
+  const { data: supportUsers, error } = await Database
     .from('users')
     .select('id, name, email, role, status')
     .eq('role', ROLES.SUPPORT)
@@ -212,7 +212,7 @@ const chooseSupportAssignee = async (stateName = '') => {
   if (error || !Array.isArray(supportUsers) || supportUsers.length === 0) return null;
 
   const agentLoads = await Promise.all(supportUsers.map(async (agent) => {
-    let query = supabase
+    let query = Database
       .from('support_chats')
       .select('id', { count: 'exact', head: true })
       .eq('assignee_id', agent.id)
@@ -231,7 +231,7 @@ const assignWaitingSupportChats = async ({ stateName = '' } = {}) => {
   const assignee = await chooseSupportAssignee(stateName);
   if (!assignee) return { assignedCount: 0 };
 
-  let query = supabase
+  let query = Database
     .from('support_chats')
     .select('*')
     .eq('assigned_department', 'support')
@@ -252,7 +252,7 @@ const assignWaitingSupportChats = async ({ stateName = '' } = {}) => {
     assignedFromWaitingAt: new Date().toISOString()
   };
 
-  const { error: updateError } = await supabase
+  const { error: updateError } = await Database
     .from('support_chats')
     .update({
       assignee_id: assignee.id,
@@ -267,7 +267,7 @@ const assignWaitingSupportChats = async ({ stateName = '' } = {}) => {
 };
 
 const insertChatMessage = async ({ chatId, user, message, isInternal = false }) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_chat_messages')
     .insert({
       chat_id: chatId,
@@ -286,7 +286,7 @@ const insertChatMessage = async ({ chatId, user, message, isInternal = false }) 
 const getActiveChatModerationForUser = async (userId = '') => {
   if (!userId) return { moderation: null, fallback: false, error: null };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_chat_moderations')
     .select('*')
     .eq('user_id', userId)
@@ -311,7 +311,7 @@ const getChatModerationsByRequester = async (requesterIds = []) => {
   const ids = Array.from(new Set(requesterIds.filter(Boolean)));
   if (ids.length === 0) return { byUserId: new Map(), fallback: false };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_chat_moderations')
     .select('*')
     .in('user_id', ids)
@@ -350,7 +350,7 @@ const enforceCustomerChatModeration = async (req, res) => {
   if (!canUseCustomerChat(req.user)) return false;
   const { moderation, error } = await getActiveChatModerationForUser(req.user?.id);
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return true;
   }
   if (!moderation) return false;
@@ -367,7 +367,7 @@ const findSupportTicket = async (ticketIdentifier) => {
   const identifier = String(ticketIdentifier || '').trim();
   if (!identifier) return { ticket: null, error: null };
 
-  const byIdResult = await supabase
+  const byIdResult = await Database
     .from('support_tickets')
     .select('*')
     .eq('id', identifier)
@@ -377,7 +377,7 @@ const findSupportTicket = async (ticketIdentifier) => {
     return { ticket: byIdResult.data || null, error: byIdResult.error || null };
   }
 
-  const byTicketNumberResult = await supabase
+  const byTicketNumberResult = await Database
     .from('support_tickets')
     .select('*')
     .eq('ticket_number', identifier)
@@ -393,7 +393,7 @@ const findSupportTicket = async (ticketIdentifier) => {
 // Stats
 // =============================================
 router.get('/stats', asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.send({
       status: true,
       stats: {
@@ -429,7 +429,7 @@ router.get('/stats', asyncHandler(async (req, res) => {
     countRows('support_tickets', (q) => q.eq('category', 'feedback'))
   ]);
 
-  const { data: resolvedWithTime } = await supabase
+  const { data: resolvedWithTime } = await Database
     .from('support_tickets')
     .select('created_at, resolved_at')
     .eq('status', 'resolved')
@@ -473,7 +473,7 @@ router.get('/tickets', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('support_tickets')
     .select('id, ticket_number, title, category, status, priority, requester_name, requester_email, assignee_name, company, created_at, updated_at', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -488,7 +488,7 @@ router.get('/tickets', asyncHandler(async (req, res) => {
   }
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, tickets: data || [], total: count || 0, page, limit });
 }));
@@ -496,10 +496,10 @@ router.get('/tickets', asyncHandler(async (req, res) => {
 router.get('/tickets/:id', asyncHandler(async (req, res) => {
   const { ticket, error } = await findSupportTicket(req.params.id);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!ticket) return res.status(404).send({ status: false, message: 'Ticket not found' });
 
-  const { data: replies } = await supabase
+  const { data: replies } = await Database
     .from('ticket_replies')
     .select('id, author_name, author_role, message, is_internal, created_at')
     .eq('ticket_id', ticket.id)
@@ -509,14 +509,14 @@ router.get('/tickets/:id', asyncHandler(async (req, res) => {
 }));
 
 router.get('/queries', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_tickets')
     .select('id, ticket_number, title, category, status, priority, requester_name, requester_email, assigned_department, assignee_name, created_at, updated_at')
     .eq('requester_id', req.user?.id)
     .order('created_at', { ascending: false })
     .limit(50);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, tickets: data || [] });
 }));
 
@@ -538,7 +538,7 @@ router.post('/queries', asyncHandler(async (req, res) => {
   ].filter(Boolean);
   const ticketDescription = [description, ...contextLines].filter(Boolean).join('\n\n');
 
-  const { data: ticket, error } = await supabase
+  const { data: ticket, error } = await Database
     .from('support_tickets')
     .insert({
       ticket_number: ticketNumber,
@@ -557,7 +557,7 @@ router.post('/queries', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.status(201).send({ status: true, ticket });
 }));
 
@@ -571,7 +571,7 @@ router.post('/tickets', asyncHandler(async (req, res) => {
   const ticketCount = await countRows('support_tickets');
   const ticketNumber = `SUP-${String(ticketCount + 1).padStart(4, '0')}`;
 
-  const { data: ticket, error } = await supabase
+  const { data: ticket, error } = await Database
     .from('support_tickets')
     .insert({
       ticket_number: ticketNumber,
@@ -589,7 +589,7 @@ router.post('/tickets', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.status(201).send({ status: true, ticket });
 }));
@@ -606,14 +606,14 @@ router.patch('/tickets/:id', asyncHandler(async (req, res) => {
 
   if (status === 'resolved') updates.resolved_at = new Date().toISOString();
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_tickets')
     .update(updates)
     .eq('id', req.params.id)
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Ticket not found' });
 
   res.send({ status: true, ticket: data });
@@ -636,17 +636,17 @@ router.patch('/tickets/:id/transfer', asyncHandler(async (req, res) => {
     updated_at: new Date().toISOString()
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_tickets')
     .update(updates)
     .eq('id', req.params.id)
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Ticket not found' });
 
-  await supabase.from('ticket_replies').insert({
+  await Database.from('ticket_replies').insert({
     ticket_id: data.id,
     author_id: req.user?.id,
     author_name: req.user?.name || 'Support',
@@ -664,10 +664,10 @@ router.post('/tickets/:id/reply', asyncHandler(async (req, res) => {
 
   if (!message) return res.status(400).send({ status: false, message: 'message is required' });
 
-  const { data: ticket } = await supabase.from('support_tickets').select('id').eq('id', req.params.id).maybeSingle();
+  const { data: ticket } = await Database.from('support_tickets').select('id').eq('id', req.params.id).maybeSingle();
   if (!ticket) return res.status(404).send({ status: false, message: 'Ticket not found' });
 
-  const { data: reply, error } = await supabase
+  const { data: reply, error } = await Database
     .from('ticket_replies')
     .insert({
       ticket_id: req.params.id,
@@ -680,9 +680,9 @@ router.post('/tickets/:id/reply', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
-  await supabase
+  await Database
     .from('support_tickets')
     .update({ updated_at: new Date().toISOString() })
     .eq('id', req.params.id);
@@ -693,7 +693,7 @@ router.post('/tickets/:id/reply', asyncHandler(async (req, res) => {
 router.post('/tickets/:id/escalate', asyncHandler(async (req, res) => {
   const reason = String(req.body?.reason || '').trim();
 
-  const { data: ticket } = await supabase.from('support_tickets').select('id, status').eq('id', req.params.id).maybeSingle();
+  const { data: ticket } = await Database.from('support_tickets').select('id, status').eq('id', req.params.id).maybeSingle();
   if (!ticket) return res.status(404).send({ status: false, message: 'Ticket not found' });
 
   const updates = {
@@ -703,17 +703,17 @@ router.post('/tickets/:id/escalate', asyncHandler(async (req, res) => {
     updated_at: new Date().toISOString()
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_tickets')
     .update(updates)
     .eq('id', req.params.id)
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   if (reason) {
-    await supabase.from('ticket_replies').insert({
+    await Database.from('ticket_replies').insert({
       ticket_id: req.params.id,
       author_id: req.user?.id,
       author_name: req.user?.name || 'Support',
@@ -730,10 +730,10 @@ router.post('/tickets/:id/internal-note', asyncHandler(async (req, res) => {
   const message = String(req.body?.message || '').trim();
   if (!message) return res.status(400).send({ status: false, message: 'message is required' });
 
-  const { data: ticket } = await supabase.from('support_tickets').select('id').eq('id', req.params.id).maybeSingle();
+  const { data: ticket } = await Database.from('support_tickets').select('id').eq('id', req.params.id).maybeSingle();
   if (!ticket) return res.status(404).send({ status: false, message: 'Ticket not found' });
 
-  const { data: note, error } = await supabase
+  const { data: note, error } = await Database
     .from('ticket_replies')
     .insert({
       ticket_id: req.params.id,
@@ -746,9 +746,9 @@ router.post('/tickets/:id/internal-note', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
-  await supabase.from('support_tickets').update({ updated_at: new Date().toISOString() }).eq('id', req.params.id);
+  await Database.from('support_tickets').update({ updated_at: new Date().toISOString() }).eq('id', req.params.id);
 
   res.status(201).send({ status: true, note });
 }));
@@ -773,7 +773,7 @@ router.get('/chats', asyncHandler(async (req, res) => {
     await assignWaitingSupportChats({ stateName });
   }
 
-  let query = supabase
+  let query = Database
     .from('support_chats')
     .select('*')
     .order('updated_at', { ascending: false })
@@ -796,7 +796,7 @@ router.get('/chats', asyncHandler(async (req, res) => {
       res.send({ status: true, chats: await attachModerationToChats(listMemoryChatsForUser(req.user, { department, stateName })), fallback: 'memory' });
       return;
     }
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -808,7 +808,7 @@ router.get('/chats', asyncHandler(async (req, res) => {
   }
   const chatIds = chats.map((chat) => chat.id);
   if (chatIds.length > 0) {
-    const { data: messages } = await supabase
+    const { data: messages } = await Database
       .from('support_chat_messages')
       .select('*')
       .in('chat_id', chatIds)
@@ -837,7 +837,7 @@ router.get('/chats/mine', asyncHandler(async (req, res) => {
 
   if (await enforceCustomerChatModeration(req, res)) return;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_chats')
     .select('*')
     .eq('requester_id', req.user?.id)
@@ -857,7 +857,7 @@ router.get('/chats/mine', asyncHandler(async (req, res) => {
       res.send({ status: true, chat: memoryChat ? hydrateMemoryChat(memoryChat) : null, fallback: 'memory' });
       return;
     }
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -870,7 +870,7 @@ router.get('/chats/mine', asyncHandler(async (req, res) => {
     await assignWaitingSupportChats({ stateName: data.state_name || '' });
   }
 
-  const { data: refreshedChat } = await supabase
+  const { data: refreshedChat } = await Database
     .from('support_chats')
     .select('*')
     .eq('id', data.id)
@@ -878,7 +878,7 @@ router.get('/chats/mine', asyncHandler(async (req, res) => {
 
   const chat = mapChatRow(refreshedChat || data);
   await attachModerationToChats([chat]);
-  const { data: messages } = await supabase
+  const { data: messages } = await Database
     .from('support_chat_messages')
     .select('*')
     .eq('chat_id', chat.id)
@@ -903,7 +903,7 @@ router.post('/chats', asyncHandler(async (req, res) => {
 
   if (!message) return res.status(400).send({ status: false, message: 'message is required' });
 
-  const { data: existing, error: existingError } = await supabase
+  const { data: existing, error: existingError } = await Database
     .from('support_chats')
     .select('*')
     .eq('requester_id', req.user?.id)
@@ -947,7 +947,7 @@ router.post('/chats', asyncHandler(async (req, res) => {
   }
 
   if (existingError && String(existingError.code || '').toUpperCase() !== 'PGRST116') {
-    sendSupabaseError(res, existingError);
+    sendDatabaseError(res, existingError);
     return;
   }
 
@@ -956,7 +956,7 @@ router.post('/chats', asyncHandler(async (req, res) => {
   if (!chatRow) {
     const assignee = await chooseSupportAssignee(stateName);
     const isWaiting = !assignee;
-    const { data: created, error } = await supabase
+    const { data: created, error } = await Database
       .from('support_chats')
       .insert({
         requester_id: req.user?.id,
@@ -982,14 +982,14 @@ router.post('/chats', asyncHandler(async (req, res) => {
       .select('*')
       .single();
 
-    if (error) { sendSupabaseError(res, error); return; }
+    if (error) { sendDatabaseError(res, error); return; }
     chatRow = created;
   }
 
   const messageResult = await insertChatMessage({ chatId: chatRow.id, user: req.user, message });
-  if (messageResult.error) { sendSupabaseError(res, messageResult.error); return; }
+  if (messageResult.error) { sendDatabaseError(res, messageResult.error); return; }
 
-  const { data: updatedChat, error: updateError } = await supabase
+  const { data: updatedChat, error: updateError } = await Database
     .from('support_chats')
     .update({
       last_message: message,
@@ -1000,10 +1000,10 @@ router.post('/chats', asyncHandler(async (req, res) => {
     .select('*')
     .maybeSingle();
 
-  if (updateError) { sendSupabaseError(res, updateError); return; }
+  if (updateError) { sendDatabaseError(res, updateError); return; }
 
   const chat = mapChatRow(updatedChat || chatRow);
-  const { data: messages } = await supabase
+  const { data: messages } = await Database
     .from('support_chat_messages')
     .select('*')
     .eq('chat_id', chat.id)
@@ -1031,7 +1031,7 @@ router.get('/chats/:id/messages', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: chat, error: chatError } = await supabase
+  const { data: chat, error: chatError } = await Database
     .from('support_chats')
     .select('*')
     .eq('id', req.params.id)
@@ -1054,20 +1054,20 @@ router.get('/chats/:id/messages', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (chatError) { sendDatabaseError(res, chatError); return; }
   if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
   if (!canAccessChatRow(req.user, chat)) {
     res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_chat_messages')
     .select('*')
     .eq('chat_id', req.params.id)
     .order('created_at', { ascending: true });
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, messages: (data || []).map(mapChatMessageRow) });
 }));
 
@@ -1097,7 +1097,7 @@ router.post('/chats/:id/messages', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: chat, error: chatError } = await supabase
+  const { data: chat, error: chatError } = await Database
     .from('support_chats')
     .select('*')
     .eq('id', req.params.id)
@@ -1124,7 +1124,7 @@ router.post('/chats/:id/messages', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (chatError) { sendDatabaseError(res, chatError); return; }
   if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
   if (!canAccessChatRow(req.user, chat)) {
     res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
@@ -1137,7 +1137,7 @@ router.post('/chats/:id/messages', asyncHandler(async (req, res) => {
     message: text,
     isInternal: Boolean(req.body?.isInternal || req.body?.is_internal)
   });
-  if (result.error) { sendSupabaseError(res, result.error); return; }
+  if (result.error) { sendDatabaseError(res, result.error); return; }
 
   const isAgentMessage = canManageChats(req.user);
   const nextMeta = {
@@ -1164,7 +1164,7 @@ router.post('/chats/:id/messages', asyncHandler(async (req, res) => {
     };
   }
 
-  const { data: updatedChat } = await supabase
+  const { data: updatedChat } = await Database
     .from('support_chats')
     .update(updatePayload)
     .eq('id', chat.id)
@@ -1191,7 +1191,7 @@ router.delete('/chats/:id/messages', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: chat, error: chatError } = await supabase
+  const { data: chat, error: chatError } = await Database
     .from('support_chats')
     .select('*')
     .eq('id', req.params.id)
@@ -1213,28 +1213,28 @@ router.delete('/chats/:id/messages', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (chatError) { sendDatabaseError(res, chatError); return; }
   if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
   if (!canAccessChatRow(req.user, chat)) {
     res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
     return;
   }
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('support_chat_messages')
     .delete()
     .eq('chat_id', req.params.id);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
-  const { data: updatedChat, error: updateError } = await supabase
+  const { data: updatedChat, error: updateError } = await Database
     .from('support_chats')
     .update({ last_message: null, updated_at: new Date().toISOString() })
     .eq('id', req.params.id)
     .select('*')
     .maybeSingle();
 
-  if (updateError) { sendSupabaseError(res, updateError); return; }
+  if (updateError) { sendDatabaseError(res, updateError); return; }
   const normalizedChat = mapChatRow(updatedChat || chat);
   normalizedChat.messages = [];
   res.send({ status: true, chat: normalizedChat });
@@ -1259,7 +1259,7 @@ router.delete('/chats/:id/messages/:messageId', asyncHandler(async (req, res) =>
     return;
   }
 
-  const { data: chat, error: chatError } = await supabase
+  const { data: chat, error: chatError } = await Database
     .from('support_chats')
     .select('*')
     .eq('id', req.params.id)
@@ -1283,41 +1283,41 @@ router.delete('/chats/:id/messages/:messageId', asyncHandler(async (req, res) =>
     return;
   }
 
-  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (chatError) { sendDatabaseError(res, chatError); return; }
   if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
   if (!canAccessChatRow(req.user, chat)) {
     res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
     return;
   }
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('support_chat_messages')
     .delete()
     .eq('chat_id', req.params.id)
     .eq('id', req.params.messageId);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
-  const { data: latestMessages, error: latestError } = await supabase
+  const { data: latestMessages, error: latestError } = await Database
     .from('support_chat_messages')
     .select('*')
     .eq('chat_id', req.params.id)
     .order('created_at', { ascending: false })
     .limit(1);
 
-  if (latestError) { sendSupabaseError(res, latestError); return; }
+  if (latestError) { sendDatabaseError(res, latestError); return; }
 
-  const { data: updatedChat, error: updateError } = await supabase
+  const { data: updatedChat, error: updateError } = await Database
     .from('support_chats')
     .update({ last_message: latestMessages?.[0]?.message || null, updated_at: new Date().toISOString() })
     .eq('id', req.params.id)
     .select('*')
     .maybeSingle();
 
-  if (updateError) { sendSupabaseError(res, updateError); return; }
+  if (updateError) { sendDatabaseError(res, updateError); return; }
 
   const normalizedChat = mapChatRow(updatedChat || chat);
-  const { data: messages } = await supabase
+  const { data: messages } = await Database
     .from('support_chat_messages')
     .select('*')
     .eq('chat_id', req.params.id)
@@ -1351,7 +1351,7 @@ router.patch('/chats/:id/status', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: chat, error: chatError } = await supabase
+  const { data: chat, error: chatError } = await Database
     .from('support_chats')
     .select('*')
     .eq('id', req.params.id)
@@ -1370,7 +1370,7 @@ router.patch('/chats/:id/status', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (chatError) { sendDatabaseError(res, chatError); return; }
   if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
   if (!canAccessChatRow(req.user, chat)) {
     res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
@@ -1383,14 +1383,14 @@ router.patch('/chats/:id/status', asyncHandler(async (req, res) => {
     statusUpdatedAt: new Date().toISOString()
   };
 
-  const { data: updatedChat, error: updateError } = await supabase
+  const { data: updatedChat, error: updateError } = await Database
     .from('support_chats')
     .update({ status: nextStatus, meta: nextMeta, updated_at: new Date().toISOString() })
     .eq('id', chat.id)
     .select('*')
     .maybeSingle();
 
-  if (updateError) { sendSupabaseError(res, updateError); return; }
+  if (updateError) { sendDatabaseError(res, updateError); return; }
 
   if (['resolved', 'closed'].includes(nextStatus)) {
     await assignWaitingSupportChats({ stateName: chat.state_name || '' });
@@ -1437,13 +1437,13 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
     return;
   }
 
-  const currentChatResp = await supabase
+  const currentChatResp = await Database
     .from('support_chats')
     .select('id, requester_id, assigned_department, assignee_id, state_name, meta')
     .eq('id', req.params.id)
     .maybeSingle();
   if (currentChatResp.error && !isSupportChatSchemaError(currentChatResp.error)) {
-    sendSupabaseError(res, currentChatResp.error);
+    sendDatabaseError(res, currentChatResp.error);
     return;
   }
   if (currentChatResp.data && !canAccessChatRow(req.user, currentChatResp.data)) {
@@ -1454,7 +1454,7 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
   const supportAssignee = targetDepartment === 'support' ? await chooseSupportAssignee(transferStateName) : null;
   const isWaitingForSupport = targetDepartment === 'support' && !supportAssignee;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_chats')
     .update({
       assigned_department: targetDepartment,
@@ -1500,7 +1500,7 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Chat not found' });
 
   await insertChatMessage({
@@ -1582,7 +1582,7 @@ router.patch('/chats/:id/moderation', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: chat, error: chatError } = await supabase
+  const { data: chat, error: chatError } = await Database
     .from('support_chats')
     .select('*')
     .eq('id', req.params.id)
@@ -1596,7 +1596,7 @@ router.patch('/chats/:id/moderation', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (chatError) { sendSupabaseError(res, chatError); return; }
+  if (chatError) { sendDatabaseError(res, chatError); return; }
   if (!chat) return res.status(404).send({ status: false, message: 'Chat not found' });
   if (!chat.requester_id) return res.status(400).send({ status: false, message: 'Chat requester is missing' });
 
@@ -1605,7 +1605,7 @@ router.patch('/chats/:id/moderation', asyncHandler(async (req, res) => {
     lifted_by: req.user?.id || null,
     lifted_at: new Date().toISOString()
   };
-  const liftResult = await supabase
+  const liftResult = await Database
     .from('support_chat_moderations')
     .update(liftedPayload)
     .eq('user_id', chat.requester_id)
@@ -1624,12 +1624,12 @@ router.patch('/chats/:id/moderation', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (liftResult.error) { sendSupabaseError(res, liftResult.error); return; }
+  if (liftResult.error) { sendDatabaseError(res, liftResult.error); return; }
 
   let moderation = null;
   if (action !== 'unblock') {
     const expiresAt = action === 'ban' ? new Date(Date.now() + hours * 3600000).toISOString() : null;
-    const { data: inserted, error: insertError } = await supabase
+    const { data: inserted, error: insertError } = await Database
       .from('support_chat_moderations')
       .insert({
         user_id: chat.requester_id,
@@ -1646,7 +1646,7 @@ router.patch('/chats/:id/moderation', asyncHandler(async (req, res) => {
       .select('*')
       .single();
 
-    if (insertError) { sendSupabaseError(res, insertError); return; }
+    if (insertError) { sendDatabaseError(res, insertError); return; }
     moderation = mapModerationRow(inserted);
   }
 
@@ -1654,7 +1654,7 @@ router.patch('/chats/:id/moderation', asyncHandler(async (req, res) => {
     ...(chat.meta && typeof chat.meta === 'object' ? chat.meta : {}),
     moderation
   };
-  const { data: updatedChat } = await supabase
+  const { data: updatedChat } = await Database
     .from('support_chats')
     .update({ meta: nextMeta, updated_at: new Date().toISOString() })
     .eq('id', chat.id)
@@ -1679,7 +1679,7 @@ router.patch('/chats/:id/moderation', asyncHandler(async (req, res) => {
 // FAQs
 // =============================================
 router.get('/faqs', asyncHandler(async (req, res) => {
-  const { data } = await supabase
+  const { data } = await Database
     .from('platform_settings')
     .select('value')
     .eq('key', 'faqs')
@@ -1691,11 +1691,11 @@ router.get('/faqs', asyncHandler(async (req, res) => {
 router.put('/faqs', asyncHandler(async (req, res) => {
   const faqs = Array.isArray(req.body?.faqs) ? req.body.faqs : [];
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('platform_settings')
     .upsert({ key: 'faqs', value: faqs, updated_by: req.user?.id, updated_at: new Date().toISOString() }, { onConflict: 'key' });
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, faqs });
 }));
@@ -1704,7 +1704,7 @@ router.put('/faqs', asyncHandler(async (req, res) => {
 // Knowledge Base
 // =============================================
 router.get('/knowledge-base', asyncHandler(async (req, res) => {
-  const { data } = await supabase
+  const { data } = await Database
     .from('platform_settings')
     .select('value')
     .eq('key', 'knowledge_base')
@@ -1716,11 +1716,11 @@ router.get('/knowledge-base', asyncHandler(async (req, res) => {
 router.put('/knowledge-base', asyncHandler(async (req, res) => {
   const articles = Array.isArray(req.body?.articles) ? req.body.articles : [];
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('platform_settings')
     .upsert({ key: 'knowledge_base', value: articles, updated_by: req.user?.id, updated_at: new Date().toISOString() }, { onConflict: 'key' });
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, articles });
 }));
@@ -1729,14 +1729,14 @@ router.put('/knowledge-base', asyncHandler(async (req, res) => {
 // Complaints
 // =============================================
 router.get('/complaints', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_tickets')
     .select('id, ticket_number, title, status, priority, requester_name, created_at')
     .eq('category', 'complaint')
     .order('created_at', { ascending: false })
     .limit(100);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, complaints: data || [] });
 }));
@@ -1745,14 +1745,14 @@ router.get('/complaints', asyncHandler(async (req, res) => {
 // Feedback
 // =============================================
 router.get('/feedback', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('support_tickets')
     .select('id, ticket_number, title, status, requester_name, created_at')
     .eq('category', 'feedback')
     .order('created_at', { ascending: false })
     .limit(100);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, feedback: data || [] });
 }));

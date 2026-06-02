@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { mapJobFromRow } = require('../utils/mappers');
 const { runAtsAnalysis } = require('../utils/ats');
 const { extractResumeText } = require('../utils/resumeExtraction');
@@ -260,7 +260,7 @@ const jobMatchesAutoApplyCriteria = ({
 };
 
 const ensureAutoApplyPreferences = async (userId) => {
-  const { data: existing, error } = await supabase
+  const { data: existing, error } = await Database
     .from('student_auto_apply_preferences')
     .select('*')
     .eq('user_id', userId)
@@ -269,7 +269,7 @@ const ensureAutoApplyPreferences = async (userId) => {
   if (error) throw error;
   if (existing) return normalizeAutoApplyPreference(existing);
 
-  const inserted = await supabase
+  const inserted = await Database
     .from('student_auto_apply_preferences')
     .insert({ user_id: userId })
     .select('*')
@@ -280,7 +280,7 @@ const ensureAutoApplyPreferences = async (userId) => {
 };
 
 const getRecentAutoApplyRuns = async (userId, limit = 16) => {
-  const runsResp = await supabase
+  const runsResp = await Database
     .from('student_auto_apply_runs')
     .select('*')
     .eq('user_id', userId)
@@ -296,13 +296,13 @@ const getRecentAutoApplyRuns = async (userId, limit = 16) => {
   let applicationsMap = {};
 
   if (jobIds.length > 0) {
-    const jobsResp = await supabase.from('jobs').select('*').in('id', jobIds);
+    const jobsResp = await Database.from('jobs').select('*').in('id', jobIds);
     if (jobsResp.error) throw jobsResp.error;
     jobsMap = Object.fromEntries((jobsResp.data || []).map((item) => [item.id, item]));
   }
 
   if (applicationIds.length > 0) {
-    const applicationsResp = await supabase
+    const applicationsResp = await Database
       .from('applications')
       .select('id, status, created_at')
       .in('id', applicationIds);
@@ -328,7 +328,7 @@ const getRecentAutoApplyRuns = async (userId, limit = 16) => {
 
 const getAutoApplySummary = async (userId) => {
   const since = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)).toISOString();
-  const runsResp = await supabase
+  const runsResp = await Database
     .from('student_auto_apply_runs')
     .select('status, premium_slot_consumed, application_id, created_at')
     .eq('user_id', userId)
@@ -340,7 +340,7 @@ const getAutoApplySummary = async (userId) => {
   let shortlistedCount = 0;
 
   if (applicationIds.length > 0) {
-    const applicationsResp = await supabase
+    const applicationsResp = await Database
       .from('applications')
       .select('id, status')
       .in('id', applicationIds);
@@ -406,7 +406,7 @@ const updateAutoApplyPreferences = async (userId, updates = {}) => {
     if (updateDoc[key] === undefined) delete updateDoc[key];
   });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('student_auto_apply_preferences')
     .update(updateDoc)
     .eq('user_id', userId)
@@ -419,7 +419,7 @@ const updateAutoApplyPreferences = async (userId, updates = {}) => {
 
 const getPremiumSlotsUsedThisWeek = async (userId) => {
   const since = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)).toISOString();
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('student_auto_apply_runs')
     .select('id', { count: 'exact' })
     .eq('user_id', userId)
@@ -444,7 +444,7 @@ const upsertAutoApplyRun = async ({
   premiumSlotConsumed = false,
   jobSnapshot = {}
 }) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('student_auto_apply_runs')
     .upsert({
       user_id: userId,
@@ -472,7 +472,7 @@ const createAutoApplyAtsCheck = async ({
   jobId,
   analysis = {}
 }) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('ats_checks')
     .insert({
       user_id: userId,
@@ -551,8 +551,8 @@ const generateAutoApplyCoverLetter = async ({
 const loadStudentAutoApplyContext = async (userId) => {
   const [preference, userResp, profileResp] = await Promise.all([
     ensureAutoApplyPreferences(userId),
-    supabase.from('users').select('id, name, email').eq('id', userId).maybeSingle(),
-    supabase.from('student_profiles').select('*').eq('user_id', userId).maybeSingle()
+    Database.from('users').select('id, name, email').eq('id', userId).maybeSingle(),
+    Database.from('student_profiles').select('*').eq('user_id', userId).maybeSingle()
   ]);
 
   if (userResp.error) throw userResp.error;
@@ -594,9 +594,9 @@ const processAutoApplyForStudentJobs = async ({
   const jobIds = sortedJobs.map((job) => job.id);
   const hrIds = [...new Set(sortedJobs.map((job) => job.created_by).filter(Boolean))];
   const [applicationsResp, hrProfilesResp] = await Promise.all([
-    supabase.from('applications').select('job_id').eq('applicant_id', userId).in('job_id', jobIds),
+    Database.from('applications').select('job_id').eq('applicant_id', userId).in('job_id', jobIds),
     hrIds.length > 0
-      ? supabase.from('hr_profiles').select('user_id, company_size, company_type').in('user_id', hrIds)
+      ? Database.from('hr_profiles').select('user_id, company_size, company_type').in('user_id', hrIds)
       : Promise.resolve({ data: [], error: null })
   ]);
 
@@ -769,7 +769,7 @@ const processAutoApplyForStudentJobs = async ({
   const skippedResults = results.filter((item) => item.status === AUTO_APPLY_STATUSES.SKIPPED);
   const failedResults = results.filter((item) => item.status === AUTO_APPLY_STATUSES.FAILED);
 
-  await supabase
+  await Database
     .from('student_auto_apply_preferences')
     .update({
       last_run_at: new Date().toISOString(),
@@ -791,7 +791,7 @@ const processAutoApplyForJob = async (job, { triggerSource = 'new_job' } = {}) =
     return { processedStudents: 0 };
   }
 
-  const { data: preferences, error } = await supabase
+  const { data: preferences, error } = await Database
     .from('student_auto_apply_preferences')
     .select('user_id')
     .eq('is_active', true);
@@ -834,7 +834,7 @@ const sendStudentAutoApplyDigest = async ({ userId, cadence = 'daily' }) => {
     ? new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)).toISOString()
     : new Date(Date.now() - (24 * 60 * 60 * 1000)).toISOString();
 
-  const runsResp = await supabase
+  const runsResp = await Database
     .from('student_auto_apply_runs')
     .select('*')
     .eq('user_id', userId)
@@ -848,7 +848,7 @@ const sendStudentAutoApplyDigest = async ({ userId, cadence = 'daily' }) => {
   let shortlistedCount = 0;
 
   if (applicationIds.length > 0) {
-    const applicationsResp = await supabase
+    const applicationsResp = await Database
       .from('applications')
       .select('status')
       .in('id', applicationIds);
@@ -866,7 +866,7 @@ const sendStudentAutoApplyDigest = async ({ userId, cadence = 'daily' }) => {
   });
 
   const timeParts = getCurrentTimeParts(preference.digestTimezone);
-  const queuedRun = await supabase
+  const queuedRun = await Database
     .from('student_auto_apply_digest_runs')
     .upsert({
       user_id: userId,
@@ -884,7 +884,7 @@ const sendStudentAutoApplyDigest = async ({ userId, cadence = 'daily' }) => {
 
   const enabled = cadence === 'weekly' ? preference.weeklyDigestEnabled : preference.dailyDigestEnabled;
   if (!enabled || !user?.email) {
-    await supabase
+    await Database
       .from('student_auto_apply_digest_runs')
       .update({
         delivery_status: 'skipped',
@@ -902,7 +902,7 @@ const sendStudentAutoApplyDigest = async ({ userId, cadence = 'daily' }) => {
     digest: digestContent
   });
 
-  await supabase
+  await Database
     .from('student_auto_apply_digest_runs')
     .update(emailResult.sent
       ? { delivery_status: 'sent', sent_at: new Date().toISOString() }
@@ -917,7 +917,7 @@ const sendStudentAutoApplyDigest = async ({ userId, cadence = 'daily' }) => {
 };
 
 const processScheduledAutoApplyDigests = async () => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('student_auto_apply_preferences')
     .select('user_id, daily_digest_enabled, weekly_digest_enabled, digest_hour, digest_timezone, weekly_digest_weekday');
 
@@ -929,7 +929,7 @@ const processScheduledAutoApplyDigests = async () => {
     const timeParts = getCurrentTimeParts(preference.digestTimezone);
 
     if (preference.dailyDigestEnabled && timeParts.hour >= preference.digestHour) {
-      const existingDaily = await supabase
+      const existingDaily = await Database
         .from('student_auto_apply_digest_runs')
         .select('id')
         .eq('user_id', row.user_id)
@@ -947,7 +947,7 @@ const processScheduledAutoApplyDigests = async () => {
       && timeParts.weekday === preference.weeklyDigestWeekday
       && timeParts.hour >= preference.digestHour
     ) {
-      const existingWeekly = await supabase
+      const existingWeekly = await Database
         .from('student_auto_apply_digest_runs')
         .select('id')
         .eq('user_id', row.user_id)

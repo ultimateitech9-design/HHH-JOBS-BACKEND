@@ -5,7 +5,7 @@ const configPath = require.resolve('../src/config');
 const emailPath = require.resolve('../src/services/email');
 const indexPath = require.resolve('../index');
 const authRoutePath = require.resolve('../src/routes/auth');
-const supabasePath = require.resolve('../src/supabase');
+const DatabasePath = require.resolve('../src/db');
 const auditServicePath = require.resolve('../src/services/audit');
 const eimagerSyncPath = require.resolve('../src/services/eimagerSync');
 const nodemailerPath = require.resolve('nodemailer');
@@ -14,12 +14,16 @@ const authStorePath = require.resolve('../src/mock/authStore');
 
 const ORIGINAL_ENV = {
   JWT_SECRET: process.env.JWT_SECRET,
-  SUPABASE_URL: process.env.SUPABASE_URL,
-  NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
-  EXPO_PUBLIC_SUPABASE_URL: process.env.EXPO_PUBLIC_SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY,
-  SUPABASE_SECRET_KEY: process.env.SUPABASE_SECRET_KEY,
+  DB_PROVIDER: process.env.DB_PROVIDER,
+  MYSQL_URL: process.env.MYSQL_URL,
+  MYSQL_DATABASE_URL: process.env.MYSQL_DATABASE_URL,
+  DATABASE_URL: process.env.DATABASE_URL,
+  MYSQL_HOST: process.env.MYSQL_HOST,
+  MYSQL_PORT: process.env.MYSQL_PORT,
+  MYSQL_USER: process.env.MYSQL_USER,
+  MYSQL_PASSWORD: process.env.MYSQL_PASSWORD,
+  MYSQL_DATABASE: process.env.MYSQL_DATABASE,
+  MYSQL_DB: process.env.MYSQL_DB,
   CORS_ORIGINS: process.env.CORS_ORIGINS,
   FRONTEND_URL: process.env.FRONTEND_URL,
   CLIENT_URLS: process.env.CLIENT_URLS,
@@ -57,6 +61,19 @@ const restoreEnv = () => {
 
 const clearModule = (modulePath) => {
   delete require.cache[modulePath];
+};
+
+const useLocalAuthFallback = () => {
+  process.env.DB_PROVIDER = 'local';
+  process.env.MYSQL_URL = '';
+  process.env.MYSQL_DATABASE_URL = '';
+  process.env.DATABASE_URL = '';
+  process.env.MYSQL_HOST = '';
+  process.env.MYSQL_PORT = '';
+  process.env.MYSQL_USER = '';
+  process.env.MYSQL_PASSWORD = '';
+  process.env.MYSQL_DATABASE = '';
+  process.env.MYSQL_DB = '';
 };
 
 test('config resolves updated env aliases and normalizes origins', () => {
@@ -276,12 +293,12 @@ test('google oauth exchange repairs missing student profile rows for existing us
   const userUpdates = [];
   let studentProfileExists = false;
 
-  require.cache[supabasePath] = {
-    id: supabasePath,
-    filename: supabasePath,
+  require.cache[DatabasePath] = {
+    id: DatabasePath,
+    filename: DatabasePath,
     loaded: true,
     exports: {
-      supabase: {
+      Database: {
         from(table) {
           if (table === 'users') {
             return {
@@ -371,8 +388,8 @@ test('google oauth exchange repairs missing student profile rows for existing us
           throw new Error(`Unexpected table access: ${table}`);
         }
       },
-      ensureServerConfig: () => true,
-      sendSupabaseError: (res, error, statusCode = 500) => {
+      ensureDatabaseConfig: () => true,
+      sendDatabaseError: (res, error, statusCode = 500) => {
         res.status(statusCode).send({
           status: false,
           message: error?.message || 'Database error'
@@ -472,7 +489,7 @@ test('google oauth exchange repairs missing student profile rows for existing us
     global.fetch = originalFetch;
     clearModule(authRoutePath);
     clearModule(configPath);
-    clearModule(supabasePath);
+    clearModule(DatabasePath);
     clearModule(auditServicePath);
     clearModule(eimagerSyncPath);
     restoreEnv();
@@ -581,12 +598,7 @@ test('email helper retries Gmail with secure transport when the primary SMTP con
 
 test('signup returns quickly when OTP delivery is still in progress', async () => {
   process.env.JWT_SECRET = 'test-secret';
-  process.env.SUPABASE_URL = '';
-  process.env.NEXT_PUBLIC_SUPABASE_URL = '';
-  process.env.EXPO_PUBLIC_SUPABASE_URL = '';
-  process.env.SUPABASE_SERVICE_ROLE_KEY = '';
-  process.env.SUPABASE_SERVICE_KEY = '';
-  process.env.SUPABASE_SECRET_KEY = '';
+  useLocalAuthFallback();
   process.env.CORS_ORIGINS = 'http://localhost:5173';
   process.env.CLIENT_URLS = '';
   process.env.FRONTEND_URL = '';
@@ -654,12 +666,7 @@ test('signup returns quickly when OTP delivery is still in progress', async () =
 
 test('app bootstrap is import-safe and serves health plus CORS headers', async () => {
   process.env.JWT_SECRET = 'test-secret';
-  process.env.SUPABASE_URL = '';
-  process.env.NEXT_PUBLIC_SUPABASE_URL = '';
-  process.env.EXPO_PUBLIC_SUPABASE_URL = '';
-  process.env.SUPABASE_SERVICE_ROLE_KEY = '';
-  process.env.SUPABASE_SERVICE_KEY = '';
-  process.env.SUPABASE_SECRET_KEY = '';
+  useLocalAuthFallback();
   process.env.CORS_ORIGINS = 'http://allowed.example.com';
   process.env.CLIENT_URLS = '';
   process.env.FRONTEND_URL = '';
@@ -698,12 +705,7 @@ test('app bootstrap is import-safe and serves health plus CORS headers', async (
 
 test('login keeps unverified local users in OTP verification flow', async () => {
   process.env.JWT_SECRET = 'test-secret';
-  process.env.SUPABASE_URL = '';
-  process.env.NEXT_PUBLIC_SUPABASE_URL = '';
-  process.env.EXPO_PUBLIC_SUPABASE_URL = '';
-  process.env.SUPABASE_SERVICE_ROLE_KEY = '';
-  process.env.SUPABASE_SERVICE_KEY = '';
-  process.env.SUPABASE_SECRET_KEY = '';
+  useLocalAuthFallback();
   process.env.CORS_ORIGINS = 'http://localhost:5173';
   process.env.CLIENT_URLS = '';
   process.env.FRONTEND_URL = '';
@@ -791,12 +793,7 @@ test('login keeps unverified local users in OTP verification flow', async () => 
 
 test('signup reuses existing unverified email instead of blocking with already registered', async () => {
   process.env.JWT_SECRET = 'test-secret';
-  process.env.SUPABASE_URL = '';
-  process.env.NEXT_PUBLIC_SUPABASE_URL = '';
-  process.env.EXPO_PUBLIC_SUPABASE_URL = '';
-  process.env.SUPABASE_SERVICE_ROLE_KEY = '';
-  process.env.SUPABASE_SERVICE_KEY = '';
-  process.env.SUPABASE_SECRET_KEY = '';
+  useLocalAuthFallback();
   process.env.CORS_ORIGINS = 'http://localhost:5173';
   process.env.CLIENT_URLS = '';
   process.env.FRONTEND_URL = '';
@@ -858,12 +855,7 @@ test('signup reuses existing unverified email instead of blocking with already r
 
 test('signup returns a soft login redirect for already verified emails instead of a 409', async () => {
   process.env.JWT_SECRET = 'test-secret';
-  process.env.SUPABASE_URL = '';
-  process.env.NEXT_PUBLIC_SUPABASE_URL = '';
-  process.env.EXPO_PUBLIC_SUPABASE_URL = '';
-  process.env.SUPABASE_SERVICE_ROLE_KEY = '';
-  process.env.SUPABASE_SERVICE_KEY = '';
-  process.env.SUPABASE_SECRET_KEY = '';
+  useLocalAuthFallback();
   process.env.CORS_ORIGINS = 'http://localhost:5173';
   process.env.CLIENT_URLS = '';
   process.env.FRONTEND_URL = '';

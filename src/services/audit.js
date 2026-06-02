@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { isValidUuid } = require('../utils/helpers');
 
 const logAudit = async ({
@@ -9,10 +9,10 @@ const logAudit = async ({
     details = {},
     ipAddress = null
 }) => {
-    if (!supabase || !action || !entityType) return;
+    if (!Database || !action || !entityType) return;
 
     try {
-        await supabase.from('audit_logs').insert({
+        await Database.from('audit_logs').insert({
             user_id: isValidUuid(userId) ? userId : null,
             action,
             entity_type: entityType,

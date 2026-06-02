@@ -5,18 +5,17 @@ const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const dotenv = require('dotenv');
-const { createClient } = require('@supabase/supabase-js');
 
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
-const config = require('../src/config');
+const { Database } = require('../src/db');
 const { ROLES } = require('../src/constants');
 const { sendEmailWithFallback, isEmailConfigured } = require('../src/services/email');
 
 const DEFAULT_SEED_DIR = path.join(
   __dirname,
   '..',
-  'supabase',
+  'database',
   'seeds',
   '20260514_resume_bulk_seed_50_chunks'
 );
@@ -29,7 +28,7 @@ Usage:
   node scripts/send-seeded-student-welcome.js [options]
 
 Options:
-  --seed-dir <path>            Seed chunk directory (default: supabase/seeds/20260514_resume_bulk_seed_50_chunks)
+  --seed-dir <path>            Seed chunk directory (default: database/seeds/20260514_resume_bulk_seed_50_chunks)
   --send                       Actually reset passwords and send emails. Without this, dry-run only.
   --offset <n>                 Skip first N seeded emails before applying --limit
   --limit <n>                  Process only first N seeded emails
@@ -167,23 +166,21 @@ const readSeedCandidates = (seedDir) => {
   return Array.from(byEmail.values());
 };
 
-const createSupabaseClient = () => {
-  if (!config.supabaseUrl || !config.supabaseServiceRoleKey) {
-    throw new Error('Missing SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY in backend .env.');
+const createDatabaseClient = () => {
+  if (!Database) {
+    throw new Error('Missing MySQL/JWT configuration in backend .env.');
   }
 
-  return createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
-    auth: { persistSession: false }
-  });
+  return Database;
 };
 
-const fetchSeededStudentAccounts = async ({ supabase, candidates }) => {
+const fetchSeededStudentAccounts = async ({ Database, candidates }) => {
   const candidatesByEmail = new Map(candidates.map((candidate) => [candidate.email, candidate]));
   const emails = candidates.map((candidate) => candidate.email);
   const users = [];
 
   for (const emailBatch of chunkItems(emails, 100)) {
-    const { data, error } = await supabase
+    const { data, error } = await Database
       .from('users')
       .select('id, name, email, role, status')
       .in('email', emailBatch);
@@ -196,7 +193,7 @@ const fetchSeededStudentAccounts = async ({ supabase, candidates }) => {
   const profileRows = [];
   for (const idBatch of chunkItems(studentUsers.map((user) => user.id), 100)) {
     if (idBatch.length === 0) continue;
-    const { data, error } = await supabase
+    const { data, error } = await Database
       .from('student_profiles')
       .select('user_id, eimager_id')
       .in('user_id', idBatch);
@@ -324,11 +321,11 @@ const buildWelcomeMessage = ({ account, password, baseUrl, dashboardPath }) => {
   return { subject, text, html };
 };
 
-const sendAccountEmail = async ({ supabase, account, baseUrl, dashboardPath }) => {
+const sendAccountEmail = async ({ Database, account, baseUrl, dashboardPath }) => {
   const password = generateTempPassword();
   const passwordHash = await bcrypt.hash(password, 10);
 
-  const updateResult = await supabase
+  const updateResult = await Database
     .from('users')
     .update({
       password_hash: passwordHash,
@@ -434,9 +431,9 @@ const main = async () => {
     ? offsetCandidates.slice(0, args.limit)
     : offsetCandidates;
 
-  const supabase = createSupabaseClient();
+  const Database = createDatabaseClient();
   const { accounts, missingEmails, skippedNonStudents } = await fetchSeededStudentAccounts({
-    supabase,
+    Database,
     candidates: limitedCandidates
   });
 
@@ -477,7 +474,7 @@ const main = async () => {
 
       try {
         const result = await sendAccountEmail({
-          supabase,
+          Database,
           account,
           baseUrl: args.baseUrl,
           dashboardPath: args.dashboardPath

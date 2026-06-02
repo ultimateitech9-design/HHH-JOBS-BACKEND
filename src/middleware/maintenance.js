@@ -1,5 +1,5 @@
 const { ROLES } = require('../constants');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const CACHE_TTL_MS = 5000;
 let cache = { expiresAt: 0, enabled: false };
@@ -12,12 +12,12 @@ const readMaintenanceMode = async () => {
   const now = Date.now();
   if (cache.expiresAt > now) return cache.enabled;
 
-  if (!supabase) {
+  if (!Database) {
     cache = { expiresAt: now + CACHE_TTL_MS, enabled: false };
     return false;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_settings')
     .select('key, value')
     .in('key', ['maintenanceMode', 'maintenance_mode']);

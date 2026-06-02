@@ -129,12 +129,12 @@ const chunk = (items = [], size = 500) => {
   return result;
 };
 
-const countRowsForUserIds = async ({ supabase, table, userIds = [] }) => {
-  if (!supabase || !table || !Array.isArray(userIds) || userIds.length === 0) return 0;
+const countRowsForUserIds = async ({ Database, table, userIds = [] }) => {
+  if (!Database || !table || !Array.isArray(userIds) || userIds.length === 0) return 0;
 
   let total = 0;
   for (const userIdChunk of chunk(userIds, 250)) {
-    const { count, error } = await supabase
+    const { count, error } = await Database
       .from(table)
       .select('user_id', { count: 'exact', head: true })
       .in('user_id', userIdChunk);
@@ -340,14 +340,14 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
   return basePayload;
 };
 
-const ensureRoleProfile = async ({ supabase, role, userId, reqBody = {} }) => {
+const ensureRoleProfile = async ({ Database, role, userId, reqBody = {} }) => {
   const table = getProfileTableForRole(role);
   const shouldSyncEmployeeProfile = isEmployeeProfileRole(role);
-  if (!supabase || !userId || (!table && !shouldSyncEmployeeProfile)) return null;
+  if (!Database || !userId || (!table && !shouldSyncEmployeeProfile)) return null;
 
   if (shouldSyncEmployeeProfile) {
     const employeePayload = buildEmployeeProfilePayload({ role, userId, reqBody });
-    const { data: existingEmployeeProfile, error: employeeLookupError } = await supabase
+    const { data: existingEmployeeProfile, error: employeeLookupError } = await Database
       .from('employee_profiles')
       .select('id')
       .eq('user_id', userId)
@@ -356,7 +356,7 @@ const ensureRoleProfile = async ({ supabase, role, userId, reqBody = {} }) => {
     if (employeeLookupError) throw employeeLookupError;
 
     if (!existingEmployeeProfile?.id) {
-      const { error } = await supabase.from('employee_profiles').insert(employeePayload);
+      const { error } = await Database.from('employee_profiles').insert(employeePayload);
       if (error) throw error;
     }
   }
@@ -366,7 +366,7 @@ const ensureRoleProfile = async ({ supabase, role, userId, reqBody = {} }) => {
   }
 
   const payload = buildRoleProfilePayload({ role, userId, reqBody });
-  const { data: existingProfile, error: lookupError } = await supabase
+  const { data: existingProfile, error: lookupError } = await Database
     .from(table)
     .select('id')
     .eq('user_id', userId)
@@ -375,21 +375,21 @@ const ensureRoleProfile = async ({ supabase, role, userId, reqBody = {} }) => {
   if (lookupError) throw lookupError;
 
   if (!existingProfile?.id) {
-    const { error } = await supabase.from(table).insert(payload);
+    const { error } = await Database.from(table).insert(payload);
     if (error) throw error;
   }
 
   return table;
 };
 
-const upsertRoleProfile = async ({ supabase, role, userId, reqBody = {} }) => {
+const upsertRoleProfile = async ({ Database, role, userId, reqBody = {} }) => {
   const table = getProfileTableForRole(role);
   const shouldSyncEmployeeProfile = isEmployeeProfileRole(role);
-  if (!supabase || !userId || (!table && !shouldSyncEmployeeProfile)) return null;
+  if (!Database || !userId || (!table && !shouldSyncEmployeeProfile)) return null;
 
   if (shouldSyncEmployeeProfile) {
     const employeePayload = buildEmployeeProfilePayload({ role, userId, reqBody });
-    const { data: existingEmployeeProfile, error: employeeLookupError } = await supabase
+    const { data: existingEmployeeProfile, error: employeeLookupError } = await Database
       .from('employee_profiles')
       .select('id')
       .eq('user_id', userId)
@@ -398,14 +398,14 @@ const upsertRoleProfile = async ({ supabase, role, userId, reqBody = {} }) => {
     if (employeeLookupError) throw employeeLookupError;
 
     if (existingEmployeeProfile?.id) {
-      const { error } = await supabase
+      const { error } = await Database
         .from('employee_profiles')
         .update(employeePayload)
         .eq('id', existingEmployeeProfile.id);
 
       if (error) throw error;
     } else {
-      const { error } = await supabase.from('employee_profiles').insert(employeePayload);
+      const { error } = await Database.from('employee_profiles').insert(employeePayload);
       if (error) throw error;
     }
   }
@@ -415,7 +415,7 @@ const upsertRoleProfile = async ({ supabase, role, userId, reqBody = {} }) => {
   }
 
   const payload = buildRoleProfilePayload({ role, userId, reqBody });
-  const { data: existingProfile, error: lookupError } = await supabase
+  const { data: existingProfile, error: lookupError } = await Database
     .from(table)
     .select('id')
     .eq('user_id', userId)
@@ -424,7 +424,7 @@ const upsertRoleProfile = async ({ supabase, role, userId, reqBody = {} }) => {
   if (lookupError) throw lookupError;
 
   if (existingProfile?.id) {
-    const { error } = await supabase
+    const { error } = await Database
       .from(table)
       .update(payload)
       .eq('id', existingProfile.id);
@@ -433,15 +433,15 @@ const upsertRoleProfile = async ({ supabase, role, userId, reqBody = {} }) => {
     return table;
   }
 
-  const { error } = await supabase.from(table).insert(payload);
+  const { error } = await Database.from(table).insert(payload);
   if (error) throw error;
   return table;
 };
 
-const getRoleSyncSummary = async ({ supabase }) => {
-  if (!supabase) return [];
+const getRoleSyncSummary = async ({ Database }) => {
+  if (!Database) return [];
 
-  const { data: summaryRows, error: summaryError } = await supabase
+  const { data: summaryRows, error: summaryError } = await Database
     .from('role_profile_sync_summary')
     .select('*')
     .order('role');
@@ -450,7 +450,7 @@ const getRoleSyncSummary = async ({ supabase }) => {
     return summaryRows.map(mapRoleSyncSummaryRow);
   }
 
-  const { data: users, error } = await supabase
+  const { data: users, error } = await Database
     .from('users')
     .select('id, role');
 
@@ -473,10 +473,10 @@ const getRoleSyncSummary = async ({ supabase }) => {
     const userIds = usersByRole[config.role] || [];
     const usersCount = userIds.length;
     const roleProfileRows = config.table
-      ? await countRowsForUserIds({ supabase, table: config.table, userIds })
+      ? await countRowsForUserIds({ Database, table: config.table, userIds })
       : 0;
     const employeeProfileRows = config.requiresEmployeeProfile
-      ? await countRowsForUserIds({ supabase, table: 'employee_profiles', userIds })
+      ? await countRowsForUserIds({ Database, table: 'employee_profiles', userIds })
       : 0;
 
     summaries.push({
@@ -495,8 +495,8 @@ const getRoleSyncSummary = async ({ supabase }) => {
   return summaries;
 };
 
-const repairRoleProfiles = async ({ supabase, roles = [] }) => {
-  if (!supabase) {
+const repairRoleProfiles = async ({ Database, roles = [] }) => {
+  if (!Database) {
     return {
       processedUsers: 0,
       failedUsers: []
@@ -515,7 +515,7 @@ const repairRoleProfiles = async ({ supabase, roles = [] }) => {
   const batchSize = 200;
 
   while (true) {
-    let query = supabase
+    let query = Database
       .from('users')
       .select('id, role, email')
       .order('created_at', { ascending: true })
@@ -534,7 +534,7 @@ const repairRoleProfiles = async ({ supabase, roles = [] }) => {
     for (const user of batch) {
       try {
         await ensureRoleProfile({
-          supabase,
+          Database,
           role: user.role,
           userId: user.id,
           reqBody: buildProfileSeedFromUser(user)

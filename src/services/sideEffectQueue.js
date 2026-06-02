@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { enqueueQueueJob, registerQueueHandlers, startQueueWorkers, stopQueueWorkers } = require('./jobQueue');
 const { countEligibleCampusStudentsForDrive, publishCampusDriveNotifications } = require('./campusDrives');
 
@@ -21,7 +21,7 @@ const registerSideEffectHandlers = () => {
   registerQueueHandlers({
     [SIDE_EFFECT_JOB_TYPES.JOB_POSTED_FANOUT]: async ({ jobId, triggerSource = 'job_created' }) => {
       const [{ data: job, error: jobError }, notifications, recommendations, autoApply, companySubscriptions] = await Promise.all([
-        supabase.from('jobs').select('*').eq('id', jobId).maybeSingle(),
+        Database.from('jobs').select('*').eq('id', jobId).maybeSingle(),
         Promise.resolve(require('./notifications')),
         Promise.resolve(require('./recommendations')),
         Promise.resolve(require('./autoApply')),
@@ -41,7 +41,7 @@ const registerSideEffectHandlers = () => {
       await sendCampusInviteEmail(payload);
     },
     [SIDE_EFFECT_JOB_TYPES.CAMPUS_DRIVE_FANOUT]: async ({ collegeId, driveId, actorUserId = null }) => {
-      const { data: drive, error } = await supabase
+      const { data: drive, error } = await Database
         .from('campus_drives')
         .select('*')
         .eq('id', driveId)
@@ -79,7 +79,7 @@ const registerSideEffectHandlers = () => {
         }))
         .filter((item) => item.item_type && item.item_value);
 
-      const deleteResp = await supabase
+      const deleteResp = await Database
         .from('ats_check_items')
         .delete()
         .eq('ats_check_id', atsCheckId);
@@ -88,7 +88,7 @@ const registerSideEffectHandlers = () => {
 
       if (rows.length === 0) return;
 
-      const insertResp = await supabase
+      const insertResp = await Database
         .from('ats_check_items')
         .insert(rows);
 

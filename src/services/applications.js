@@ -1,4 +1,4 @@
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
 const { normalizeEmail } = require('../utils/helpers');
 const { mapApplicationFromRow } = require('../utils/mappers');
@@ -15,7 +15,7 @@ const buildApplicationError = (statusCode, message, code = '') => {
 };
 
 const loadOpenJobForApplication = async (jobId) => {
-  const { data: fetchedJob, error: jobError } = await supabase
+  const { data: fetchedJob, error: jobError } = await Database
     .from('jobs')
     .select('*')
     .eq('id', jobId)
@@ -61,7 +61,7 @@ const resolveResumeForApplication = async ({
   const shouldUseProfileResume = Boolean(useProfileResume) || (!nextResumeUrl && !nextResumeText);
 
   if (shouldUseProfileResume) {
-    const { data: profile, error: profileError } = await supabase
+    const { data: profile, error: profileError } = await Database
       .from('student_profiles')
       .select('resume_url, resume_text')
       .eq('user_id', userId)
@@ -118,7 +118,7 @@ const submitApplicationForUser = async ({
     status: 'applied'
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('applications')
     .insert(applicationInsert)
     .select('*')
@@ -131,7 +131,7 @@ const submitApplicationForUser = async ({
     throw error;
   }
 
-  await supabase.from('job_applications').insert({
+  await Database.from('job_applications').insert({
     job_id: jobId,
     applicant_email: normalizeEmail(user.email),
     resume_link: resolvedResume.resumeUrl || 'PROFILE_RESUME_TEXT'
@@ -146,7 +146,7 @@ const submitApplicationForUser = async ({
     meta: { jobId: job.id, applicationId: data.id }
   });
 
-  const applicationCountResponse = await supabase
+  const applicationCountResponse = await Database
     .from('applications')
     .select('id', { count: 'exact', head: true })
     .eq('job_id', job.id);
@@ -223,7 +223,7 @@ const applyToJob = async (req, res) => {
       return;
     }
 
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 };

@@ -4,7 +4,7 @@ const config = require('../config');
 const { ROLES, USER_STATUSES, JOB_STATUSES, APPLICATION_STATUSES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('../middleware/roles');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { isValidUuid, toArray, maskEmail, maskMobile, asyncHandler } = require('../utils/helpers');
 const { resolveStructuredLocation } = require('../utils/geography');
 const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
@@ -106,26 +106,26 @@ router.get('/profile', asyncHandler(async (req, res) => {
     ? req.query.userId
     : req.user.id;
 
-  let { data, error } = await supabase
+  let { data, error } = await Database
     .from('hr_profiles')
     .select('*')
     .eq('user_id', targetUserId)
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
   if (!data) {
-    const inserted = await supabase
+    const inserted = await Database
       .from('hr_profiles')
       .insert({ user_id: targetUserId })
       .select('*')
       .single();
 
     if (inserted.error) {
-      sendSupabaseError(res, inserted.error);
+      sendDatabaseError(res, inserted.error);
       return;
     }
 
@@ -140,14 +140,14 @@ router.put('/profile', asyncHandler(async (req, res) => {
     ? req.body.userId
     : req.user.id;
 
-  const previousProfileResponse = await supabase
+  const previousProfileResponse = await Database
     .from('hr_profiles')
     .select('company_name')
     .eq('user_id', targetUserId)
     .maybeSingle();
 
   if (previousProfileResponse.error) {
-    sendSupabaseError(res, previousProfileResponse.error);
+    sendDatabaseError(res, previousProfileResponse.error);
     return;
   }
 
@@ -187,14 +187,14 @@ router.put('/profile', asyncHandler(async (req, res) => {
     logo_url: req.body?.logoUrl
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_profiles')
     .upsert(payload, { onConflict: 'user_id' })
     .select('*')
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -222,7 +222,7 @@ router.post('/jobs/:id/payment', requireApprovedHr, asyncHandler(async (req, res
   const referenceId = String(req.body?.referenceId || '').trim() || null;
   const note = String(req.body?.note || '').trim() || null;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('job_payments')
     .insert({
       job_id: jobId,
@@ -239,11 +239,11 @@ router.post('/jobs/:id/payment', requireApprovedHr, asyncHandler(async (req, res
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
-  await supabase.from('jobs').update({ is_paid: true }).eq('id', jobId);
+  await Database.from('jobs').update({ is_paid: true }).eq('id', jobId);
 
   res.status(201).send({ status: true, payment: data });
 }));
@@ -253,7 +253,7 @@ router.patch('/jobs/:id/close', requireApprovedHr, asyncHandler(async (req, res)
   const existingJob = await assertJobOwnership(jobId, req.user, res);
   if (!existingJob) return;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('jobs')
     .update({ status: JOB_STATUSES.CLOSED, closed_at: new Date().toISOString() })
     .eq('id', jobId)
@@ -261,7 +261,7 @@ router.patch('/jobs/:id/close', requireApprovedHr, asyncHandler(async (req, res)
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -273,7 +273,7 @@ router.get('/jobs', asyncHandler(async (req, res) => {
     ? req.query.userId
     : req.user.id;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('jobs')
     .select('*')
     .eq('created_by', targetUserId)
@@ -281,7 +281,7 @@ router.get('/jobs', asyncHandler(async (req, res) => {
     .order('created_at', { ascending: false });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -294,14 +294,14 @@ router.get('/jobs/:id/applicants', requireApprovedHr, asyncHandler(async (req, r
   if (!job) return;
   const canViewContacts = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) || Boolean(job.contact_details_visible);
 
-  const { data: applications, error } = await supabase
+  const { data: applications, error } = await Database
     .from('applications')
     .select('*')
     .eq('job_id', jobId)
     .order('created_at', { ascending: false });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -309,13 +309,13 @@ router.get('/jobs/:id/applicants', requireApprovedHr, asyncHandler(async (req, r
   let usersMap = {};
 
   if (applicantIds.length > 0) {
-    const usersResponse = await supabase
+    const usersResponse = await Database
       .from('users')
       .select('id, name, email, mobile')
       .in('id', applicantIds);
 
     if (usersResponse.error) {
-      sendSupabaseError(res, usersResponse.error);
+      sendDatabaseError(res, usersResponse.error);
       return;
     }
 
@@ -348,14 +348,14 @@ router.patch('/applications/:id/status', requireApprovedHr, asyncHandler(async (
     return;
   }
 
-  const { data: application, error: appError } = await supabase
+  const { data: application, error: appError } = await Database
     .from('applications')
     .select('*')
     .eq('id', applicationId)
     .maybeSingle();
 
   if (appError) {
-    sendSupabaseError(res, appError);
+    sendDatabaseError(res, appError);
     return;
   }
   if (!application) {
@@ -366,7 +366,7 @@ router.patch('/applications/:id/status', requireApprovedHr, asyncHandler(async (
   const job = await assertJobOwnership(application.job_id, req.user, res);
   if (!job) return;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('applications')
     .update({
       status,
@@ -379,7 +379,7 @@ router.patch('/applications/:id/status', requireApprovedHr, asyncHandler(async (
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -392,7 +392,7 @@ router.patch('/applications/:id/status', requireApprovedHr, asyncHandler(async (
     meta: { applicationId: data.id, jobId: job.id, status }
   });
 
-  const { data: applicantUser } = await supabase
+  const { data: applicantUser } = await Database
     .from('users')
     .select('name, email')
     .eq('id', application.applicant_id)
@@ -421,14 +421,14 @@ router.get('/analytics', asyncHandler(async (req, res) => {
     ? req.query.userId
     : req.user.id;
 
-  const { data: jobs, error: jobsError } = await supabase
+  const { data: jobs, error: jobsError } = await Database
     .from('jobs')
     .select('id, status, views_count, applications_count')
     .eq('created_by', targetUserId)
     .neq('status', JOB_STATUSES.DELETED);
 
   if (jobsError) {
-    sendSupabaseError(res, jobsError);
+    sendDatabaseError(res, jobsError);
     return;
   }
 
@@ -437,13 +437,13 @@ router.get('/analytics', asyncHandler(async (req, res) => {
 
   let applications = [];
   if (jobIds.length > 0) {
-    const applicationsResp = await supabase
+    const applicationsResp = await Database
       .from('applications')
       .select('id, status')
       .in('job_id', jobIds);
 
     if (applicationsResp.error) {
-      sendSupabaseError(res, applicationsResp.error);
+      sendDatabaseError(res, applicationsResp.error);
       return;
     }
 
@@ -474,13 +474,13 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
     : req.user.id;
 
   const [{ data: jobs, error: jobsError }, { data: interviews, error: interviewsError }] = await Promise.all([
-    supabase
+    Database
       .from('jobs')
       .select('id, job_title, company_name, status, applications_count, created_at, updated_at')
       .eq('created_by', targetUserId)
       .neq('status', JOB_STATUSES.DELETED)
       .order('updated_at', { ascending: false }),
-    supabase
+    Database
       .from('interview_schedules')
       .select('id, title, status, candidate_id, job_id, campus_drive_id, scheduled_at, created_at, updated_at')
       .eq('hr_id', targetUserId)
@@ -489,11 +489,11 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
   ]);
 
   if (jobsError) {
-    sendSupabaseError(res, jobsError);
+    sendDatabaseError(res, jobsError);
     return;
   }
   if (interviewsError) {
-    sendSupabaseError(res, interviewsError);
+    sendDatabaseError(res, interviewsError);
     return;
   }
 
@@ -503,7 +503,7 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
   let applications = [];
 
   if (jobIds.length > 0) {
-    const applicationsResp = await supabase
+    const applicationsResp = await Database
       .from('applications')
       .select('id, job_id, applicant_id, applicant_email, status, status_updated_at, created_at, updated_at')
       .in('job_id', jobIds)
@@ -511,14 +511,14 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
       .limit(20);
 
     if (applicationsResp.error) {
-      sendSupabaseError(res, applicationsResp.error);
+      sendDatabaseError(res, applicationsResp.error);
       return;
     }
 
     applications = applicationsResp.data || [];
   }
 
-  const { data: hrProfile } = await supabase
+  const { data: hrProfile } = await Database
     .from('hr_profiles')
     .select('company_name')
     .eq('user_id', targetUserId)
@@ -529,21 +529,21 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
   const companyName = String(hrProfile?.company_name || '').trim();
 
   if (companyName) {
-    const connectionsResp = await supabase
+    const connectionsResp = await Database
       .from('campus_connections')
       .select('college_id')
       .eq('company_user_id', targetUserId)
       .eq('status', 'accepted');
 
     if (connectionsResp.error && !isMissingCampusTable(connectionsResp.error)) {
-      sendSupabaseError(res, connectionsResp.error);
+      sendDatabaseError(res, connectionsResp.error);
       return;
     }
 
     const collegeIds = (connectionsResp.data || []).map((connection) => connection.college_id).filter(Boolean);
 
     if (collegeIds.length > 0) {
-      const drivesResp = await supabase
+      const drivesResp = await Database
         .from('campus_drives')
         .select('id, college_id, company_name, job_title, status, created_at, updated_at, college:colleges!campus_drives_college_id_fkey(id, name)')
         .ilike('company_name', companyName)
@@ -551,7 +551,7 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
         .order('updated_at', { ascending: false });
 
       if (drivesResp.error && !isMissingCampusTable(drivesResp.error)) {
-        sendSupabaseError(res, drivesResp.error);
+        sendDatabaseError(res, drivesResp.error);
         return;
       }
 
@@ -559,7 +559,7 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
       const driveIds = campusDrives.map((drive) => drive.id).filter(Boolean);
 
       if (driveIds.length > 0) {
-        const campusApplicationsResp = await supabase
+        const campusApplicationsResp = await Database
           .from('campus_drive_applications')
           .select('id, drive_id, student_user_id, applicant_email, status, applied_at, created_at, updated_at, reviewed_at, decision_at')
           .in('drive_id', driveIds)
@@ -567,7 +567,7 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
           .limit(20);
 
         if (campusApplicationsResp.error && !isMissingCampusTable(campusApplicationsResp.error)) {
-          sendSupabaseError(res, campusApplicationsResp.error);
+          sendDatabaseError(res, campusApplicationsResp.error);
           return;
         }
 
@@ -584,13 +584,13 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
   let candidateMap = {};
 
   if (candidateIds.length > 0) {
-    const candidatesResp = await supabase
+    const candidatesResp = await Database
       .from('users')
       .select('id, name')
       .in('id', candidateIds);
 
     if (candidatesResp.error) {
-      sendSupabaseError(res, candidatesResp.error);
+      sendDatabaseError(res, candidatesResp.error);
       return;
     }
 
@@ -710,7 +710,7 @@ router.get('/candidates/search', requireApprovedHr, requirePlanFeature('hr.candi
     });
   } catch (error) {
     if (error?.code) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
@@ -760,10 +760,10 @@ router.post('/candidates/:studentId/interest', requireApprovedHr, requirePlanFea
   const template = await resolveTemplateForInterest({ hrUserId: req.user.id, templateId });
 
   const [{ data: studentUser }, { data: studentProfile }, { data: hrProfile }, { data: hrUser }] = await Promise.all([
-    supabase.from('users').select('id, name').eq('id', studentId).maybeSingle(),
-    supabase.from('student_profiles').select('education').eq('user_id', studentId).maybeSingle(),
-    supabase.from('hr_profiles').select('company_name').eq('user_id', req.user.id).maybeSingle(),
-    supabase.from('users').select('name').eq('id', req.user.id).maybeSingle()
+    Database.from('users').select('id, name').eq('id', studentId).maybeSingle(),
+    Database.from('student_profiles').select('education').eq('user_id', studentId).maybeSingle(),
+    Database.from('hr_profiles').select('company_name').eq('user_id', req.user.id).maybeSingle(),
+    Database.from('users').select('name').eq('id', req.user.id).maybeSingle()
   ]);
 
   if (!studentUser) {
@@ -782,7 +782,7 @@ router.post('/candidates/:studentId/interest', requireApprovedHr, requirePlanFea
   };
   const message = directMessage || (template ? buildSystemTemplateMessage({ template, candidate: fallbackCandidate, hrProfile }) : '');
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_candidate_interests')
     .upsert({
       hr_user_id: req.user.id,
@@ -797,7 +797,7 @@ router.post('/candidates/:studentId/interest', requireApprovedHr, requirePlanFea
 
   if (error) {
     if (error.code === '23505') return res.status(409).send({ status: false, message: 'Interest already sent to this candidate.' });
-    sendSupabaseError(res, error); return;
+    sendDatabaseError(res, error); return;
   }
 
   await createNotification({
@@ -842,10 +842,10 @@ router.post('/candidates/bulk-interest', requireApprovedHr, requirePlanFeature('
   }
 
   const [{ data: hrProfile }, { data: hrUser }, { data: candidateUsers }, { data: candidateProfiles }] = await Promise.all([
-    supabase.from('hr_profiles').select('company_name').eq('user_id', req.user.id).maybeSingle(),
-    supabase.from('users').select('name').eq('id', req.user.id).maybeSingle(),
-    supabase.from('users').select('id, name').in('id', studentIds),
-    supabase.from('student_profiles').select('user_id, education').in('user_id', studentIds)
+    Database.from('hr_profiles').select('company_name').eq('user_id', req.user.id).maybeSingle(),
+    Database.from('users').select('name').eq('id', req.user.id).maybeSingle(),
+    Database.from('users').select('id, name').in('id', studentIds),
+    Database.from('student_profiles').select('user_id, education').in('user_id', studentIds)
   ]);
 
   const userMap = Object.fromEntries((candidateUsers || []).map((item) => [item.id, item]));
@@ -872,12 +872,12 @@ router.post('/candidates/bulk-interest', requireApprovedHr, requirePlanFeature('
     };
   });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_candidate_interests')
     .upsert(rows, { onConflict: 'hr_user_id,student_user_id', ignoreDuplicates: true })
     .select('id, student_user_id');
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const senderName = hrProfile?.company_name || hrUser?.name || 'A company';
 
@@ -904,7 +904,7 @@ router.get('/candidates/message-templates', requireApprovedHr, asyncHandler(asyn
     res.send({ status: true, access, templates });
   } catch (error) {
     if (error?.code) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
@@ -924,7 +924,7 @@ router.post('/candidates/message-templates', requireApprovedHr, asyncHandler(asy
     res.status(201).send({ status: true, template });
   } catch (error) {
     if (error?.code) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
@@ -945,7 +945,7 @@ router.patch('/candidates/message-templates/:templateId', requireApprovedHr, asy
     res.send({ status: true, template });
   } catch (error) {
     if (error?.code) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
@@ -963,7 +963,7 @@ router.delete('/candidates/message-templates/:templateId', requireApprovedHr, as
     res.send({ status: true });
   } catch (error) {
     if (error?.code) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
@@ -977,7 +977,7 @@ router.get('/candidates/interests', requireApprovedHr, asyncHandler(async (req, 
     res.send({ status: true, access: result.access, summary: result.summary, interests: result.interests });
   } catch (error) {
     if (error?.code) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
@@ -991,7 +991,7 @@ router.get('/shortlisted', requireApprovedHr, asyncHandler(async (req, res) => {
     res.send({ status: true, access: result.access, summary: result.summary, shortlisted: result.shortlisted });
   } catch (error) {
     if (error?.code) {
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
@@ -1006,17 +1006,17 @@ router.post('/shortlisted', requireApprovedHr, asyncHandler(async (req, res) => 
   const tags = Array.isArray(req.body?.tags) ? req.body.tags.map(String).filter(Boolean) : [];
   const notes = String(req.body?.notes || '').trim() || null;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_shortlisted_candidates')
     .upsert({ hr_user_id: req.user.id, student_user_id: studentId, tags, notes, updated_at: new Date().toISOString() }, { onConflict: 'hr_user_id,student_user_id' })
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const [{ data: studentUser }, { data: hrProfile }] = await Promise.all([
-    supabase.from('users').select('name, email').eq('id', studentId).maybeSingle(),
-    supabase.from('hr_profiles').select('company_name').eq('user_id', req.user.id).maybeSingle()
+    Database.from('users').select('name, email').eq('id', studentId).maybeSingle(),
+    Database.from('hr_profiles').select('company_name').eq('user_id', req.user.id).maybeSingle()
   ]);
 
   await sendStudentAndHrActionEmails({
@@ -1048,7 +1048,7 @@ router.patch('/shortlisted/:studentId', requireApprovedHr, asyncHandler(async (r
   if (Array.isArray(req.body?.tags)) updateDoc.tags = req.body.tags.map(String).filter(Boolean);
   if (req.body?.notes !== undefined) updateDoc.notes = String(req.body.notes || '').trim() || null;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_shortlisted_candidates')
     .update(updateDoc)
     .eq('hr_user_id', req.user.id)
@@ -1056,7 +1056,7 @@ router.patch('/shortlisted/:studentId', requireApprovedHr, asyncHandler(async (r
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, shortlisted: data });
 }));
@@ -1065,26 +1065,26 @@ router.delete('/shortlisted/:studentId', requireApprovedHr, asyncHandler(async (
   const { studentId } = req.params;
   if (!isValidUuid(studentId)) return res.status(400).send({ status: false, message: 'Invalid studentId' });
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('hr_shortlisted_candidates')
     .delete()
     .eq('hr_user_id', req.user.id)
     .eq('student_user_id', studentId);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true });
 }));
 
 router.get('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('interview_schedules')
     .select('*')
     .eq('hr_id', req.user.id)
     .order('scheduled_at', { ascending: true });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -1098,13 +1098,13 @@ router.get('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
   let campusDriveMap = {};
 
   if (candidateIds.length > 0) {
-    const candidatesResp = await supabase
+    const candidatesResp = await Database
       .from('users')
       .select('id, name, email')
       .in('id', candidateIds);
 
     if (candidatesResp.error) {
-      sendSupabaseError(res, candidatesResp.error);
+      sendDatabaseError(res, candidatesResp.error);
       return;
     }
 
@@ -1112,13 +1112,13 @@ router.get('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
   }
 
   if (jobIds.length > 0) {
-    const jobsResp = await supabase
+    const jobsResp = await Database
       .from('jobs')
       .select('id, job_title, company_name')
       .in('id', jobIds);
 
     if (jobsResp.error) {
-      sendSupabaseError(res, jobsResp.error);
+      sendDatabaseError(res, jobsResp.error);
       return;
     }
 
@@ -1126,13 +1126,13 @@ router.get('/interviews', requireApprovedHr, asyncHandler(async (req, res) => {
   }
 
   if (campusDriveIds.length > 0) {
-    const campusDriveResp = await supabase
+    const campusDriveResp = await Database
       .from('campus_drives')
       .select('id, job_title, company_name')
       .in('id', campusDriveIds);
 
     if (campusDriveResp.error) {
-      sendSupabaseError(res, campusDriveResp.error);
+      sendDatabaseError(res, campusDriveResp.error);
       return;
     }
 
@@ -1214,7 +1214,7 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
   if (sourceType === 'campus' && (!interviewCapabilities.hasSourceType || !interviewCapabilities.hasCampusDriveId || !interviewCapabilities.hasCampusApplicationId)) {
     res.status(409).send({
       status: false,
-      message: 'Campus interview rooms require the latest interview-room migration. Apply the new Supabase migration and retry.'
+      message: 'Campus interview rooms require the latest interview-room migration. Apply the new Database migration and retry.'
     });
     return;
   }
@@ -1222,7 +1222,7 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
   if (wantsSharedRoom && !interviewCapabilities.hasSharedRoomHostInterviewId) {
     res.status(409).send({
       status: false,
-      message: 'Shared interview rooms require the latest interview-room migration. Apply the new Supabase migration and retry.'
+      message: 'Shared interview rooms require the latest interview-room migration. Apply the new Database migration and retry.'
     });
     return;
   }
@@ -1238,13 +1238,13 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
       return;
     }
 
-    const { data: applications, error: appError } = await supabase
+    const { data: applications, error: appError } = await Database
       .from('applications')
       .select('*')
       .in('id', applicationIds);
 
     if (appError) {
-      sendSupabaseError(res, appError);
+      sendDatabaseError(res, appError);
       return;
     }
 
@@ -1281,7 +1281,7 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
       return;
     }
 
-    const { data: hrProfile } = await supabase
+    const { data: hrProfile } = await Database
       .from('hr_profiles')
       .select('company_name')
       .eq('user_id', req.user.id)
@@ -1289,14 +1289,14 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
 
     const companyName = String(hrProfile?.company_name || '').trim();
 
-    const { data: drive, error: driveErr } = await supabase
+    const { data: drive, error: driveErr } = await Database
       .from('campus_drives')
       .select('*, college:colleges!campus_drives_college_id_fkey(id, name, user_id)')
       .eq('id', campusDriveId)
       .maybeSingle();
 
     if (driveErr) {
-      sendSupabaseError(res, driveErr);
+      sendDatabaseError(res, driveErr);
       return;
     }
     if (!drive) {
@@ -1308,7 +1308,7 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
       return;
     }
 
-    const { data: conn } = await supabase
+    const { data: conn } = await Database
       .from('campus_connections')
       .select('id')
       .eq('company_user_id', req.user.id)
@@ -1321,7 +1321,7 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
       return;
     }
 
-    const { data: campusApplications, error: campusAppsErr } = await supabase
+    const { data: campusApplications, error: campusAppsErr } = await Database
       .from('campus_drive_applications')
       .select('*')
       .eq('drive_id', campusDriveId)
@@ -1329,7 +1329,7 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
       .in('id', campusApplicationIds);
 
     if (campusAppsErr) {
-      sendSupabaseError(res, campusAppsErr);
+      sendDatabaseError(res, campusAppsErr);
       return;
     }
 
@@ -1413,14 +1413,14 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
     anchorInsert.campus_application_id = anchorTarget.campusApplicationId || null;
   }
 
-  const { data: anchorInterview, error: anchorError } = await supabase
+  const { data: anchorInterview, error: anchorError } = await Database
     .from('interview_schedules')
     .insert(anchorInsert)
     .select('*')
     .single();
 
   if (anchorError) {
-    sendSupabaseError(res, anchorError);
+    sendDatabaseError(res, anchorError);
     return;
   }
 
@@ -1446,13 +1446,13 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
       }
       return row;
     });
-    const { data: insertedSiblings, error: siblingError } = await supabase
+    const { data: insertedSiblings, error: siblingError } = await Database
       .from('interview_schedules')
       .insert(siblingInsertRows)
       .select('*');
 
     if (siblingError) {
-      sendSupabaseError(res, siblingError);
+      sendDatabaseError(res, siblingError);
       return;
     }
 
@@ -1460,7 +1460,7 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
   }
 
   if (sourceType === 'job') {
-    await supabase
+    await Database
       .from('applications')
       .update({
         status: 'interview_scheduled',
@@ -1470,7 +1470,7 @@ router.post('/interviews', requireApprovedHr, requirePlanFeature('hr.interview_s
       .in('id', applicationIds)
       .in('status', ['applied', 'shortlisted', 'interview_scheduled']);
   } else if (driveContext) {
-    await supabase
+    await Database
       .from('campus_drive_applications')
       .update({
         status: 'shortlisted',
@@ -1597,7 +1597,7 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
     updateDoc.calendar_provider = String(req.body.calendarProvider || 'google').trim().toLowerCase() || 'google';
   }
 
-  const { data: existing, error: existingErr } = await supabase
+  const { data: existing, error: existingErr } = await Database
     .from('interview_schedules')
     .select('*')
     .eq('id', interviewId)
@@ -1605,7 +1605,7 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
     .maybeSingle();
 
   if (existingErr) {
-    sendSupabaseError(res, existingErr);
+    sendDatabaseError(res, existingErr);
     return;
   }
   if (!existing) {
@@ -1631,7 +1631,7 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
     })
     : null;
 
-  const relatedQuery = supabase
+  const relatedQuery = Database
     .from('interview_schedules')
     .select('*')
     .eq('hr_id', req.user.id);
@@ -1641,19 +1641,19 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
     : await relatedQuery.eq('id', roomInterviewId);
 
   if (relatedError) {
-    sendSupabaseError(res, relatedError);
+    sendDatabaseError(res, relatedError);
     return;
   }
 
   const relatedIds = (relatedInterviews || []).map((item) => item.id);
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('interview_schedules')
     .update(updateDoc)
     .in('id', relatedIds)
     .select('*');
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -1716,7 +1716,7 @@ router.patch('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res)
 
 router.delete('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res) => {
   const interviewCapabilities = await getInterviewScheduleCapabilities({ force: true });
-  const { data: existing, error: existingErr } = await supabase
+  const { data: existing, error: existingErr } = await Database
     .from('interview_schedules')
     .select('*')
     .eq('id', req.params.id)
@@ -1724,7 +1724,7 @@ router.delete('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res
     .maybeSingle();
 
   if (existingErr) {
-    sendSupabaseError(res, existingErr);
+    sendDatabaseError(res, existingErr);
     return;
   }
   if (!existing) {
@@ -1733,7 +1733,7 @@ router.delete('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res
   }
 
   const roomInterviewId = getInterviewRoomHostId(existing);
-  const relatedQuery = supabase
+  const relatedQuery = Database
     .from('interview_schedules')
     .select('id')
     .eq('hr_id', req.user.id);
@@ -1747,14 +1747,14 @@ router.delete('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res
     : await relatedQuery.eq('id', roomInterviewId);
 
   if (relatedError) {
-    sendSupabaseError(res, relatedError);
+    sendDatabaseError(res, relatedError);
     return;
   }
 
   const relatedIds = (relatedInterviews || []).map((item) => item.id);
   if (!relatedIds.includes(existing.id)) relatedIds.push(existing.id);
 
-  const { data: deletedInterviews, error: deleteError } = await supabase
+  const { data: deletedInterviews, error: deleteError } = await Database
     .from('interview_schedules')
     .delete()
     .eq('hr_id', req.user.id)
@@ -1762,7 +1762,7 @@ router.delete('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res
     .select('id');
 
   if (deleteError) {
-    sendSupabaseError(res, deleteError);
+    sendDatabaseError(res, deleteError);
     return;
   }
 
@@ -1802,14 +1802,14 @@ router.post('/jobs/:id/applicants/bulk', requireApprovedHr, asyncHandler(async (
 
   const newStatus = action === 'shortlist' ? 'shortlisted' : 'rejected';
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('applications')
     .update({ status: newStatus, hr_id: req.user.id, status_updated_at: new Date().toISOString() })
     .in('id', applicationIds)
     .eq('job_id', jobId)
     .select('id, applicant_id, status');
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const updated = data || [];
   const newStatusLabel = formatPipelineStatus(newStatus);
@@ -2087,7 +2087,7 @@ const sendHrActionSummaryEmail = async ({
 
 const listCollegeDirectoryForHr = async ({ companyUserId }) => {
   const [collegesResponse, connectionsResponse] = await Promise.all([
-    supabase
+    Database
       .from('colleges')
       .select(`
         id,
@@ -2102,7 +2102,7 @@ const listCollegeDirectoryForHr = async ({ companyUserId }) => {
         placement_officer_name,
         users!inner(id, name, email, role, status, created_at, last_login_at)
       `),
-    supabase
+    Database
       .from('campus_connections')
       .select('*')
       .eq('company_user_id', companyUserId)
@@ -2153,7 +2153,7 @@ const listCollegeDirectoryForHr = async ({ companyUserId }) => {
 
 // GET /hr/campus-connections — review college invitations and current collaborations
 router.get('/campus-connections', asyncHandler(async (req, res) => {
-  const { data: connections, error } = await supabase
+  const { data: connections, error } = await Database
     .from('campus_connections')
     .select(`
       *,
@@ -2178,7 +2178,7 @@ router.get('/campus-connections', asyncHandler(async (req, res) => {
       res.send({ status: true, connections: [] });
       return;
     }
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -2243,7 +2243,7 @@ router.get('/campus-connections/directory', asyncHandler(async (req, res) => {
       return;
     }
 
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
   }
 }));
 
@@ -2256,32 +2256,32 @@ router.post('/campus-connections', asyncHandler(async (req, res) => {
   }
 
   const [{ data: college, error: collegeError }, { data: hrProfile, error: hrProfileError }] = await Promise.all([
-    supabase
+    Database
       .from('colleges')
       .select('id, user_id, name, contact_email')
       .eq('id', collegeId)
       .maybeSingle(),
-    supabase
+    Database
       .from('hr_profiles')
       .select('company_name')
       .eq('user_id', req.user.id)
       .maybeSingle()
   ]);
 
-  if (collegeError) { sendSupabaseError(res, collegeError); return; }
-  if (hrProfileError) { sendSupabaseError(res, hrProfileError); return; }
+  if (collegeError) { sendDatabaseError(res, collegeError); return; }
+  if (hrProfileError) { sendDatabaseError(res, hrProfileError); return; }
   if (!college) { res.status(404).send({ status: false, message: 'College not found.' }); return; }
 
   const companyName = String(hrProfile?.company_name || req.user.name || 'Company').trim();
 
-  const { data: existingConnection, error: existingError } = await supabase
+  const { data: existingConnection, error: existingError } = await Database
     .from('campus_connections')
     .select('*')
     .eq('college_id', collegeId)
     .eq('company_user_id', req.user.id)
     .maybeSingle();
 
-  if (existingError) { sendSupabaseError(res, existingError); return; }
+  if (existingError) { sendDatabaseError(res, existingError); return; }
 
   if (existingConnection?.status === 'accepted') {
     res.status(409).send({ status: false, message: 'Your company is already connected with this college.' });
@@ -2305,19 +2305,19 @@ router.post('/campus-connections', asyncHandler(async (req, res) => {
   };
 
   const upsertResponse = existingConnection
-    ? await supabase
+    ? await Database
       .from('campus_connections')
       .update(payload)
       .eq('id', existingConnection.id)
       .select('*')
       .single()
-    : await supabase
+    : await Database
       .from('campus_connections')
       .insert(payload)
       .select('*')
       .single();
 
-  if (upsertResponse.error) { sendSupabaseError(res, upsertResponse.error); return; }
+  if (upsertResponse.error) { sendDatabaseError(res, upsertResponse.error); return; }
 
   const connection = upsertResponse.data;
   const preview = `${companyName} wants to collaborate with ${college.name || 'your college'} for campus hiring on HHH Jobs.`;
@@ -2365,7 +2365,7 @@ router.patch('/campus-connections/:connectionId', asyncHandler(async (req, res) 
     return;
   }
 
-  const { data: existingConnection, error: connectionError } = await supabase
+  const { data: existingConnection, error: connectionError } = await Database
     .from('campus_connections')
     .select(`
       *,
@@ -2386,7 +2386,7 @@ router.patch('/campus-connections/:connectionId', asyncHandler(async (req, res) 
       res.status(503).send({ status: false, message: 'Campus connection workflow tables are not available yet.' });
       return;
     }
-    sendSupabaseError(res, connectionError);
+    sendDatabaseError(res, connectionError);
     return;
   }
   if (!existingConnection) {
@@ -2399,7 +2399,7 @@ router.patch('/campus-connections/:connectionId', asyncHandler(async (req, res) 
     return;
   }
 
-  const { data: updatedConnection, error: updateError } = await supabase
+  const { data: updatedConnection, error: updateError } = await Database
     .from('campus_connections')
     .update({
       status: nextStatus,
@@ -2419,7 +2419,7 @@ router.patch('/campus-connections/:connectionId', asyncHandler(async (req, res) 
     `)
     .single();
 
-  if (updateError) { sendSupabaseError(res, updateError); return; }
+  if (updateError) { sendDatabaseError(res, updateError); return; }
 
   const college = updatedConnection.college;
   if (college?.user_id) {
@@ -2484,7 +2484,7 @@ router.patch('/campus-connections/:connectionId', asyncHandler(async (req, res) 
 
 // GET /hr/campus-drives — list all campus drives where the HR user's company name matches
 router.get('/campus-drives', asyncHandler(async (req, res) => {
-  const { data: hrProfile } = await supabase
+  const { data: hrProfile } = await Database
     .from('hr_profiles')
     .select('company_name')
     .eq('user_id', req.user.id)
@@ -2497,7 +2497,7 @@ router.get('/campus-drives', asyncHandler(async (req, res) => {
   }
 
   // Find colleges where this HR has an accepted connection
-  const { data: connections, error: connError } = await supabase
+  const { data: connections, error: connError } = await Database
     .from('campus_connections')
     .select('college_id')
     .eq('company_user_id', req.user.id)
@@ -2508,14 +2508,14 @@ router.get('/campus-drives', asyncHandler(async (req, res) => {
       res.send({ status: true, drives: [] });
       return;
     }
-    sendSupabaseError(res, connError);
+    sendDatabaseError(res, connError);
     return;
   }
 
   const connectedCollegeIds = (connections || []).map((c) => c.college_id).filter(Boolean);
 
   // Find drives where company_name matches (case-insensitive) in connected colleges
-  let query = supabase
+  let query = Database
     .from('campus_drives')
     .select('*, college:colleges!campus_drives_college_id_fkey(id, name, city, state, logo_url, contact_email, placement_officer_name)')
     .ilike('company_name', companyName)
@@ -2536,7 +2536,7 @@ router.get('/campus-drives', asyncHandler(async (req, res) => {
       res.send({ status: true, drives: [] });
       return;
     }
-    sendSupabaseError(res, driveError);
+    sendDatabaseError(res, driveError);
     return;
   }
 
@@ -2545,7 +2545,7 @@ router.get('/campus-drives', asyncHandler(async (req, res) => {
   let driveCounts = {};
 
   if (driveIds.length > 0) {
-    const { data: apps } = await supabase
+    const { data: apps } = await Database
       .from('campus_drive_applications')
       .select('drive_id, status')
       .in('drive_id', driveIds);
@@ -2599,7 +2599,7 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
     return;
   }
 
-  const { data: hrProfile } = await supabase
+  const { data: hrProfile } = await Database
     .from('hr_profiles')
     .select('company_name')
     .eq('user_id', req.user.id)
@@ -2608,7 +2608,7 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
   const companyName = (hrProfile?.company_name || '').trim();
 
   // Fetch the drive and verify it belongs to a connected college and matches company
-  const { data: drive, error: driveErr } = await supabase
+  const { data: drive, error: driveErr } = await Database
     .from('campus_drives')
     .select('*, college:colleges!campus_drives_college_id_fkey(id, name, user_id)')
     .eq('id', driveId)
@@ -2627,7 +2627,7 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
       });
       return;
     }
-    sendSupabaseError(res, driveErr);
+    sendDatabaseError(res, driveErr);
     return;
   }
   if (!drive) { res.status(404).send({ status: false, message: 'Campus drive not found.' }); return; }
@@ -2639,7 +2639,7 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
   }
 
   // Verify accepted connection
-  const { data: conn } = await supabase
+  const { data: conn } = await Database
     .from('campus_connections')
     .select('id')
     .eq('company_user_id', req.user.id)
@@ -2665,7 +2665,7 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
   const includeAll = String(req.query.all || '').trim().toLowerCase() === 'true';
 
   // Fetch applications for local filtering, summary, and pagination.
-  const { data: applications, error: appErr } = await supabase
+  const { data: applications, error: appErr } = await Database
     .from('campus_drive_applications')
     .select('id, drive_id, college_id, campus_student_id, student_user_id, applicant_email, status, current_round, eliminated_in_round, notes, applied_at, created_at, reviewed_at, decision_at, resume_url')
     .eq('drive_id', driveId)
@@ -2685,7 +2685,7 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
       });
       return;
     }
-    sendSupabaseError(res, appErr);
+    sendDatabaseError(res, appErr);
     return;
   }
 
@@ -2726,10 +2726,10 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
 
     const [studentsResp, usersResp] = await Promise.all([
       campusStudentIds.length > 0
-        ? supabase.from('campus_students').select('id, name, email, phone, degree, branch, graduation_year, cgpa, is_placed').in('id', campusStudentIds)
+        ? Database.from('campus_students').select('id, name, email, phone, degree, branch, graduation_year, cgpa, is_placed').in('id', campusStudentIds)
         : Promise.resolve({ data: [] }),
       userIds.length > 0
-        ? supabase.from('users').select('id, name, email, mobile').in('id', userIds)
+        ? Database.from('users').select('id, name, email, mobile').in('id', userIds)
         : Promise.resolve({ data: [] })
         ]);
 
@@ -2835,7 +2835,7 @@ router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler
     return;
   }
 
-  const { data: hrProfile } = await supabase
+  const { data: hrProfile } = await Database
     .from('hr_profiles')
     .select('company_name')
     .eq('user_id', req.user.id)
@@ -2844,13 +2844,13 @@ router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler
   const companyName = (hrProfile?.company_name || '').trim();
 
   // Fetch drive + verify ownership
-  const { data: drive, error: driveErr } = await supabase
+  const { data: drive, error: driveErr } = await Database
     .from('campus_drives')
     .select('*, college:colleges!campus_drives_college_id_fkey(id, name, user_id)')
     .eq('id', driveId)
     .maybeSingle();
 
-  if (driveErr) { sendSupabaseError(res, driveErr); return; }
+  if (driveErr) { sendDatabaseError(res, driveErr); return; }
   if (!drive) { res.status(404).send({ status: false, message: 'Campus drive not found.' }); return; }
 
   if (companyName.toLowerCase() !== (drive.company_name || '').toLowerCase()) {
@@ -2859,7 +2859,7 @@ router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler
   }
 
   // Verify accepted connection
-  const { data: conn } = await supabase
+  const { data: conn } = await Database
     .from('campus_connections')
     .select('id')
     .eq('company_user_id', req.user.id)
@@ -2873,7 +2873,7 @@ router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler
   }
 
   // Fetch application
-  const { data: existing, error: appErr } = await supabase
+  const { data: existing, error: appErr } = await Database
     .from('campus_drive_applications')
     .select('*')
     .eq('id', applicationId)
@@ -2881,7 +2881,7 @@ router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler
     .eq('college_id', drive.college_id)
     .maybeSingle();
 
-  if (appErr) { sendSupabaseError(res, appErr); return; }
+  if (appErr) { sendDatabaseError(res, appErr); return; }
   if (!existing) { res.status(404).send({ status: false, message: 'Application not found.' }); return; }
 
   const nextStatus = req.body?.status ? String(req.body.status).trim().toLowerCase() : existing.status;
@@ -2906,7 +2906,7 @@ router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler
     decision_at: ['selected', 'rejected', 'withdrawn'].includes(nextStatus) ? now : existing.decision_at
   };
 
-  const { data: updated, error: updateErr } = await supabase
+  const { data: updated, error: updateErr } = await Database
     .from('campus_drive_applications')
     .update(updatePayload)
     .eq('id', applicationId)
@@ -2915,9 +2915,9 @@ router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler
     .select('*')
     .single();
 
-  if (updateErr) { sendSupabaseError(res, updateErr); return; }
+  if (updateErr) { sendDatabaseError(res, updateErr); return; }
 
-  const summaryResponse = await supabase
+  const summaryResponse = await Database
     .from('campus_drive_applications')
     .select('status')
     .eq('drive_id', driveId)
@@ -2938,7 +2938,7 @@ router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler
 
   // Auto-mark placed if selected
   if (nextStatus === 'selected' && updated.campus_student_id) {
-    await supabase
+    await Database
       .from('campus_students')
       .update({
         is_placed: true,

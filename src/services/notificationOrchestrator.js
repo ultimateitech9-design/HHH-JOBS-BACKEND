@@ -2,12 +2,12 @@ const { createNotification } = require('./notifications');
 const { sendPushToUser } = require('./webPush');
 const { sendJobAlertWhatsApp, getWhatsAppPreference } = require('./whatsapp');
 const { sendEmailWithFallback } = require('./email');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const CHANNELS = { IN_APP: 'in_app', EMAIL: 'email', PUSH: 'push', WHATSAPP: 'whatsapp' };
 
 const getUserNotificationPreferences = async (userId) => {
-  const { data } = await supabase
+  const { data } = await Database
     .from('user_notification_preferences')
     .select('*')
     .eq('user_id', userId)
@@ -65,7 +65,7 @@ const notifyUser = async ({
     try {
       let finalEmailPayload = { ...emailPayload };
       if (!finalEmailPayload.to && userId) {
-        const { data: userRow } = await supabase
+        const { data: userRow } = await Database
           .from('users')
           .select('email')
           .eq('id', userId)

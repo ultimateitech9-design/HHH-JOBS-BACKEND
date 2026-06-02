@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const config = require('../config');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const RAZORPAY_KEY_ID = config.razorpayKeyId || '';
 const RAZORPAY_KEY_SECRET = config.razorpayKeySecret || '';
@@ -154,7 +154,7 @@ const createCheckoutOrder = async ({ purchaseId, hrId, planSlug, totalAmount, cu
     }
   });
 
-  await supabase
+  await Database
     .from('job_plan_purchases')
     .update({
       provider: 'razorpay',
@@ -184,7 +184,7 @@ const confirmCheckoutPayment = async ({ razorpayOrderId, razorpayPaymentId, razo
     throw Object.assign(new Error('Payment signature verification failed'), { statusCode: 400 });
   }
 
-  const { data: purchase, error } = await supabase
+  const { data: purchase, error } = await Database
     .from('job_plan_purchases')
     .update({
       status: 'paid',
@@ -200,7 +200,7 @@ const confirmCheckoutPayment = async ({ razorpayOrderId, razorpayPaymentId, razo
 
   let grantedCreditId = null;
   if (purchase) {
-    const { data } = await supabase.rpc('grant_hr_credits_for_purchase', { p_purchase_id: purchase.id });
+    const { data } = await Database.rpc('grant_hr_credits_for_purchase', { p_purchase_id: purchase.id });
     grantedCreditId = data || null;
   }
 
@@ -218,7 +218,7 @@ const handleWebhookEvent = async (event) => {
     const purchaseId = payment.notes?.purchaseId;
     if (!purchaseId) return { handled: false };
 
-    await supabase
+    await Database
       .from('job_plan_purchases')
       .update({
         status: 'paid',
@@ -236,7 +236,7 @@ const handleWebhookEvent = async (event) => {
     const payment = payload?.payment?.entity;
     const purchaseId = payment?.notes?.purchaseId;
     if (purchaseId) {
-      await supabase
+      await Database
         .from('job_plan_purchases')
         .update({ status: 'failed', meta: { razorpayError: payment.error_description || 'Payment failed' } })
         .eq('id', purchaseId)
@@ -249,7 +249,7 @@ const handleWebhookEvent = async (event) => {
     const refund = payload?.refund?.entity;
     const paymentId = refund?.payment_id;
     if (paymentId) {
-      await supabase
+      await Database
         .from('job_plan_purchases')
         .update({ status: 'refunded', meta: { razorpayRefundId: refund.id, refundedAt: new Date().toISOString() } })
         .eq('reference_id', paymentId);

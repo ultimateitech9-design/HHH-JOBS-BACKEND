@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { mapJobFromRow } = require('../utils/mappers');
 const { createNotification } = require('./notifications');
 
@@ -348,7 +348,7 @@ const rankJobsForStudent = ({
 };
 
 const ensureRecommendationPreferences = async (userId) => {
-  const { data: existing, error } = await supabase
+  const { data: existing, error } = await Database
     .from('student_recommendation_preferences')
     .select('*')
     .eq('user_id', userId)
@@ -357,7 +357,7 @@ const ensureRecommendationPreferences = async (userId) => {
   if (error) throw error;
   if (existing) return existing;
 
-  const inserted = await supabase
+  const inserted = await Database
     .from('student_recommendation_preferences')
     .insert({ user_id: userId })
     .select('*')
@@ -369,13 +369,13 @@ const ensureRecommendationPreferences = async (userId) => {
 
 const loadRecommendationContext = async (userId) => {
   const [profileResp, applicationResp, savedResp, viewedResp, openJobsResp, peerProfilesResp, userResp] = await Promise.all([
-    supabase.from('student_profiles').select('*').eq('user_id', userId).maybeSingle(),
-    supabase.from('applications').select('job_id, status, created_at').eq('applicant_id', userId).order('created_at', { ascending: false }),
-    supabase.from('saved_jobs').select('job_id, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(40),
-    supabase.from('student_job_views').select('job_id, viewed_at').eq('user_id', userId).order('viewed_at', { ascending: false }).limit(60),
-    supabase.from('jobs').select('*').eq('status', 'open').neq('approval_status', 'rejected').order('is_featured', { ascending: false }).order('created_at', { ascending: false }).limit(200),
-    supabase.from('student_profiles').select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, graduation_details, is_discoverable').neq('user_id', userId).eq('is_discoverable', true).limit(200),
-    supabase.from('users').select('id, name, email').eq('id', userId).maybeSingle()
+    Database.from('student_profiles').select('*').eq('user_id', userId).maybeSingle(),
+    Database.from('applications').select('job_id, status, created_at').eq('applicant_id', userId).order('created_at', { ascending: false }),
+    Database.from('saved_jobs').select('job_id, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(40),
+    Database.from('student_job_views').select('job_id, viewed_at').eq('user_id', userId).order('viewed_at', { ascending: false }).limit(60),
+    Database.from('jobs').select('*').eq('status', 'open').neq('approval_status', 'rejected').order('is_featured', { ascending: false }).order('created_at', { ascending: false }).limit(200),
+    Database.from('student_profiles').select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, graduation_details, is_discoverable').neq('user_id', userId).eq('is_discoverable', true).limit(200),
+    Database.from('users').select('id, name, email').eq('id', userId).maybeSingle()
   ]);
 
   const firstError = [
@@ -399,7 +399,7 @@ const loadRecommendationContext = async (userId) => {
 
   let historyJobs = [];
   if (historyIds.length > 0) {
-    const historyJobsResp = await supabase.from('jobs').select('*').in('id', historyIds);
+    const historyJobsResp = await Database.from('jobs').select('*').in('id', historyIds);
     if (historyJobsResp.error) throw historyJobsResp.error;
     historyJobs = historyJobsResp.data || [];
   }
@@ -444,7 +444,7 @@ const saveRecommendationSnapshots = async ({
     generated_at: new Date().toISOString()
   }));
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('student_job_recommendations')
     .upsert(rows, { onConflict: 'student_user_id,job_id' })
     .select('*');
@@ -465,7 +465,7 @@ const getPersonalizedRecommendations = async ({
   let peerApplications = [];
   let peerJobsMap = {};
   if (similarPeerIds.length > 0) {
-    const peerApplicationsResp = await supabase
+    const peerApplicationsResp = await Database
       .from('applications')
       .select('applicant_id, job_id, status')
       .in('applicant_id', similarPeerIds);
@@ -475,7 +475,7 @@ const getPersonalizedRecommendations = async ({
 
     const peerJobIds = [...new Set(peerApplications.map((item) => item.job_id).filter(Boolean))];
     if (peerJobIds.length > 0) {
-      const peerJobsResp = await supabase
+      const peerJobsResp = await Database
         .from('jobs')
         .select('id, company_name, category, job_title')
         .in('id', peerJobIds);
@@ -518,7 +518,7 @@ const trackStudentJobView = async ({
   jobId,
   source = 'portal'
 }) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('student_job_views')
     .insert({
       user_id: userId,
@@ -560,7 +560,7 @@ const sendDailyRecommendationDigest = async ({
     delivery_status: 'queued'
   };
 
-  const queuedRun = await supabase
+  const queuedRun = await Database
     .from('recommendation_digest_runs')
     .insert(digestRunPayload)
     .select('*')
@@ -569,7 +569,7 @@ const sendDailyRecommendationDigest = async ({
   if (queuedRun.error) throw queuedRun.error;
 
   if (!preferences.daily_digest_enabled || !digest.user?.email || digest.recommendations.length === 0) {
-    const skipped = await supabase
+    const skipped = await Database
       .from('recommendation_digest_runs')
       .update({
         delivery_status: 'skipped',
@@ -603,12 +603,12 @@ const sendDailyRecommendationDigest = async ({
     };
 
   const [runUpdate, preferenceUpdate] = await Promise.all([
-    supabase
+    Database
       .from('recommendation_digest_runs')
       .update(updatePayload)
       .eq('id', queuedRun.data.id),
     emailResult.sent
-      ? supabase
+      ? Database
         .from('student_recommendation_preferences')
         .update({ last_digest_sent_at: new Date().toISOString() })
         .eq('user_id', userId)
@@ -627,11 +627,11 @@ const sendDailyRecommendationDigest = async ({
 
 const notifyRecommendedStudentsForJob = async (job) => {
   const [studentsResp, preferencesResp] = await Promise.all([
-    supabase
+    Database
       .from('student_profiles')
       .select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, profile_summary')
       .limit(120),
-    supabase
+    Database
       .from('student_recommendation_preferences')
       .select('*')
   ]);

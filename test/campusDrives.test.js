@@ -104,7 +104,7 @@ test('syncHrCompanyProfileToCampus updates connected campus drives when HR compa
     userId: 'hr-1',
     previousCompanyName: 'Old Co',
     nextCompanyName: 'New Co',
-    supabaseClient: client
+    DatabaseClient: client
   });
 
   assert.deepEqual(summary, {
@@ -135,7 +135,7 @@ test('syncHrCompanyProfileToCampus refreshes stale connection names without touc
     userId: 'hr-1',
     previousCompanyName: 'Old Co',
     nextCompanyName: 'Old Co',
-    supabaseClient: client
+    DatabaseClient: client
   });
 
   assert.deepEqual(summary, {

@@ -1,5 +1,5 @@
 const path = require('path');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { ROLES, APPLICATION_STATUSES } = require('../constants');
 
 const INTERVIEW_RECORDINGS_BUCKET = 'interview-recordings';
@@ -62,7 +62,7 @@ const getInterviewScheduleCapabilities = async ({ force = false } = {}) => {
   };
 
   const probeColumn = async (columnName) => {
-    const { error } = await supabase
+    const { error } = await Database
       .from('interview_schedules')
       .select(`id, ${columnName}`)
       .limit(1);
@@ -241,7 +241,7 @@ const getTranscriptInsights = (transcriptText = '') => {
 };
 
 const ensureRecordingBucket = async () => {
-  const { error } = await supabase.storage.createBucket(INTERVIEW_RECORDINGS_BUCKET, {
+  const { error } = await Database.storage.createBucket(INTERVIEW_RECORDINGS_BUCKET, {
     public: false,
     allowedMimeTypes: ['video/webm', 'video/mp4', 'audio/webm'],
     fileSizeLimit: '150MB'
@@ -354,7 +354,7 @@ const mapInterviewAudiencePayload = ({
 
 const getInterviewContext = async ({ interviewId, user }) => {
   const capabilities = await getInterviewScheduleCapabilities();
-  const { data: requestedInterview, error } = await supabase
+  const { data: requestedInterview, error } = await Database
     .from('interview_schedules')
     .select('*')
     .eq('id', interviewId)
@@ -366,7 +366,7 @@ const getInterviewContext = async ({ interviewId, user }) => {
   const roomHostInterviewId = getRoomHostInterviewId(requestedInterview);
   let roomInterviews = [requestedInterview];
   if (capabilities.hasSharedRoomHostInterviewId) {
-    const roomInterviewsResp = await supabase
+    const roomInterviewsResp = await Database
       .from('interview_schedules')
       .select('*')
       .or(`id.eq.${roomHostInterviewId},shared_room_host_interview_id.eq.${roomHostInterviewId}`);
@@ -388,17 +388,17 @@ const getInterviewContext = async ({ interviewId, user }) => {
 
   const [jobResp, applicationResp, candidateUserResp, candidateProfileResp, hrUserResp, hrProfileResp, participantsResp] = await Promise.all([
     roomInterview.job_id
-      ? supabase.from('jobs').select('id, job_title, company_name, job_location, description').eq('id', roomInterview.job_id).maybeSingle()
+      ? Database.from('jobs').select('id, job_title, company_name, job_location, description').eq('id', roomInterview.job_id).maybeSingle()
       : Promise.resolve({ data: null, error: null }),
     participantInterview.application_id
-      ? supabase.from('applications').select('id, status, resume_url, resume_text, cover_letter').eq('id', participantInterview.application_id).maybeSingle()
+      ? Database.from('applications').select('id, status, resume_url, resume_text, cover_letter').eq('id', participantInterview.application_id).maybeSingle()
       : Promise.resolve({ data: null, error: null }),
-    supabase.from('users').select('id, name, email, mobile').eq('id', participantInterview.candidate_id).maybeSingle(),
-    supabase.from('student_profiles').select('user_id, headline, location, skills, resume_url, resume_text').eq('user_id', participantInterview.candidate_id).maybeSingle(),
-    supabase.from('users').select('id, name, email').eq('id', roomInterview.hr_id).maybeSingle(),
-    supabase.from('hr_profiles').select('user_id, company_name, company_website, logo_url').eq('user_id', roomInterview.hr_id).maybeSingle(),
+    Database.from('users').select('id, name, email, mobile').eq('id', participantInterview.candidate_id).maybeSingle(),
+    Database.from('student_profiles').select('user_id, headline, location, skills, resume_url, resume_text').eq('user_id', participantInterview.candidate_id).maybeSingle(),
+    Database.from('users').select('id, name, email').eq('id', roomInterview.hr_id).maybeSingle(),
+    Database.from('hr_profiles').select('user_id, company_name, company_website, logo_url').eq('user_id', roomInterview.hr_id).maybeSingle(),
     participantIds.length > 0
-      ? supabase.from('users').select('id, name, email').in('id', participantIds)
+      ? Database.from('users').select('id, name, email').in('id', participantIds)
       : Promise.resolve({ data: [], error: null })
   ]);
 

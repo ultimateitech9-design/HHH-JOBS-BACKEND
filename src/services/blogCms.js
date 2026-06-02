@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const BLOG_STATUSES = { DRAFT: 'draft', PUBLISHED: 'published', ARCHIVED: 'archived' };
 
@@ -18,7 +18,7 @@ const BLOG_CATEGORIES = ['Career Advice', 'Resume Tips', 'Interview Prep', 'Job 
 const getCategories = () => BLOG_CATEGORIES;
 
 const listArticles = async ({ category, tag, page = 1, limit = 12, status = BLOG_STATUSES.PUBLISHED } = {}) => {
-  let query = supabase
+  let query = Database
     .from('blog_articles')
     .select('id, slug, title, excerpt, category, tags, cover_image, author_name, read_time, views, created_at, published_at')
     .eq('status', status)
@@ -40,7 +40,7 @@ const listArticles = async ({ category, tag, page = 1, limit = 12, status = BLOG
 };
 
 const getArticleBySlug = async (slug) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('blog_articles')
     .select('*')
     .eq('slug', slug)
@@ -54,7 +54,7 @@ const getArticleBySlug = async (slug) => {
   if (error) throw error;
 
   if (data) {
-    supabase.from('blog_articles').update({ views: (data.views || 0) + 1 }).eq('id', data.id).then(() => {});
+    Database.from('blog_articles').update({ views: (data.views || 0) + 1 }).eq('id', data.id).then(() => {});
   }
 
   return data;
@@ -63,7 +63,7 @@ const getArticleBySlug = async (slug) => {
 const createArticle = async ({ title, slug, content, excerpt, category, tags = [], coverImage, authorName, authorId, readTime, status = BLOG_STATUSES.DRAFT }) => {
   const articleSlug = slug || String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 128);
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('blog_articles')
     .insert({
       title: String(title || '').trim(),
@@ -100,7 +100,7 @@ const updateArticle = async (articleId, updates = {}) => {
     if (updates.status === BLOG_STATUSES.PUBLISHED) updateDoc.published_at = new Date().toISOString();
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('blog_articles')
     .update(updateDoc)
     .eq('id', articleId)
@@ -112,7 +112,7 @@ const updateArticle = async (articleId, updates = {}) => {
 };
 
 const deleteArticle = async (articleId) => {
-  const { error } = await supabase.from('blog_articles').delete().eq('id', articleId);
+  const { error } = await Database.from('blog_articles').delete().eq('id', articleId);
   if (error) throw error;
   return true;
 };

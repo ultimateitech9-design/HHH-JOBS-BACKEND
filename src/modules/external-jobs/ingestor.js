@@ -1,4 +1,4 @@
-const { supabase } = require('../../supabase');
+const { Database } = require('../../db');
 const { normalizeJobs } = require('./normalizer');
 const { deduplicateJobs } = require('./deduplicator');
 const { verifyPendingJobs } = require('./verifier');
@@ -19,7 +19,7 @@ const insertJobChunks = async (jobs) => {
   let inserted = 0;
 
   for (const chunk of chunkArray(jobs, CHUNK_SIZE)) {
-    const { data, error } = await supabase
+    const { data, error } = await Database
       .from('external_jobs')
       .upsert(chunk, { onConflict: 'source_key,external_id' })
       .select('id');
@@ -33,7 +33,7 @@ const insertJobChunks = async (jobs) => {
 };
 
 const updateSourceStats = async (sourceKey, stats) => {
-  await supabase
+  await Database
     .from('job_sources')
     .update({
       last_fetched_at: new Date().toISOString(),
@@ -50,7 +50,7 @@ const getIstDayStartUtcIso = (date = new Date()) => {
 };
 
 const hasSuccessfulScheduledRunToday = async (sourceKey, date = new Date()) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('external_jobs_sync_logs')
     .select('id')
     .eq('source_key', sourceKey)
@@ -67,7 +67,7 @@ const logSyncRun = async (sourceKey, stats, startedAt) => {
   const completedAt = new Date();
   const durationMs = completedAt.getTime() - startedAt.getTime();
 
-  await supabase.from('external_jobs_sync_logs').insert({
+  await Database.from('external_jobs_sync_logs').insert({
     source_key: sourceKey,
     run_type: stats.runType || 'scheduled',
     status: stats.error ? 'error' : 'success',
@@ -147,9 +147,9 @@ const getSyncStats = async () => {
   await syncSourceRegistry();
 
   const [sourcesRes, jobCountRes, recentLogsRes] = await Promise.all([
-    supabase.from('job_sources').select('*').order('key'),
-    supabase.from('external_jobs').select('*', { count: 'exact', head: true }).eq('is_active', true),
-    supabase
+    Database.from('job_sources').select('*').order('key'),
+    Database.from('external_jobs').select('*', { count: 'exact', head: true }).eq('is_active', true),
+    Database
       .from('external_jobs_sync_logs')
       .select('*')
       .order('started_at', { ascending: false })

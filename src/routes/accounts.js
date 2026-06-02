@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES } = require('../constants');
-const { supabase, countRows, sendSupabaseError } = require('../supabase');
+const { Database, countRows, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
@@ -29,13 +29,13 @@ router.get('/overview', asyncHandler(async (req, res) => {
     countRows('accounts_payouts', (q) => q.eq('status', 'pending'))
   ]);
 
-  const { data: creditRows } = await supabase
+  const { data: creditRows } = await Database
     .from('accounts_transactions')
     .select('amount, created_at')
     .eq('type', 'credit')
     .eq('status', 'completed');
 
-  const { data: debitRows } = await supabase
+  const { data: debitRows } = await Database
     .from('accounts_transactions')
     .select('amount')
     .eq('type', 'debit')
@@ -77,7 +77,7 @@ router.get('/transactions', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('accounts_transactions')
     .select('id, reference, type, amount, currency, status, description, customer_name, customer_email, payment_method, created_at', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -87,7 +87,7 @@ router.get('/transactions', asyncHandler(async (req, res) => {
   if (['completed', 'pending', 'failed'].includes(status)) query = query.eq('status', status);
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, transactions: data || [], total: count || 0, page, limit });
 }));
@@ -97,7 +97,7 @@ router.post('/transactions', asyncHandler(async (req, res) => {
   if (!type || !amount) return res.status(400).send({ status: false, message: 'type and amount are required' });
   if (!['credit', 'debit'].includes(type)) return res.status(400).send({ status: false, message: 'type must be credit or debit' });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_transactions')
     .insert({
       reference: reference ? String(reference).trim() : null,
@@ -113,7 +113,7 @@ router.post('/transactions', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.status(201).send({ status: true, transaction: data });
 }));
@@ -127,7 +127,7 @@ router.get('/invoices', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('accounts_invoices')
     .select('id, invoice_number, customer_name, customer_email, amount, tax, total, status, due_date, paid_at, created_at', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -136,19 +136,19 @@ router.get('/invoices', asyncHandler(async (req, res) => {
   if (['pending', 'paid', 'overdue', 'cancelled'].includes(status)) query = query.eq('status', status);
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, invoices: data || [], total: count || 0, page, limit });
 }));
 
 router.get('/invoices/:id', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_invoices')
     .select('*')
     .eq('id', req.params.id)
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Invoice not found' });
 
   res.send({ status: true, invoice: data });
@@ -163,7 +163,7 @@ router.post('/invoices', asyncHandler(async (req, res) => {
   const taxAmt = Number(tax || 0);
   const totalAmt = Number(amount) + taxAmt;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_invoices')
     .insert({
       invoice_number: invoiceNumber,
@@ -180,7 +180,7 @@ router.post('/invoices', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.status(201).send({ status: true, invoice: data });
 }));
@@ -194,14 +194,14 @@ router.patch('/invoices/:id/status', asyncHandler(async (req, res) => {
   const updates = { status: newStatus, updated_at: new Date().toISOString() };
   if (newStatus === 'paid') updates.paid_at = new Date().toISOString();
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_invoices')
     .update(updates)
     .eq('id', req.params.id)
     .select('id, invoice_number, status, total')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Invoice not found' });
 
   res.send({ status: true, invoice: data });
@@ -216,7 +216,7 @@ router.get('/subscriptions', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('accounts_subscriptions')
     .select('id, company_name, plan, status, amount, billing_cycle, starts_at, ends_at, created_at', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -225,7 +225,7 @@ router.get('/subscriptions', asyncHandler(async (req, res) => {
   if (['active', 'cancelled', 'expired', 'paused'].includes(status)) query = query.eq('status', status);
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, subscriptions: data || [], total: count || 0, page, limit });
 }));
@@ -239,7 +239,7 @@ router.get('/expenses', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('accounts_expenses')
     .select('id, title, category, amount, currency, status, description, submitted_name, created_at', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -248,7 +248,7 @@ router.get('/expenses', asyncHandler(async (req, res) => {
   if (['pending', 'approved', 'rejected'].includes(status)) query = query.eq('status', status);
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, expenses: data || [], total: count || 0, page, limit });
 }));
@@ -257,7 +257,7 @@ router.post('/expenses', asyncHandler(async (req, res) => {
   const { title, category, amount, currency, description, receipt_url } = req.body || {};
   if (!title || !amount) return res.status(400).send({ status: false, message: 'title and amount are required' });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_expenses')
     .insert({
       title: String(title).trim(),
@@ -273,7 +273,7 @@ router.post('/expenses', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.status(201).send({ status: true, expense: data });
 }));
@@ -290,14 +290,14 @@ router.patch('/expenses/:id/status', asyncHandler(async (req, res) => {
   };
   if (newStatus === 'approved') updates.approved_by = req.user?.id;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_expenses')
     .update(updates)
     .eq('id', req.params.id)
     .select('id, title, status, amount')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Expense not found' });
 
   res.send({ status: true, expense: data });
@@ -312,7 +312,7 @@ router.get('/payouts', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  let query = supabase
+  let query = Database
     .from('accounts_payouts')
     .select('id, recipient_name, recipient_email, amount, currency, status, method, reference, created_at', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -321,7 +321,7 @@ router.get('/payouts', asyncHandler(async (req, res) => {
   if (['pending', 'completed', 'failed'].includes(status)) query = query.eq('status', status);
 
   const { data, error, count } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, payouts: data || [], total: count || 0, page, limit });
 }));
@@ -330,7 +330,7 @@ router.post('/payouts', asyncHandler(async (req, res) => {
   const { recipient_name, recipient_email, amount, currency, method, reference, notes } = req.body || {};
   if (!recipient_name || !amount) return res.status(400).send({ status: false, message: 'recipient_name and amount are required' });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_payouts')
     .insert({
       recipient_name: String(recipient_name).trim(),
@@ -345,7 +345,7 @@ router.post('/payouts', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.status(201).send({ status: true, payout: data });
 }));
@@ -356,14 +356,14 @@ router.patch('/payouts/:id/status', asyncHandler(async (req, res) => {
     return res.status(400).send({ status: false, message: 'Invalid status' });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_payouts')
     .update({ status: newStatus })
     .eq('id', req.params.id)
     .select('id, recipient_name, status, amount')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Payout not found' });
 
   res.send({ status: true, payout: data });
@@ -373,7 +373,7 @@ router.patch('/payouts/:id/status', asyncHandler(async (req, res) => {
 // Refunds
 // =============================================
 router.get('/refunds', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_transactions')
     .select('id, reference, amount, currency, description, customer_name, customer_email, created_at')
     .eq('type', 'debit')
@@ -381,7 +381,7 @@ router.get('/refunds', asyncHandler(async (req, res) => {
     .order('created_at', { ascending: false })
     .limit(100);
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, refunds: data || [] });
 }));
@@ -390,7 +390,7 @@ router.get('/refunds', asyncHandler(async (req, res) => {
 // Payment Settings
 // =============================================
 router.get('/payment-settings', asyncHandler(async (req, res) => {
-  const { data } = await supabase
+  const { data } = await Database
     .from('platform_settings')
     .select('value')
     .eq('key', 'payment_settings')
@@ -413,7 +413,7 @@ router.get('/payment-settings', asyncHandler(async (req, res) => {
 router.put('/payment-settings', asyncHandler(async (req, res) => {
   const { methods, settlementProfile } = req.body || {};
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('platform_settings')
     .upsert({
       key: 'payment_settings',
@@ -422,7 +422,7 @@ router.put('/payment-settings', asyncHandler(async (req, res) => {
       updated_at: new Date().toISOString()
     }, { onConflict: 'key' });
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, settings: { methods, settlementProfile } });
 }));
@@ -431,7 +431,7 @@ router.put('/payment-settings', asyncHandler(async (req, res) => {
 // Revenue Report
 // =============================================
 router.get('/reports/revenue', asyncHandler(async (req, res) => {
-  const { data: creditRows } = await supabase
+  const { data: creditRows } = await Database
     .from('accounts_transactions')
     .select('amount, created_at')
     .eq('type', 'credit')
@@ -439,7 +439,7 @@ router.get('/reports/revenue', asyncHandler(async (req, res) => {
     .order('created_at', { ascending: false })
     .limit(1000);
 
-  const { data: debitRows } = await supabase
+  const { data: debitRows } = await Database
     .from('accounts_transactions')
     .select('amount')
     .eq('type', 'debit')

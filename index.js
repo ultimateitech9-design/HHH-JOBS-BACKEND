@@ -1,10 +1,11 @@
 const express = require('express');
 const cors = require('cors');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const path = require('path');
 require('dotenv').config();
 
 const config = require('./src/config');
-const { ensureServerConfig, supabase, sendSupabaseError } = require('./src/supabase');
+const { ensureDatabaseConfig, Database, sendDatabaseError, closeDatabasePool } = require('./src/db');
 const { asyncHandler, normalizeEmail } = require('./src/utils/helpers');
 const { mapJobFromRow } = require('./src/utils/mappers');
 const { requireAuth, optionalAuth } = require('./src/middleware/auth');
@@ -126,6 +127,12 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  setHeaders: (res) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=86400');
+  }
+}));
 
 app.get('/', (req, res) => {
   res.json({ message: 'HHH Job API is running', version: '2.0.0' });
@@ -144,7 +151,7 @@ app.get('/health', (req, res) => {
     return;
   }
 
-  const hasSupabaseConfig = Boolean(config.supabaseUrl && config.supabaseServiceRoleKey);
+  const hasDatabaseConfig = Boolean(config.isMysqlProvider && (config.mysqlUrl || (config.mysqlHost && config.mysqlDatabase)));
   const hasJwtSecret = Boolean(config.jwtSecret);
 
   const base = {
@@ -153,7 +160,7 @@ app.get('/health', (req, res) => {
     environment: config.nodeEnv
   };
 
-  if (hasSupabaseConfig && hasJwtSecret) {
+  if (hasDatabaseConfig && hasJwtSecret) {
     res.json({ status: 'ok', mode: 'full', message: 'healthy', ...base });
     return;
   }
@@ -164,15 +171,14 @@ app.get('/health', (req, res) => {
       mode: 'local-fallback',
       message: 'healthy with local auth fallback',
       missing: [
-        !config.supabaseUrl ? 'SUPABASE_URL' : null,
-        !config.supabaseServiceRoleKey ? 'SUPABASE_SERVICE_ROLE_KEY' : null
+        !hasDatabaseConfig ? 'MYSQL_URL or MYSQL_HOST/MYSQL_DATABASE' : null
       ].filter(Boolean),
       ...base
     });
     return;
   }
 
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 });
 
 app.get('/api/version', (req, res) => {
@@ -237,9 +243,9 @@ mountRoute('/features', safeRequireRoute('./src/routes/features', 'features'));
 mountRoute('/payments', safeRequireRoute('./src/routes/payments', 'payments'));
 
 app.get('/all-jobs', automationProtection, publicCatalogRateLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
-  let query = supabase
+  let query = Database
     .from('jobs')
     .select('*')
     .order('is_featured', { ascending: false })
@@ -257,7 +263,7 @@ app.get('/all-jobs', automationProtection, publicCatalogRateLimiter, setCatalogC
 
   const { data, error } = await query;
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -265,7 +271,7 @@ app.get('/all-jobs', automationProtection, publicCatalogRateLimiter, setCatalogC
 }));
 
 app.get('/all-jobs/:id', automationProtection, publicCatalogRateLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
   const { data, error, statusCode } = await getJobByIdAndOptionallyTrackView(req.params.id, true);
   if (error) {
     res.status(statusCode).send({ status: false, message: error.message });
@@ -287,7 +293,7 @@ app.get('/myJobs/:email?', requireAuth, requireActiveUser, requireRole(ROLES.HR,
     return;
   }
 
-  const { data: jobs, error } = await supabase
+  const { data: jobs, error } = await Database
     .from('jobs')
     .select('*')
     .eq('posted_by', emailParam)
@@ -295,7 +301,7 @@ app.get('/myJobs/:email?', requireAuth, requireActiveUser, requireRole(ROLES.HR,
     .order('created_at', { ascending: false });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -320,8 +326,12 @@ const logStartupMode = () => {
   }
 
   const missingForFullApi = [];
-  if (!config.supabaseUrl) missingForFullApi.push('SUPABASE_URL');
-  if (!config.supabaseServiceRoleKey) missingForFullApi.push('SUPABASE_SERVICE_ROLE_KEY');
+  if (!config.isMysqlProvider) {
+    missingForFullApi.push('DB_PROVIDER=mysql');
+  }
+  if (!config.mysqlUrl && (!config.mysqlHost || !config.mysqlDatabase)) {
+    missingForFullApi.push('MYSQL_URL or MYSQL_HOST/MYSQL_DATABASE');
+  }
   if (!config.jwtSecret) missingForFullApi.push('JWT_SECRET');
 
   if (missingForFullApi.length === 0) {
@@ -329,8 +339,8 @@ const logStartupMode = () => {
     return;
   }
 
-  if (config.jwtSecret && !config.supabaseUrl && !config.supabaseServiceRoleKey) {
-    console.warn('Running in local fallback mode. Supabase-backed features are disabled until SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are added.');
+  if (config.jwtSecret && missingForFullApi.length > 0) {
+    console.warn('Running in local fallback mode. Database-backed features are disabled until MySQL env is configured.');
     return;
   }
 
@@ -353,8 +363,8 @@ const startExternalJobsScheduler = () => {
     return;
   }
 
-  if (!config.supabaseUrl || !config.supabaseServiceRoleKey) {
-    console.warn('[ExternalJobs Scheduler] Skipped — Supabase not configured');
+  if (!Database) {
+    console.warn('[ExternalJobs Scheduler] Skipped - database not configured');
     return;
   }
   try {
@@ -376,8 +386,8 @@ const startAutoApplyScheduler = () => {
     return;
   }
 
-  if (!config.supabaseUrl || !config.supabaseServiceRoleKey) {
-    console.warn('[AutoApply Scheduler] Skipped — Supabase not configured');
+  if (!Database) {
+    console.warn('[AutoApply Scheduler] Skipped - database not configured');
     return;
   }
 
@@ -441,7 +451,7 @@ const shutdown = async (signal) => {
   await stopSideEffectWorkers();
 
   if (!server) {
-    await closeRedisClient();
+    await Promise.allSettled([closeRedisClient(), closeDatabasePool()]);
     process.exit(0);
     return;
   }
@@ -459,7 +469,8 @@ const shutdown = async (signal) => {
       new Promise((resolve) => {
         server.close(() => resolve());
       }),
-      closeRedisClient()
+      closeRedisClient(),
+      closeDatabasePool()
     ]);
     clearTimeout(forceShutdownTimer);
     process.exit(0);

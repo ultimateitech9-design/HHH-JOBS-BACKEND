@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { askAi, logAiInteraction } = require('./ai');
 
 const INTERVIEW_CATEGORIES = [
@@ -61,7 +61,7 @@ const evaluateAnswer = async ({ question, answer, role, category }) => {
 };
 
 const saveMockSession = async ({ userId, category, role, questions, answers, scores, overallScore }) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('mock_interview_sessions')
     .insert({
       user_id: userId,
@@ -81,7 +81,7 @@ const saveMockSession = async ({ userId, category, role, questions, answers, sco
 };
 
 const getUserSessions = async (userId, limit = 20) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('mock_interview_sessions')
     .select('id, category, role, overall_score, created_at, completed_at')
     .eq('user_id', userId)
@@ -93,7 +93,7 @@ const getUserSessions = async (userId, limit = 20) => {
 };
 
 const getSessionById = async (sessionId, userId) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('mock_interview_sessions')
     .select('*')
     .eq('id', sessionId)

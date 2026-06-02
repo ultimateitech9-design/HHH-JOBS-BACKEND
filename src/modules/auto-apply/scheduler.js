@@ -1,4 +1,4 @@
-const { supabase } = require('../../supabase');
+const { Database } = require('../../db');
 const { processScheduledAutoApplyDigests } = require('../../services/autoApply');
 
 const DEFAULT_INTERVAL_MINUTES = 60;
@@ -9,7 +9,7 @@ let isRunning = false;
 
 const getConfiguredIntervalMinutes = async () => {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await Database
       .from('platform_settings')
       .select('value')
       .eq('key', 'auto_apply_digest_interval_minutes')

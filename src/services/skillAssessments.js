@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const ASSESSMENT_CATEGORIES = [
   { id: 'javascript', name: 'JavaScript', icon: 'FileCode', duration: 30, questionCount: 20, difficulty: 'mixed' },
@@ -66,7 +66,7 @@ const evaluateAssessment = (categoryId, answers = []) => {
 };
 
 const saveAttempt = async ({ userId, categoryId, score, grade, passed, correct, total, timeTaken }) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('skill_assessment_attempts')
     .insert({
       user_id: userId,
@@ -85,7 +85,7 @@ const saveAttempt = async ({ userId, categoryId, score, grade, passed, correct, 
 };
 
 const getUserAttempts = async (userId) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('skill_assessment_attempts')
     .select('*')
     .eq('user_id', userId)

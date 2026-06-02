@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const RESUME_TEMPLATES = [
   { id: 'professional', name: 'Professional', description: 'Clean ATS-friendly layout for experienced professionals', color: '#0b1631', sections: ['header', 'summary', 'experience', 'education', 'skills', 'certifications'] },
@@ -12,7 +12,7 @@ const RESUME_TEMPLATES = [
 const getTemplates = () => RESUME_TEMPLATES;
 
 const saveResume = async ({ userId, templateId, resumeData, title = 'My Resume' }) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('user_resumes')
     .upsert({
       user_id: userId,
@@ -29,7 +29,7 @@ const saveResume = async ({ userId, templateId, resumeData, title = 'My Resume' 
 };
 
 const getUserResumes = async (userId) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('user_resumes')
     .select('*')
     .eq('user_id', userId)
@@ -40,7 +40,7 @@ const getUserResumes = async (userId) => {
 };
 
 const deleteResume = async ({ userId, resumeId }) => {
-  const { error } = await supabase.from('user_resumes').delete().eq('id', resumeId).eq('user_id', userId);
+  const { error } = await Database.from('user_resumes').delete().eq('id', resumeId).eq('user_id', userId);
   if (error) throw error;
   return true;
 };

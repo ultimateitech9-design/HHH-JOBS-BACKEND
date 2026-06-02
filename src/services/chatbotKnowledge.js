@@ -1,5 +1,5 @@
 const { ROLES, STOP_WORDS } = require('../constants');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const PLATFORM_SETTING_KEYS = ['faqs', 'knowledge_base', 'chatbot_knowledge'];
 const CACHE_TTL_MS = 2 * 60 * 1000;
@@ -205,7 +205,7 @@ const normalizeDynamicKnowledgeRows = (rows = []) => {
 };
 
 const fetchDynamicKnowledge = async () => {
-  if (!supabase) return [];
+  if (!Database) return [];
 
   const now = Date.now();
   if (cachedDynamicKnowledge.expiresAt > now) {
@@ -213,7 +213,7 @@ const fetchDynamicKnowledge = async () => {
   }
 
   try {
-    const { data, error } = await supabase
+    const { data, error } = await Database
       .from('platform_settings')
       .select('key, value')
       .in('key', PLATFORM_SETTING_KEYS);

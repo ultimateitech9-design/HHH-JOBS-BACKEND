@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const REFERRAL_REWARD_AMOUNTS = { signup: 50, first_apply: 100, first_hire: 500, hr_signup: 200 };
 const REFERRAL_STATUSES = { PENDING: 'pending', COMPLETED: 'completed', REWARDED: 'rewarded' };
@@ -10,7 +10,7 @@ const generateReferralCode = (userId) => {
 };
 
 const ensureReferralCode = async (userId) => {
-  const { data: existing } = await supabase
+  const { data: existing } = await Database
     .from('user_referrals')
     .select('referral_code')
     .eq('user_id', userId)
@@ -19,7 +19,7 @@ const ensureReferralCode = async (userId) => {
   if (existing?.referral_code) return existing.referral_code;
 
   const code = generateReferralCode(userId);
-  const { error } = await supabase
+  const { error } = await Database
     .from('user_referrals')
     .insert({ user_id: userId, referral_code: code, total_referrals: 0, total_rewards: 0 });
 
@@ -30,7 +30,7 @@ const ensureReferralCode = async (userId) => {
 const getReferralDashboard = async (userId) => {
   const code = await ensureReferralCode(userId);
 
-  const { data: referrals } = await supabase
+  const { data: referrals } = await Database
     .from('referral_entries')
     .select('*')
     .eq('referrer_id', userId)
@@ -64,7 +64,7 @@ const getReferralDashboard = async (userId) => {
 };
 
 const trackReferral = async ({ referralCode, referredUserId, referredName, eventType = 'signup' }) => {
-  const { data: referrer } = await supabase
+  const { data: referrer } = await Database
     .from('user_referrals')
     .select('user_id')
     .eq('referral_code', referralCode)
@@ -75,7 +75,7 @@ const trackReferral = async ({ referralCode, referredUserId, referredName, event
 
   const rewardAmount = REFERRAL_REWARD_AMOUNTS[eventType] || 0;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('referral_entries')
     .insert({
       referrer_id: referrer.user_id,
@@ -91,16 +91,16 @@ const trackReferral = async ({ referralCode, referredUserId, referredName, event
 
   if (error) throw error;
 
-  await supabase
+  await Database
     .from('user_referrals')
-    .update({ total_referrals: supabase.rpc ? undefined : 0 })
+    .update({ total_referrals: Database.rpc ? undefined : 0 })
     .eq('user_id', referrer.user_id);
 
   return { entryId: data?.id, referrerId: referrer.user_id, rewardAmount };
 };
 
 const completeReferral = async (entryId) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('referral_entries')
     .update({ status: REFERRAL_STATUSES.COMPLETED })
     .eq('id', entryId)
@@ -113,7 +113,7 @@ const completeReferral = async (entryId) => {
 };
 
 const getLeaderboard = async (limit = 20) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('user_referrals')
     .select('user_id, referral_code, total_referrals, total_rewards')
     .order('total_referrals', { ascending: false })
@@ -124,7 +124,7 @@ const getLeaderboard = async (limit = 20) => {
   if (!data?.length) return [];
 
   const userIds = data.map((r) => r.user_id);
-  const { data: users } = await supabase
+  const { data: users } = await Database
     .from('users')
     .select('id, name')
     .in('id', userIds);

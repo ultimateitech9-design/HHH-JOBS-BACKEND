@@ -8,7 +8,7 @@ const { PASSWORD_RESET_OTP_EXPIRY_MINUTES, ROLES } = require('../src/constants')
 const DEFAULT_BASE_URL = 'https://hhh-jobs.com';
 const DEFAULT_DASHBOARD_PATH = '/portal/student/companies';
 const DEFAULT_SEED_RUN_ID = 'resume_bulk_seed_20260514';
-const DEFAULT_SQL_OUT = path.join(__dirname, '..', 'supabase', 'seeds', '20260514_resume_bulk_seed.sql');
+const DEFAULT_SQL_OUT = path.join(__dirname, '..', 'database', 'seeds', '20260514_resume_bulk_seed.sql');
 const DEFAULT_EMAIL_CONCURRENCY = 4;
 
 const usage = `

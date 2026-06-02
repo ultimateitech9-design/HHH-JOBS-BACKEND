@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES } = require('../constants');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler, clamp, isValidUuid } = require('../utils/helpers');
@@ -118,7 +118,7 @@ const deriveAlertSeverity = (event) => {
 };
 
 const syncDerivedAlertsFromEvents = async () => {
-  const { data: rawEvents, error } = await supabase
+  const { data: rawEvents, error } = await Database
     .from('audit_logs')
     .select('*')
     .order('created_at', { ascending: false })
@@ -134,7 +134,7 @@ const syncDerivedAlertsFromEvents = async () => {
   const sourceEventIds = events.map((event) => event.id).filter(Boolean);
   if (sourceEventIds.length === 0) return;
 
-  const { data: existingRows, error: existingError } = await supabase
+  const { data: existingRows, error: existingError } = await Database
     .from('audit_alerts')
     .select('source_event_id')
     .in('source_event_id', sourceEventIds);
@@ -162,7 +162,7 @@ const syncDerivedAlertsFromEvents = async () => {
 
   if (insertRows.length === 0) return;
 
-  const { error: insertError } = await supabase
+  const { error: insertError } = await Database
     .from('audit_alerts')
     .insert(insertRows);
 
@@ -176,14 +176,14 @@ router.get('/events', asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = clamp(parseInt(req.query.limit || '20', 10), 1, 200);
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('audit_logs')
     .select('*')
     .order('created_at', { ascending: false })
     .limit(2000);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -207,7 +207,7 @@ router.get('/events', asyncHandler(async (req, res) => {
 router.get('/summary', asyncHandler(async (req, res) => {
   const since = new Date(Date.now() - (24 * 60 * 60 * 1000)).toISOString();
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('audit_logs')
     .select('*')
     .gte('created_at', since)
@@ -215,7 +215,7 @@ router.get('/summary', asyncHandler(async (req, res) => {
     .limit(5000);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -241,14 +241,14 @@ router.get('/summary', asyncHandler(async (req, res) => {
 router.get('/alerts', asyncHandler(async (req, res) => {
   await syncDerivedAlertsFromEvents();
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('audit_alerts')
     .select('*')
     .order('created_at', { ascending: false })
     .limit(1000);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -303,7 +303,7 @@ router.patch('/alerts/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('audit_alerts')
     .update(updateDoc)
     .eq('id', alertId)
@@ -311,7 +311,7 @@ router.patch('/alerts/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -326,13 +326,13 @@ router.patch('/alerts/:id', asyncHandler(async (req, res) => {
 // Compliance checks
 // =============================================
 router.get('/compliance-checks', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_security_checks')
     .select('*')
     .order('created_at', { ascending: false });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -367,7 +367,7 @@ router.patch('/compliance-checks/:id', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('platform_security_checks')
     .update(updateDoc)
     .eq('id', checkId)
@@ -375,7 +375,7 @@ router.patch('/compliance-checks/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {

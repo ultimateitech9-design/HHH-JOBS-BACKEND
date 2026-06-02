@@ -10,7 +10,7 @@ const { normalizePlan, validateJobPayloadAgainstPlan, calculateQuote, calculateE
 const authMiddlewarePath = require.resolve('../src/middleware/auth');
 const rolesMiddlewarePath = require.resolve('../src/middleware/roles');
 
-const createProfileTablesSupabaseDouble = ({
+const createProfileTablesDatabaseDouble = ({
   roleTable = 'student_profiles',
   existingRoleProfile = null,
   existingEmployeeProfile = null
@@ -22,7 +22,7 @@ const createProfileTablesSupabaseDouble = ({
 
   return {
     calls,
-    supabase: {
+    Database: {
       from(table) {
         return {
           select() {
@@ -56,7 +56,7 @@ const createProfileTablesSupabaseDouble = ({
   };
 };
 
-const createRoleSyncSummarySupabaseDouble = ({
+const createRoleSyncSummaryDatabaseDouble = ({
   users = [],
   profileUserIdsByTable = {}
 } = {}) => ({
@@ -306,10 +306,10 @@ test('core constants stay stable', () => {
 
 test('ensureRoleProfile seeds missing student profiles from legacy users without extra writes', async () => {
   const { ensureRoleProfile, buildProfileSeedFromUser } = require('../src/services/profileTables');
-  const { supabase, calls } = createProfileTablesSupabaseDouble();
+  const { Database, calls } = createProfileTablesDatabaseDouble();
 
   await ensureRoleProfile({
-    supabase,
+    Database,
     role: ROLES.STUDENT,
     userId: 'student-user-1',
     reqBody: buildProfileSeedFromUser({
@@ -331,14 +331,14 @@ test('ensureRoleProfile seeds missing student profiles from legacy users without
 
 test('ensureRoleProfile preserves existing employee and role profiles during login-time repair', async () => {
   const { ensureRoleProfile, buildProfileSeedFromUser } = require('../src/services/profileTables');
-  const { supabase, calls } = createProfileTablesSupabaseDouble({
+  const { Database, calls } = createProfileTablesDatabaseDouble({
     roleTable: 'admin_profiles',
     existingRoleProfile: { id: 'admin-profile-1' },
     existingEmployeeProfile: { id: 'employee-profile-1' }
   });
 
   await ensureRoleProfile({
-    supabase,
+    Database,
     role: ROLES.ADMIN,
     userId: 'admin-user-1',
     reqBody: buildProfileSeedFromUser({
@@ -351,7 +351,7 @@ test('ensureRoleProfile preserves existing employee and role profiles during log
 
 test('getRoleSyncSummary reports role-wise table coverage for database visibility', async () => {
   const { getRoleSyncSummary } = require('../src/services/profileTables');
-  const supabase = createRoleSyncSummarySupabaseDouble({
+  const Database = createRoleSyncSummaryDatabaseDouble({
     users: [
       { id: 'admin-1', role: ROLES.ADMIN },
       { id: 'admin-2', role: ROLES.ADMIN },
@@ -366,7 +366,7 @@ test('getRoleSyncSummary reports role-wise table coverage for database visibilit
     }
   });
 
-  const summary = await getRoleSyncSummary({ supabase });
+  const summary = await getRoleSyncSummary({ Database });
   const adminSummary = summary.find((item) => item.role === ROLES.ADMIN);
   const superAdminSummary = summary.find((item) => item.role === ROLES.SUPER_ADMIN);
   const studentSummary = summary.find((item) => item.role === ROLES.STUDENT);
@@ -393,7 +393,7 @@ test('repairRoleProfiles repairs users without requesting non-existent date_of_b
   const inserts = [];
   let userBatchCalls = 0;
 
-  const supabase = {
+  const Database = {
     from(table) {
       if (table === 'users') {
         return {
@@ -438,7 +438,7 @@ test('repairRoleProfiles repairs users without requesting non-existent date_of_b
   };
 
   const result = await repairRoleProfiles({
-    supabase
+    Database
   });
 
   assert.deepEqual(selectCalls, ['id, role, email']);

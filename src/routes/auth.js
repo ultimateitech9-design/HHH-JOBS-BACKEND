@@ -10,7 +10,7 @@ const {
   PASSWORD_RESET_OTP_EXPIRY_MINUTES
 } = require('../constants');
 const config = require('../config');
-const { supabase, ensureServerConfig, sendSupabaseError } = require('../supabase');
+const { Database, ensureDatabaseConfig, sendDatabaseError } = require('../db');
 const { mapPublicUser } = require('../utils/mappers');
 const { normalizeEmail, asyncHandler } = require('../utils/helpers');
 const { resolveStructuredLocation } = require('../utils/geography');
@@ -45,10 +45,10 @@ const {
 const authStore = require('../mock/authStore');
 
 const router = express.Router();
-const hasLocalAuthFallback = () => Boolean(config.jwtSecret && !supabase);
+const hasLocalAuthFallback = () => Boolean(config.jwtSecret && !Database);
 const requireConfiguredAuthBackend = (res) => {
   if (hasLocalAuthFallback()) return true;
-  return ensureServerConfig(res);
+  return ensureDatabaseConfig(res);
 };
 const exposeOtpForLocalTesting = hasLocalAuthFallback();
 const runAsyncSideEffect = (label, task) => {
@@ -306,8 +306,8 @@ const loadEimagerSyncProfile = async ({ user = {}, fallbackProfile = null, reqBo
   }
 
   const profileTable = getProfileTableForRole(user?.role);
-  if (supabase && user?.id && profileTable) {
-    const { data, error } = await supabase
+  if (Database && user?.id && profileTable) {
+    const { data, error } = await Database
       .from(profileTable)
       .select('*')
       .eq('user_id', user.id)
@@ -382,7 +382,7 @@ const buildCampusCollegePayload = ({ userId, reqBody = {}, fallbackName = '', fa
 };
 
 const upsertCampusCollegeProfile = async ({ userId, role, reqBody = {}, fallbackName = '', fallbackEmail = '', fallbackMobile = '' }) => {
-  if (!supabase || !userId || normalizeRoleValue(role) !== ROLES.CAMPUS_CONNECT) return;
+  if (!Database || !userId || normalizeRoleValue(role) !== ROLES.CAMPUS_CONNECT) return;
 
   const payload = buildCampusCollegePayload({
     userId,
@@ -392,7 +392,7 @@ const upsertCampusCollegeProfile = async ({ userId, role, reqBody = {}, fallback
     fallbackMobile
   });
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('colleges')
     .upsert(payload, { onConflict: 'user_id' });
 
@@ -400,7 +400,7 @@ const upsertCampusCollegeProfile = async ({ userId, role, reqBody = {}, fallback
 };
 
 const activatePendingCampusStudentRows = async ({ userId, email }) => {
-  if (!supabase || !userId || !email) return;
+  if (!Database || !userId || !email) return;
 
   const payload = {
     student_user_id: userId,
@@ -408,12 +408,12 @@ const activatePendingCampusStudentRows = async ({ userId, email }) => {
   };
 
   const [linkedRowsResp, emailRowsResp] = await Promise.all([
-    supabase
+    Database
       .from('campus_students')
       .update(payload)
       .eq('student_user_id', userId)
       .eq('account_status', 'pending_activation'),
-    supabase
+    Database
       .from('campus_students')
       .update(payload)
       .is('student_user_id', null)
@@ -434,8 +434,8 @@ const activatePendingCampusStudentRows = async ({ userId, email }) => {
 };
 
 const upsertSignupProfile = async ({ userId, role, reqBody = {} }) => {
-  if (supabase) {
-    await upsertRoleProfile({ supabase, role, userId, reqBody });
+  if (Database) {
+    await upsertRoleProfile({ Database, role, userId, reqBody });
     await upsertCampusCollegeProfile({
       userId,
       role,
@@ -454,11 +454,11 @@ const upsertSignupProfile = async ({ userId, role, reqBody = {} }) => {
   }
 };
 
-const ensureSupabaseRoleProfile = async ({ user, role = '', reqBody = {} }) => {
-  if (!supabase || !user?.id) return null;
+const ensureDatabaseRoleProfile = async ({ user, role = '', reqBody = {} }) => {
+  if (!Database || !user?.id) return null;
 
   return ensureRoleProfile({
-    supabase,
+    Database,
     role: role || user.role,
     userId: user.id,
     reqBody: {
@@ -468,7 +468,7 @@ const ensureSupabaseRoleProfile = async ({ user, role = '', reqBody = {} }) => {
   });
 };
 
-const readSupabaseProfileBundle = async ({ role, userId }) => {
+const readDatabaseProfileBundle = async ({ role, userId }) => {
   const profileTable = getProfileTableForRole(role);
   if (!profileTable || !userId) {
     return {
@@ -479,13 +479,13 @@ const readSupabaseProfileBundle = async ({ role, userId }) => {
   }
 
   const [roleProfileResp, employeeProfileResp] = await Promise.all([
-    supabase
+    Database
       .from(profileTable)
       .select('*')
       .eq('user_id', userId)
       .maybeSingle(),
     isEmployeeProfileRole(role)
-      ? supabase
+      ? Database
         .from('employee_profiles')
         .select('*')
         .eq('user_id', userId)
@@ -658,7 +658,7 @@ const getOAuthProfileFromCode = async ({ provider, code, oauthConfig }) => {
 };
 
 const findOrCreateOAuthUser = async ({ email, name, avatarUrl, requestedRole }) => {
-  const { data: existingUser, error: lookupError } = await supabase
+  const { data: existingUser, error: lookupError } = await Database
     .from('users')
     .select('*')
     .eq('email', email)
@@ -669,14 +669,14 @@ const findOrCreateOAuthUser = async ({ email, name, avatarUrl, requestedRole }) 
   }
 
   if (existingUser) {
-    await ensureSupabaseRoleProfile({ user: existingUser });
+    await ensureDatabaseRoleProfile({ user: existingUser });
     return { user: existingUser, created: false };
   }
 
   const role = config.adminEmails.includes(email) ? ROLES.ADMIN : requestedRole;
   const tempPasswordHash = await bcrypt.hash(`${crypto.randomUUID()}-${Date.now()}`, 10);
 
-  const { data: insertedUser, error: createError } = await supabase
+  const { data: insertedUser, error: createError } = await Database
     .from('users')
     .insert({
       name,
@@ -698,7 +698,7 @@ const findOrCreateOAuthUser = async ({ email, name, avatarUrl, requestedRole }) 
     throw createError;
   }
 
-  await ensureSupabaseRoleProfile({
+  await ensureDatabaseRoleProfile({
     user: insertedUser,
     role,
     reqBody: {
@@ -752,8 +752,8 @@ const createVerifiedUserFromPendingSignup = async (pendingSignup) => {
     otp_expires_at: null
   };
 
-  if (supabase) {
-    const { data: insertedUser, error: userInsertError } = await supabase
+  if (Database) {
+    const { data: insertedUser, error: userInsertError } = await Database
       .from('users')
       .insert(baseUserPayload)
       .select('*')
@@ -958,7 +958,7 @@ const completeOAuthFlow = async ({
     userUpdatePayload.avatar_url = oauthProfile.avatarUrl;
   }
 
-  const { data: updatedUser, error: updateError } = await supabase
+  const { data: updatedUser, error: updateError } = await Database
     .from('users')
     .update(userUpdatePayload)
     .eq('id', authUser.id)
@@ -978,7 +978,7 @@ const completeOAuthFlow = async ({
   authUser = updatedUser;
 
   try {
-    await ensureSupabaseRoleProfile({ user: authUser });
+    await ensureDatabaseRoleProfile({ user: authUser });
   } catch (error) {
     sendOAuthFailure({
       res,
@@ -1226,8 +1226,8 @@ router.post('/signup', asyncHandler(async (req, res) => {
 
   const pendingSignup = getPendingSignupByEmail(email);
 
-  const existingUser = supabase
-    ? (await supabase.from('users').select('*').eq('email', email).maybeSingle()).data
+  const existingUser = Database
+    ? (await Database.from('users').select('*').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
 
   if (existingUser) {
@@ -1303,7 +1303,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
       otp_expires_at: otpExpiresAt,
       reqBody: sanitizeSignupDraft(req.body || {})
     });
-  } else if (supabase) {
+  } else if (Database) {
     const userPayload = {
         name,
         email,
@@ -1321,7 +1321,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
       };
 
     if (existingUser) {
-      const { data: updatedUser, error: userUpdateError } = await supabase
+      const { data: updatedUser, error: userUpdateError } = await Database
         .from('users')
         .update(userPayload)
         .eq('id', existingUser.id)
@@ -1329,19 +1329,19 @@ router.post('/signup', asyncHandler(async (req, res) => {
         .single();
 
       if (userUpdateError) {
-        sendSupabaseError(res, userUpdateError);
+        sendDatabaseError(res, userUpdateError);
         return;
       }
       userRow = updatedUser;
     } else {
-      const { data: insertedUser, error: userInsertError } = await supabase
+      const { data: insertedUser, error: userInsertError } = await Database
         .from('users')
         .insert(userPayload)
         .select('*')
         .single();
 
       if (userInsertError) {
-        sendSupabaseError(res, userInsertError);
+        sendDatabaseError(res, userInsertError);
         return;
       }
       userRow = insertedUser;
@@ -1357,7 +1357,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
     try {
       await upsertSignupProfile({ userId: userRow.id, role, reqBody: req.body || {} });
     } catch (profileError) {
-      sendSupabaseError(res, profileError);
+      sendDatabaseError(res, profileError);
       return;
     }
   } else {
@@ -1431,8 +1431,8 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
   }
 
   const pendingSignup = getPendingSignupByEmail(email);
-  const user = supabase
-    ? (await supabase.from('users').select('id, email, is_email_verified, otp_code, otp_expires_at').eq('email', email).maybeSingle()).data
+  const user = Database
+    ? (await Database.from('users').select('id, email, is_email_verified, otp_code, otp_expires_at').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
   const target = user || pendingSignup;
 
@@ -1447,14 +1447,14 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
     ? target.otp_expires_at
     : new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
 
-  if (!shouldReuseExistingOtp && user && supabase) {
-    const { error: updateError } = await supabase
+  if (!shouldReuseExistingOtp && user && Database) {
+    const { error: updateError } = await Database
       .from('users')
       .update({ otp_code: otpCode, otp_expires_at: otpExpiresAt })
       .eq('id', user.id);
 
     if (updateError) {
-      sendSupabaseError(res, updateError);
+      sendDatabaseError(res, updateError);
       return;
     }
   } else if (!shouldReuseExistingOtp && user) {
@@ -1524,8 +1524,8 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
       return;
     }
 
-    const existingVerifiedUser = supabase
-      ? (await supabase.from('users').select('id, email, is_email_verified').eq('email', email).maybeSingle()).data
+    const existingVerifiedUser = Database
+      ? (await Database.from('users').select('id, email, is_email_verified').eq('email', email).maybeSingle()).data
       : authStore.findUserByEmail(email);
 
     if (existingVerifiedUser?.is_email_verified) {
@@ -1537,7 +1537,7 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
     try {
       userRow = await createVerifiedUserFromPendingSignup(pendingSignup);
     } catch (createError) {
-      sendSupabaseError(res, createError);
+      sendDatabaseError(res, createError);
       return;
     }
 
@@ -1584,8 +1584,8 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
     return;
   }
 
-  const user = supabase
-    ? (await supabase.from('users').select('*').eq('email', email).maybeSingle()).data
+  const user = Database
+    ? (await Database.from('users').select('*').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
 
   if (!user) {
@@ -1603,8 +1603,8 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (supabase) {
-    const { error: updateError } = await supabase
+  if (Database) {
+    const { error: updateError } = await Database
       .from('users')
       .update({
         is_email_verified: true,
@@ -1614,15 +1614,15 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
       .eq('id', user.id);
 
     if (updateError) {
-      sendSupabaseError(res, updateError);
+      sendDatabaseError(res, updateError);
       return;
     }
 
     try {
-      await ensureSupabaseRoleProfile({ user });
+      await ensureDatabaseRoleProfile({ user });
       await activatePendingCampusStudentRows({ userId: user.id, email });
     } catch (profileError) {
-      sendSupabaseError(res, profileError);
+      sendDatabaseError(res, profileError);
       return;
     }
 
@@ -1657,8 +1657,8 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
   const token = createAuthToken(user);
   let publicUser = user;
   if (isStudentPortalRole(user.role) && !publicUser.date_of_birth) {
-    if (supabase) {
-      const { data: studentProfile } = await supabase
+    if (Database) {
+      const { data: studentProfile } = await Database
         .from('student_profiles')
         .select('date_of_birth')
         .eq('user_id', user.id)
@@ -1699,8 +1699,8 @@ router.post('/forgot-password', asyncHandler(async (req, res) => {
     return;
   }
 
-  const user = supabase
-    ? (await supabase.from('users').select('id, email').eq('email', email).maybeSingle()).data
+  const user = Database
+    ? (await Database.from('users').select('id, email').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
 
   // Always return success to prevent email enumeration
@@ -1712,8 +1712,8 @@ router.post('/forgot-password', asyncHandler(async (req, res) => {
   const otpCode = generateOtp();
   const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
 
-  if (supabase) {
-    await supabase
+  if (Database) {
+    await Database
       .from('users')
       .update({ otp_code: otpCode, otp_expires_at: otpExpiresAt })
       .eq('id', user.id);
@@ -1767,8 +1767,8 @@ router.post('/reset-password', asyncHandler(async (req, res) => {
     return;
   }
 
-  const user = supabase
-    ? (await supabase.from('users').select('id, email, otp_code, otp_expires_at').eq('email', email).maybeSingle()).data
+  const user = Database
+    ? (await Database.from('users').select('id, email, otp_code, otp_expires_at').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
 
   if (!user || !user.otp_code || user.otp_code !== otpCode) {
@@ -1783,8 +1783,8 @@ router.post('/reset-password', asyncHandler(async (req, res) => {
 
   const passwordHash = await bcrypt.hash(newPassword, 10);
 
-  if (supabase) {
-    const { error: updateError } = await supabase
+  if (Database) {
+    const { error: updateError } = await Database
       .from('users')
       .update({
         password_hash: passwordHash,
@@ -1794,7 +1794,7 @@ router.post('/reset-password', asyncHandler(async (req, res) => {
       .eq('id', user.id);
 
     if (updateError) {
-      sendSupabaseError(res, updateError);
+      sendDatabaseError(res, updateError);
       return;
     }
   } else {
@@ -1814,8 +1814,8 @@ router.post('/reset-password', asyncHandler(async (req, res) => {
     ipAddress: getClientIp(req)
   });
 
-  const syncedUser = supabase
-    ? (await supabase.from('users').select('*').eq('id', user.id).maybeSingle()).data
+  const syncedUser = Database
+    ? (await Database.from('users').select('*').eq('id', user.id).maybeSingle()).data
     : authStore.findUserByEmail(email);
 
   if (syncedUser) {
@@ -1842,11 +1842,11 @@ router.post('/login', asyncHandler(async (req, res) => {
 
   const pendingSignup = getPendingSignupByEmail(email);
   let userRow = null;
-  if (supabase) {
+  if (Database) {
     let userLookupResp;
     try {
       userLookupResp = await withAuthDatabaseTimeout(
-        supabase.from('users').select('*').eq('email', email).maybeSingle(),
+        Database.from('users').select('*').eq('email', email).maybeSingle(),
         'login user lookup'
       );
     } catch (error) {
@@ -1854,12 +1854,12 @@ router.post('/login', asyncHandler(async (req, res) => {
         sendAuthDatabaseTimeout(res);
         return;
       }
-      sendSupabaseError(res, error);
+      sendDatabaseError(res, error);
       return;
     }
 
     if (userLookupResp.error) {
-      sendSupabaseError(res, userLookupResp.error);
+      sendDatabaseError(res, userLookupResp.error);
       return;
     }
     userRow = userLookupResp.data;
@@ -1884,8 +1884,8 @@ router.post('/login', asyncHandler(async (req, res) => {
 
   let publicUser = loginTarget;
   if (isStudentPortalRole(loginTarget.role) && !publicUser.date_of_birth) {
-    if (userRow && supabase) {
-      const { data: studentProfile } = await supabase
+    if (userRow && Database) {
+      const { data: studentProfile } = await Database
         .from('student_profiles')
         .select('date_of_birth')
         .eq('user_id', userRow.id)
@@ -1907,8 +1907,8 @@ router.post('/login', asyncHandler(async (req, res) => {
     const otpCode = generateOtp();
     const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
 
-    if (userRow && supabase) {
-      const { error: updateError } = await supabase
+    if (userRow && Database) {
+      const { error: updateError } = await Database
         .from('users')
         .update({
           otp_code: otpCode,
@@ -1917,7 +1917,7 @@ router.post('/login', asyncHandler(async (req, res) => {
         .eq('id', userRow.id);
 
       if (updateError) {
-        sendSupabaseError(res, updateError);
+        sendDatabaseError(res, updateError);
         return;
       }
     } else if (userRow) {
@@ -1972,10 +1972,10 @@ router.post('/login', asyncHandler(async (req, res) => {
   }
 
   const loginTimestamp = new Date().toISOString();
-  if (supabase) {
+  if (Database) {
     runAsyncSideEffect('login-post-auth-sync', async () => {
       const { error: updateError } = await withAuthDatabaseTimeout(
-        supabase
+        Database
           .from('users')
           .update({ last_login_at: loginTimestamp })
           .eq('id', userRow.id),
@@ -1985,7 +1985,7 @@ router.post('/login', asyncHandler(async (req, res) => {
       if (updateError) throw updateError;
 
       await withAuthDatabaseTimeout(
-        ensureSupabaseRoleProfile({ user: userRow }),
+        ensureDatabaseRoleProfile({ user: userRow }),
         'login profile sync'
       );
       await withAuthDatabaseTimeout(
@@ -2024,37 +2024,37 @@ router.get('/me', requireAuth, authSessionReadLimiter, asyncHandler(async (req, 
   const profileRoleKey = getProfileRoleKey(req.user.role);
   const profileTable = getProfileTableForRole(req.user.role);
 
-  if (!supabase) {
+  if (!Database) {
     profile = authStore.getProfileByRole(profileRoleKey, req.user.id);
     res.send({ status: true, user: req.user, profile });
     return;
   }
 
   if (profileTable) {
-    let { roleProfileResp, employeeProfileResp } = await readSupabaseProfileBundle({
+    let { roleProfileResp, employeeProfileResp } = await readDatabaseProfileBundle({
       role: req.user.role,
       userId: req.user.id
     });
 
     if (roleProfileResp?.error) {
-      sendSupabaseError(res, roleProfileResp.error);
+      sendDatabaseError(res, roleProfileResp.error);
       return;
     }
 
     if (employeeProfileResp?.error) {
-      sendSupabaseError(res, employeeProfileResp.error);
+      sendDatabaseError(res, employeeProfileResp.error);
       return;
     }
 
     if (!roleProfileResp?.data || (isEmployeeProfileRole(req.user.role) && !employeeProfileResp?.data)) {
       try {
-        await ensureSupabaseRoleProfile({ user: req.user });
+        await ensureDatabaseRoleProfile({ user: req.user });
       } catch (profileError) {
-        sendSupabaseError(res, profileError);
+        sendDatabaseError(res, profileError);
         return;
       }
 
-      const repairedProfiles = await readSupabaseProfileBundle({
+      const repairedProfiles = await readDatabaseProfileBundle({
         role: req.user.role,
         userId: req.user.id
       });
@@ -2062,12 +2062,12 @@ router.get('/me', requireAuth, authSessionReadLimiter, asyncHandler(async (req, 
       employeeProfileResp = repairedProfiles.employeeProfileResp;
 
       if (roleProfileResp?.error) {
-        sendSupabaseError(res, roleProfileResp.error);
+        sendDatabaseError(res, roleProfileResp.error);
         return;
       }
 
       if (employeeProfileResp?.error) {
-        sendSupabaseError(res, employeeProfileResp.error);
+        sendDatabaseError(res, employeeProfileResp.error);
         return;
       }
     }

@@ -2,7 +2,7 @@ const express = require('express');
 const { REPORT_TARGETS } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser } = require('../middleware/roles');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { mapReportFromRow } = require('../utils/mappers');
 const { asyncHandler } = require('../utils/helpers');
 
@@ -26,7 +26,7 @@ router.post('/', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('reports')
     .insert({
       reporter_id: req.user.id,
@@ -40,7 +40,7 @@ router.post('/', asyncHandler(async (req, res) => {
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -48,14 +48,14 @@ router.post('/', asyncHandler(async (req, res) => {
 }));
 
 router.get('/mine', asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('reports')
     .select('*')
     .eq('reporter_id', req.user.id)
     .order('created_at', { ascending: false });
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 

@@ -1,4 +1,4 @@
-const { supabase } = require('../../supabase');
+const { Database } = require('../../db');
 
 const remoteokAdapter = require('./adapters/remoteok');
 const arbeitnowAdapter = require('./adapters/arbeitnow');
@@ -27,7 +27,7 @@ const buildSourceRecord = (adapter) => ({
 
 const syncSourceRegistry = async () => {
   const records = ADAPTERS.map(buildSourceRecord);
-  const { error } = await supabase
+  const { error } = await Database
     .from('job_sources')
     .upsert(records, { onConflict: 'key' });
 
@@ -39,7 +39,7 @@ const getActiveAdapters = async () => {
   await syncSourceRegistry();
 
   const sourceKeys = ADAPTERS.map((adapter) => adapter.SOURCE_KEY);
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('job_sources')
     .select('key,is_active')
     .in('key', sourceKeys);

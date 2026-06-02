@@ -3,7 +3,7 @@ const { ROLES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { createRateLimitMiddleware } = require('../middleware/rateLimit');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { asyncHandler, isValidUuid } = require('../utils/helpers');
 const { pushNotificationEvent, registerNotificationClient, serializeSseEvent } = require('../services/notificationStream');
 
@@ -38,7 +38,7 @@ router.get('/', asyncHandler(async (req, res) => {
     ? req.query.userId
     : req.user.id;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('notifications')
     .select('*')
     .eq('user_id', targetUserId)
@@ -46,7 +46,7 @@ router.get('/', asyncHandler(async (req, res) => {
     .limit(200);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -93,7 +93,7 @@ router.patch('/:id/read', asyncHandler(async (req, res) => {
     ? req.body.userId
     : req.user.id;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('notifications')
     .update({ is_read: true, read_at: new Date().toISOString() })
     .eq('id', notificationId)
@@ -102,7 +102,7 @@ router.patch('/:id/read', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
   if (!data) {
@@ -120,7 +120,7 @@ router.patch('/read-all', asyncHandler(async (req, res) => {
     : req.user.id;
   const readAt = new Date().toISOString();
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('notifications')
     .update({ is_read: true, read_at: readAt })
     .eq('user_id', targetUserId)
@@ -128,7 +128,7 @@ router.patch('/read-all', asyncHandler(async (req, res) => {
     .select('id, user_id, is_read, read_at');
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -147,14 +147,14 @@ router.delete('/', asyncHandler(async (req, res) => {
     ? req.body.userId
     : req.user.id;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('notifications')
     .delete()
     .eq('user_id', targetUserId)
     .select('id, user_id');
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -172,7 +172,7 @@ router.delete('/:id', asyncHandler(async (req, res) => {
     ? req.body.userId
     : req.user.id;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('notifications')
     .delete()
     .eq('id', notificationId)
@@ -181,7 +181,7 @@ router.delete('/:id', asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 

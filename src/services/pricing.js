@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { isValidUuid } = require('../utils/helpers');
 const {
   normalizePlan,
@@ -25,7 +25,7 @@ const parseOptionalNumber = (value) => {
 };
 
 const fetchPlans = async ({ includeInactive = false } = {}) => {
-  let query = supabase
+  let query = Database
     .from('job_posting_plans')
     .select('*')
     .order('sort_order', { ascending: true });
@@ -43,7 +43,7 @@ const getPlanBySlug = async (planSlug, { includeInactive = false } = {}) => {
   const normalizedSlug = normalizePlanSlug(planSlug);
   if (!normalizedSlug) return null;
 
-  let query = supabase
+  let query = Database
     .from('job_posting_plans')
     .select('*')
     .eq('slug', normalizedSlug)
@@ -112,7 +112,7 @@ const updatePlanBySlug = async (planSlug, changes = {}) => {
     throw err;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('job_posting_plans')
     .update(updateDoc)
     .eq('slug', normalizePlanSlug(planSlug))
@@ -169,7 +169,7 @@ const consumePostingCredit = async ({ hrId, planSlug }) => {
     return { success: false, creditId: null, message: 'Invalid HR user id' };
   }
 
-  const { data, error } = await supabase.rpc('consume_hr_posting_credit', {
+  const { data, error } = await Database.rpc('consume_hr_posting_credit', {
     p_hr_id: hrId,
     p_plan_slug: normalizePlanSlug(planSlug)
   });
@@ -190,7 +190,7 @@ const consumePostingCredit = async ({ hrId, planSlug }) => {
 const releasePostingCredit = async (creditId) => {
   if (!isValidUuid(creditId)) return false;
 
-  const { data, error } = await supabase.rpc('release_hr_posting_credit', {
+  const { data, error } = await Database.rpc('release_hr_posting_credit', {
     p_credit_id: creditId
   });
 
@@ -201,7 +201,7 @@ const releasePostingCredit = async (creditId) => {
 const grantCreditsForPurchase = async (purchaseId) => {
   if (!isValidUuid(purchaseId)) return null;
 
-  const { data, error } = await supabase.rpc('grant_hr_credits_for_purchase', {
+  const { data, error } = await Database.rpc('grant_hr_credits_for_purchase', {
     p_purchase_id: purchaseId
   });
 
@@ -256,7 +256,7 @@ const createPlanPurchase = async ({
     paid_at: normalizedStatus === PURCHASE_STATUSES.PAID ? new Date().toISOString() : null
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('job_plan_purchases')
     .insert(insertPayload)
     .select('*')
@@ -277,7 +277,7 @@ const createPlanPurchase = async ({
 };
 
 const getPurchaseById = async (purchaseId) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('job_plan_purchases')
     .select('*')
     .eq('id', purchaseId)
@@ -313,7 +313,7 @@ const updatePurchaseStatus = async ({
     Object.entries(updateDoc).filter(([, value]) => value !== undefined)
   );
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('job_plan_purchases')
     .update(cleanUpdateDoc)
     .eq('id', purchaseId)
@@ -332,7 +332,7 @@ const updatePurchaseStatus = async ({
 };
 
 const listPurchases = async ({ hrId = null, status = null, planSlug = null } = {}) => {
-  let query = supabase
+  let query = Database
     .from('job_plan_purchases')
     .select('*')
     .order('created_at', { ascending: false });
@@ -353,7 +353,7 @@ const listPurchases = async ({ hrId = null, status = null, planSlug = null } = {
 const getCreditsSummary = async ({ hrId }) => {
   if (!isValidUuid(hrId)) return { credits: [], byPlan: {}, totals: { total: 0, used: 0, remaining: 0 } };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_posting_credits')
     .select('*')
     .eq('hr_id', hrId)
@@ -406,7 +406,7 @@ const grantManualCredits = async ({ hrId, planSlug, quantity, expiresAt = null, 
   const plan = await getPlanOrThrow(planSlug, { includeInactive: true });
   const qty = Math.max(1, parseInt(quantity || '1', 10) || 1);
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_posting_credits')
     .insert({
       hr_id: hrId,

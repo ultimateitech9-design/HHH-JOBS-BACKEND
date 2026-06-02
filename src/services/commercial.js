@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { supabase, countRows } = require('../supabase');
+const { Database, countRows } = require('../db');
 const { isValidUuid } = require('../utils/helpers');
 const { buildStateDistrictLabel, resolveStructuredLocation } = require('../utils/geography');
 const { ROLES } = require('../constants');
@@ -163,7 +163,7 @@ const formatRolePlanForClient = (plan = {}) => ({
 });
 
 const fetchRolePlans = async ({ audienceRole = '', includeInactive = false } = {}) => {
-  let query = supabase
+  let query = Database
     .from('role_plans')
     .select('*')
     .order('sort_order', { ascending: true });
@@ -181,7 +181,7 @@ const getRolePlanBySlug = async (planSlug, { audienceRole = '', includeInactive 
   const normalizedSlug = normalizeLower(planSlug);
   if (!normalizedSlug) return null;
 
-  let query = supabase
+  let query = Database
     .from('role_plans')
     .select('*')
     .eq('slug', normalizedSlug)
@@ -237,11 +237,11 @@ const getRolePlanAutopayReadiness = async ({ audienceRole = '' } = {}) => {
   }
 
   const [purchaseMetaProbe, subscriptionAutopayProbe, defaultTrialPlan] = await Promise.all([
-    supabase
+    Database
       .from('role_plan_purchases')
       .select('id, meta')
       .limit(1),
-    supabase
+    Database
       .from('role_plan_subscriptions')
       .select('id, provider, provider_subscription_id, autopay_enabled, autopay_status, trial_ends_at, last_renewed_at')
       .limit(1),
@@ -348,7 +348,7 @@ const updateRolePlanBySlug = async (planSlug, changes = {}) => {
 
   if (Object.keys(updateDoc).length === 0) return current;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('role_plans')
     .update(updateDoc)
     .eq('slug', normalizeLower(planSlug))
@@ -363,7 +363,7 @@ const getCouponByCode = async (couponCode = '') => {
   const normalizedCode = normalizeText(couponCode).toUpperCase();
   if (!normalizedCode) return null;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_coupons')
     .select('*')
     .eq('code', normalizedCode)
@@ -538,8 +538,8 @@ const resolveCommercialProfile = async ({ userId, role = '', fallbackName = '', 
 
   if (normalizedRole === ROLES.HR) {
     const [profileResp, userResp] = await Promise.all([
-      supabase.from('hr_profiles').select('company_name, location, state_id, district_id, state_name, district_name, sector_id, sector_name, industry_type').eq('user_id', userId).maybeSingle(),
-      supabase.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
+      Database.from('hr_profiles').select('company_name, location, state_id, district_id, state_name, district_name, sector_id, sector_name, industry_type').eq('user_id', userId).maybeSingle(),
+      Database.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
     ]);
     const user = userResp.data || {};
     const profile = profileResp.data || {};
@@ -567,8 +567,8 @@ const resolveCommercialProfile = async ({ userId, role = '', fallbackName = '', 
 
   if (normalizedRole === ROLES.CAMPUS_CONNECT) {
     const [collegeResp, userResp] = await Promise.all([
-      supabase.from('colleges').select('name, contact_email, contact_phone, city, state, state_id, district_id, state_name, district_name, sector_id, sector_name').eq('user_id', userId).maybeSingle(),
-      supabase.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
+      Database.from('colleges').select('name, contact_email, contact_phone, city, state, state_id, district_id, state_name, district_name, sector_id, sector_name').eq('user_id', userId).maybeSingle(),
+      Database.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
     ]);
     const user = userResp.data || {};
     const college = collegeResp.data || {};
@@ -592,8 +592,8 @@ const resolveCommercialProfile = async ({ userId, role = '', fallbackName = '', 
   }
 
   const [profileResp, userResp] = await Promise.all([
-    supabase.from('student_profiles').select('location, preferred_work_location, state_id, district_id, state_name, district_name').eq('user_id', userId).maybeSingle(),
-    supabase.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
+    Database.from('student_profiles').select('location, preferred_work_location, state_id, district_id, state_name, district_name').eq('user_id', userId).maybeSingle(),
+    Database.from('users').select('name, email, mobile').eq('id', userId).maybeSingle()
   ]);
   const user = userResp.data || {};
   const studentProfile = profileResp.data || {};
@@ -621,7 +621,7 @@ const resolveCommercialProfile = async ({ userId, role = '', fallbackName = '', 
 };
 
 const getLeastLoadedSalesAgent = async () => {
-  const { data: salesUsers, error: salesError } = await supabase
+  const { data: salesUsers, error: salesError } = await Database
     .from('users')
     .select('id, name, email')
     .eq('role', ROLES.SALES)
@@ -631,7 +631,7 @@ const getLeastLoadedSalesAgent = async () => {
   const activeAgents = (salesUsers || []).filter((agent) => agent.id);
   if (activeAgents.length === 0) return null;
 
-  const { data: leadRows, error: leadsError } = await supabase
+  const { data: leadRows, error: leadsError } = await Database
     .from('sales_leads')
     .select('assigned_to, status')
     .in('assigned_to', activeAgents.map((agent) => agent.id));
@@ -664,7 +664,7 @@ const upsertCommercialLeadForUser = async ({ userId, role = '', name = '', email
     fallbackMobile: mobile
   });
 
-  const { data: existingLead, error: existingLeadError } = await supabase
+  const { data: existingLead, error: existingLeadError } = await Database
     .from('sales_leads')
     .select('id, assigned_to, assigned_name')
     .eq('user_id', userId)
@@ -697,7 +697,7 @@ const upsertCommercialLeadForUser = async ({ userId, role = '', name = '', email
   };
   Object.keys(payload).forEach((key) => payload[key] === undefined && delete payload[key]);
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_leads')
     .upsert(payload, { onConflict: 'user_id' })
     .select('*')
@@ -732,7 +732,7 @@ const updateLeadForCommercialEvent = async ({
   if (notes !== undefined) updateDoc.notes = normalizeText(notes) || null;
   updateDoc.last_followup_at = new Date().toISOString();
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_leads')
     .update(updateDoc)
     .eq('user_id', userId)
@@ -747,7 +747,7 @@ const syncSalesCustomer = async ({ userId, role = '', plan = null, subscriptionI
   if (!isValidUuid(userId)) return null;
 
   const profile = await resolveCommercialProfile({ userId, role });
-  const { data: existing, error: existingError } = await supabase
+  const { data: existing, error: existingError } = await Database
     .from('sales_customers')
     .select('*')
     .eq('user_id', userId)
@@ -758,7 +758,7 @@ const syncSalesCustomer = async ({ userId, role = '', plan = null, subscriptionI
   const totalSpent = accumulateSpend
     ? roundMoney(Number(existing?.total_spent || 0) + Number(amount || 0))
     : roundMoney(Math.max(Number(existing?.total_spent || 0), Number(amount || 0)));
-  const { data: leadOwner } = await supabase
+  const { data: leadOwner } = await Database
     .from('sales_leads')
     .select('assigned_to, zone, location, state_id, district_id, state_name, district_name, sector_id, sector_name')
     .eq('user_id', userId)
@@ -786,8 +786,8 @@ const syncSalesCustomer = async ({ userId, role = '', plan = null, subscriptionI
   };
 
   const response = existing
-    ? await supabase.from('sales_customers').update(payload).eq('id', existing.id).select('*').single()
-    : await supabase.from('sales_customers').insert(payload).select('*').single();
+    ? await Database.from('sales_customers').update(payload).eq('id', existing.id).select('*').single()
+    : await Database.from('sales_customers').insert(payload).select('*').single();
 
   if (response.error) throw response.error;
   return response.data;
@@ -808,7 +808,7 @@ const createAccountsSubscription = async ({ userId, role = '', plan = null, amou
     renewed_at: startsAt
   };
 
-  const { data: existing, error: lookupError } = await supabase
+  const { data: existing, error: lookupError } = await Database
     .from('accounts_subscriptions')
     .select('*')
     .eq('user_id', userId)
@@ -820,8 +820,8 @@ const createAccountsSubscription = async ({ userId, role = '', plan = null, amou
   if (lookupError) throw lookupError;
 
   const response = existing
-    ? await supabase.from('accounts_subscriptions').update(payload).eq('id', existing.id).select('*').single()
-    : await supabase.from('accounts_subscriptions').insert(payload).select('*').single();
+    ? await Database.from('accounts_subscriptions').update(payload).eq('id', existing.id).select('*').single()
+    : await Database.from('accounts_subscriptions').insert(payload).select('*').single();
 
   if (response.error) throw response.error;
   return response.data;
@@ -834,7 +834,7 @@ const createAccountsInvoice = async ({ purchase = null, plan = null, profile = n
   const invoiceCount = await countRows('accounts_invoices');
   const invoiceNumber = `INV-${String(invoiceCount + 1).padStart(6, '0')}`;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_invoices')
     .insert({
       invoice_number: invoiceNumber,
@@ -868,7 +868,7 @@ const createAccountsTransaction = async ({ purchase = null, profile = null }) =>
   const amount = roundMoney(purchase?.total_amount || 0);
   if (amount <= 0) return null;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('accounts_transactions')
     .insert({
       reference: purchase?.reference_id || `role_plan_${purchase?.id || Date.now()}`,
@@ -893,14 +893,14 @@ const createSalesOrder = async ({ purchase = null, plan = null, profile = null }
   const orderNumber = `CMP-${String(orderCount + 1).padStart(6, '0')}`;
 
   const { data: leadOwner } = purchase?.user_id
-    ? await supabase
+    ? await Database
       .from('sales_leads')
       .select('assigned_to, target_role, zone, location, state_id, district_id, state_name, district_name, sector_id, sector_name')
       .eq('user_id', purchase.user_id)
       .maybeSingle()
     : { data: null };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_orders')
     .insert({
       order_number: orderNumber,
@@ -958,7 +958,7 @@ const grantHrCreditsForRolePlan = async ({ purchase = null, plan = null, expires
     expires_at: expiresAt || addDays(new Date(), plan.durationDays)
   }));
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_posting_credits')
     .insert(rows)
     .select('*');
@@ -974,7 +974,7 @@ const incrementCouponUsage = async (couponCode = '') => {
   const coupon = await getCouponByCode(normalizedCode);
   if (!coupon) return null;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_coupons')
     .update({ used_count: Number(coupon.used_count || 0) + 1 })
     .eq('code', normalizedCode)
@@ -989,7 +989,7 @@ const ensureRolePlanTrialSubscription = async ({ userId, audienceRole = '', user
   const normalizedAudienceRole = normalizeAudienceRole(audienceRole || user?.role);
   if (!isValidUuid(userId) || !normalizedAudienceRole) return null;
 
-  const { data: existingSubscriptions, error: existingSubscriptionsError } = await supabase
+  const { data: existingSubscriptions, error: existingSubscriptionsError } = await Database
     .from('role_plan_subscriptions')
     .select('*')
     .eq('user_id', userId)
@@ -1003,7 +1003,7 @@ const ensureRolePlanTrialSubscription = async ({ userId, audienceRole = '', user
     return active || existingSubscriptions[0];
   }
 
-  const { data: existingPurchases, error: existingPurchasesError } = await supabase
+  const { data: existingPurchases, error: existingPurchasesError } = await Database
     .from('role_plan_purchases')
     .select('id')
     .eq('user_id', userId)
@@ -1016,7 +1016,7 @@ const ensureRolePlanTrialSubscription = async ({ userId, audienceRole = '', user
   const plan = await getDefaultTrialPlan({ audienceRole: normalizedAudienceRole });
   if (!plan || plan.trialDays <= 0) return null;
 
-  const currentUser = user || (await supabase
+  const currentUser = user || (await Database
     .from('users')
     .select('id, name, email, mobile, role')
     .eq('id', userId)
@@ -1051,7 +1051,7 @@ const ensureRolePlanTrialSubscription = async ({ userId, audienceRole = '', user
     }
   };
 
-  const { data: purchase, error: purchaseError } = await supabase
+  const { data: purchase, error: purchaseError } = await Database
     .from('role_plan_purchases')
     .insert(trialPurchasePayload)
     .select('*')
@@ -1090,7 +1090,7 @@ const ensureRolePlanTrialSubscription = async ({ userId, audienceRole = '', user
     }
   };
 
-  const { data: subscription, error: subscriptionError } = await supabase
+  const { data: subscription, error: subscriptionError } = await Database
     .from('role_plan_subscriptions')
     .insert(subscriptionPayload)
     .select('*')
@@ -1169,7 +1169,7 @@ const createOrReuseRazorpayPlanForRolePlan = async (plan = {}) => {
     razorpayInterval: billingProfile.interval
   });
 
-  await supabase
+  await Database
     .from('role_plans')
     .update({ meta: nextMeta })
     .eq('id', plan.id);
@@ -1235,7 +1235,7 @@ const createPendingAutopayTrialSubscription = async ({
     }
   };
 
-  const { data: subscription, error } = await supabase
+  const { data: subscription, error } = await Database
     .from('role_plan_subscriptions')
     .insert(subscriptionPayload)
     .select('*')
@@ -1268,7 +1268,7 @@ const updatePendingAutopayTrialSubscription = async ({
     businessRule: 'autopay_required_before_trial'
   });
 
-  const { data: updated, error } = await supabase
+  const { data: updated, error } = await Database
     .from('role_plan_subscriptions')
     .update({
       role_plan_slug: plan.slug,
@@ -1351,7 +1351,7 @@ const createPendingAutopayPlanChangeSubscription = async ({
     }
   };
 
-  const { data: subscription, error } = await supabase
+  const { data: subscription, error } = await Database
     .from('role_plan_subscriptions')
     .insert(subscriptionPayload)
     .select('*')
@@ -1389,7 +1389,7 @@ const activateAutopayPlanChangeSubscription = async ({
   const referenceId = `plan_change_autopay_${subscription.id}`;
 
   let purchase = null;
-  const { data: existingPurchase, error: existingPurchaseError } = await supabase
+  const { data: existingPurchase, error: existingPurchaseError } = await Database
     .from('role_plan_purchases')
     .select('*')
     .eq('reference_id', referenceId)
@@ -1429,7 +1429,7 @@ const activateAutopayPlanChangeSubscription = async ({
       }
     };
 
-    const { data: insertedPurchase, error: purchaseError } = await supabase
+    const { data: insertedPurchase, error: purchaseError } = await Database
       .from('role_plan_purchases')
       .insert(purchasePayload)
       .select('*')
@@ -1452,7 +1452,7 @@ const activateAutopayPlanChangeSubscription = async ({
     autopayAuthenticatedAt: nowIso
   });
 
-  const { data: updatedSubscription, error: updateError } = await supabase
+  const { data: updatedSubscription, error: updateError } = await Database
     .from('role_plan_subscriptions')
     .update({
       role_plan_slug: plan.slug,
@@ -1483,14 +1483,14 @@ const activateAutopayPlanChangeSubscription = async ({
 
   const previousSubscriptionId = existingMeta.planChangeFromSubscriptionId;
   if (isValidUuid(previousSubscriptionId)) {
-    const { data: previousSubscription } = await supabase
+    const { data: previousSubscription } = await Database
       .from('role_plan_subscriptions')
       .select('meta')
       .eq('id', previousSubscriptionId)
       .eq('user_id', userId)
       .maybeSingle();
 
-    await supabase
+    await Database
       .from('role_plan_subscriptions')
       .update({
         status: 'expired',
@@ -1585,7 +1585,7 @@ const activateAutopayTrialSubscription = async ({
   const trialReferenceId = `trial_autopay_${subscription.id}`;
 
   let purchase = null;
-  const { data: existingPurchase, error: existingPurchaseError } = await supabase
+  const { data: existingPurchase, error: existingPurchaseError } = await Database
     .from('role_plan_purchases')
     .select('*')
     .eq('reference_id', trialReferenceId)
@@ -1625,7 +1625,7 @@ const activateAutopayTrialSubscription = async ({
       }
     };
 
-    const { data: insertedPurchase, error: purchaseError } = await supabase
+    const { data: insertedPurchase, error: purchaseError } = await Database
       .from('role_plan_purchases')
       .insert(purchasePayload)
       .select('*')
@@ -1650,7 +1650,7 @@ const activateAutopayTrialSubscription = async ({
     autopayAuthenticatedAt: nowIso
   });
 
-  const { data: updatedSubscription, error: updateError } = await supabase
+  const { data: updatedSubscription, error: updateError } = await Database
     .from('role_plan_subscriptions')
     .update({
       role_plan_slug: plan.slug,
@@ -1679,7 +1679,7 @@ const activateAutopayTrialSubscription = async ({
 
   if (updateError) throw updateError;
 
-  const currentUser = (await supabase
+  const currentUser = (await Database
     .from('users')
     .select('id, name, email, mobile, role')
     .eq('id', userId)
@@ -1924,7 +1924,7 @@ const createRolePlanAutopaySession = async ({
     renewalStartsAt: renewalStartAt
   });
 
-  const { data: updatedSubscription, error: updateError } = await supabase
+  const { data: updatedSubscription, error: updateError } = await Database
     .from('role_plan_subscriptions')
     .update({
       amount: quote.totalAmount,
@@ -1993,7 +1993,7 @@ const confirmRolePlanAutopayPayment = async ({
   }
 
   const remoteSubscription = await fetchRazorpaySubscriptionDetails(razorpaySubscriptionId);
-  const { data: existingSubscription, error: lookupError } = await supabase
+  const { data: existingSubscription, error: lookupError } = await Database
     .from('role_plan_subscriptions')
     .select('*')
     .eq('id', localSubscriptionId)
@@ -2043,7 +2043,7 @@ const confirmRolePlanAutopayPayment = async ({
     autopayAuthenticatedAt: new Date().toISOString()
   });
 
-  const { data: updatedSubscription, error: updateError } = await supabase
+  const { data: updatedSubscription, error: updateError } = await Database
     .from('role_plan_subscriptions')
     .update({
       provider: 'razorpay',
@@ -2069,7 +2069,7 @@ const finalizeRecurringRolePlanCharge = async ({
 } = {}) => {
   if (!localSubscription || !remoteSubscription || !payment?.id) return null;
 
-  const { data: existingPurchase, error: existingPurchaseError } = await supabase
+  const { data: existingPurchase, error: existingPurchaseError } = await Database
     .from('role_plan_purchases')
     .select('*')
     .eq('reference_id', payment.id)
@@ -2121,7 +2121,7 @@ const finalizeRecurringRolePlanCharge = async ({
     }
   };
 
-  const { data: purchase, error: purchaseError } = await supabase
+  const { data: purchase, error: purchaseError } = await Database
     .from('role_plan_purchases')
     .insert(purchasePayload)
     .select('*')
@@ -2143,7 +2143,7 @@ const finalizeRecurringRolePlanCharge = async ({
     ? 'expired'
     : 'active';
 
-  const { data: updatedSubscription, error: subscriptionError } = await supabase
+  const { data: updatedSubscription, error: subscriptionError } = await Database
     .from('role_plan_subscriptions')
     .update({
       role_plan_slug: plan.slug,
@@ -2221,7 +2221,7 @@ const handleRoleSubscriptionWebhook = async (event = {}) => {
   const remoteSubscription = event?.payload?.subscription?.entity;
   if (!remoteSubscription?.id) return { handled: false };
 
-  const { data: localSubscription, error: localLookupError } = await supabase
+  const { data: localSubscription, error: localLookupError } = await Database
     .from('role_plan_subscriptions')
     .select('*')
     .eq('provider_subscription_id', remoteSubscription.id)
@@ -2262,7 +2262,7 @@ const handleRoleSubscriptionWebhook = async (event = {}) => {
     return 'active';
   })();
 
-  await supabase
+  await Database
     .from('role_plan_subscriptions')
     .update({
       status: nextStatus,
@@ -2288,7 +2288,7 @@ const activateRolePlanPurchase = async ({ purchaseId }) => {
     throw error;
   }
 
-  const { data: existingSubscription, error: existingSubscriptionError } = await supabase
+  const { data: existingSubscription, error: existingSubscriptionError } = await Database
     .from('role_plan_subscriptions')
     .select('*')
     .eq('source_purchase_id', purchaseId)
@@ -2299,7 +2299,7 @@ const activateRolePlanPurchase = async ({ purchaseId }) => {
     return { subscription: existingSubscription, grantedCredit: null };
   }
 
-  const { data: purchase, error: purchaseError } = await supabase
+  const { data: purchase, error: purchaseError } = await Database
     .from('role_plan_purchases')
     .select('*')
     .eq('id', purchaseId)
@@ -2352,7 +2352,7 @@ const activateRolePlanPurchase = async ({ purchaseId }) => {
     }
   };
 
-  const { data: subscription, error: subscriptionError } = await supabase
+  const { data: subscription, error: subscriptionError } = await Database
     .from('role_plan_subscriptions')
     .insert(subscriptionPayload)
     .select('*')
@@ -2472,7 +2472,7 @@ const createRolePlanPurchase = async ({
     paid_at: normalizedStatus === PURCHASE_STATUSES.PAID ? new Date().toISOString() : null
   };
 
-  const { data: purchase, error } = await supabase
+  const { data: purchase, error } = await Database
     .from('role_plan_purchases')
     .insert(insertPayload)
     .select('*')
@@ -2512,7 +2512,7 @@ const createRolePlanPurchase = async ({
 };
 
 const getRolePlanPurchaseById = async (purchaseId) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('role_plan_purchases')
     .select('*')
     .eq('id', purchaseId)
@@ -2538,7 +2538,7 @@ const updateRolePlanPurchaseStatus = async ({ purchaseId, status, provider, refe
   if (referenceId !== undefined) updateDoc.reference_id = normalizeText(referenceId) || null;
   if (note !== undefined) updateDoc.note = normalizeText(note) || null;
 
-  const { data: purchase, error } = await supabase
+  const { data: purchase, error } = await Database
     .from('role_plan_purchases')
     .update(updateDoc)
     .eq('id', purchaseId)
@@ -2561,7 +2561,7 @@ const updateRolePlanPurchaseStatus = async ({ purchaseId, status, provider, refe
 };
 
 const listRolePlanPurchases = async ({ userId = null, status = '', audienceRole = '' } = {}) => {
-  let query = supabase
+  let query = Database
     .from('role_plan_purchases')
     .select('*')
     .order('created_at', { ascending: false });
@@ -2578,7 +2578,7 @@ const listRolePlanPurchases = async ({ userId = null, status = '', audienceRole 
 };
 
 const buildSalesAssignmentState = async () => {
-  const { data: agents, error: agentError } = await supabase
+  const { data: agents, error: agentError } = await Database
     .from('users')
     .select('id, name, email')
     .eq('role', ROLES.SALES)
@@ -2588,7 +2588,7 @@ const buildSalesAssignmentState = async () => {
   const salesAgents = (agents || []).filter((agent) => agent.id);
   if (salesAgents.length === 0) return { agents: [], loads: new Map() };
 
-  const { data: leads, error: leadError } = await supabase
+  const { data: leads, error: leadError } = await Database
     .from('sales_leads')
     .select('assigned_to, status')
     .in('assigned_to', salesAgents.map((agent) => agent.id));
@@ -2630,7 +2630,7 @@ const assignUnassignedCommercialLeads = async ({ roles = [], assignmentState = n
   let assignedCount = 0;
   let hasMore = true;
   while (hasMore) {
-    const { data: rows, error } = await supabase
+    const { data: rows, error } = await Database
       .from('sales_leads')
       .select('id')
       .in('target_role', normalizedRoles)
@@ -2654,7 +2654,7 @@ const assignUnassignedCommercialLeads = async ({ roles = [], assignmentState = n
 
     for (const [ownerKey, ids] of Object.entries(idsByOwner)) {
       const [ownerId, ownerName] = ownerKey.split('::');
-      const { error: updateError } = await supabase
+      const { error: updateError } = await Database
         .from('sales_leads')
         .update({
           assigned_to: ownerId,
@@ -2679,7 +2679,7 @@ const syncCommercialLeadsFromUsers = async ({ roles = [ROLES.HR, ROLES.CAMPUS_CO
 
   if (normalizedRoles.length === 0) return [];
 
-  const { data: users, error } = await supabase
+  const { data: users, error } = await Database
     .from('users')
     .select('id, name, email, mobile, role, status')
     .in('role', normalizedRoles)
@@ -2715,7 +2715,7 @@ const syncCommercialLeadsFromUsers = async ({ roles = [ROLES.HR, ROLES.CAMPUS_CO
       };
     });
 
-    const { data: chunkResults, error: chunkError } = await supabase
+    const { data: chunkResults, error: chunkError } = await Database
       .from('sales_leads')
       .upsert(payload, { onConflict: 'user_id', ignoreDuplicates: true })
       .select('*');
@@ -2736,7 +2736,7 @@ const syncCommercialCustomersFromSubscriptions = async ({ roles = [ROLES.HR, ROL
     .filter(Boolean))];
   if (normalizedRoles.length === 0) return [];
 
-  const { data: subscriptions, error } = await supabase
+  const { data: subscriptions, error } = await Database
     .from('role_plan_subscriptions')
     .select('id, user_id, audience_role, role_plan_slug, status, amount, currency')
     .in('audience_role', normalizedRoles)
@@ -2769,7 +2769,7 @@ const syncCommercialCustomersFromSubscriptions = async ({ roles = [ROLES.HR, ROL
 
 const listRolePlanSubscriptions = async ({ userId = null, status = '', audienceRole = '' } = {}) => {
   const normalizedAudienceRole = normalizeAudienceRole(audienceRole);
-  let query = supabase
+  let query = Database
     .from('role_plan_subscriptions')
     .select('*')
     .order('created_at', { ascending: false });
@@ -2788,7 +2788,7 @@ const getCurrentRolePlanSubscription = async ({ userId, audienceRole = '' } = {}
   if (!isValidUuid(userId)) return null;
 
   const normalizedAudienceRole = normalizeAudienceRole(audienceRole);
-  let query = supabase
+  let query = Database
     .from('role_plan_subscriptions')
     .select('*')
     .eq('user_id', userId)

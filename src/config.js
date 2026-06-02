@@ -29,6 +29,7 @@ const smtpUser = normalizeText(process.env.SMTP_USER || process.env.GMAIL_EMAIL)
 const smtpFromName = normalizeText(process.env.OTP_FROM_NAME) || 'HHH Jobs';
 const smtpPort = Number(process.env.SMTP_PORT) || 587;
 const smtpSecureEnv = String(process.env.SMTP_SECURE || '').trim().toLowerCase();
+const dbProvider = normalizeText(process.env.DB_PROVIDER || process.env.DATABASE_PROVIDER || 'mysql').toLowerCase();
 
 // Support both CORS_ORIGINS (documented in .env) and legacy CLIENT_URLS
 const configuredCorsOrigins = parseEnvList(
@@ -60,15 +61,24 @@ const config = {
   queueBlockTimeoutSeconds: Number(process.env.QUEUE_BLOCK_TIMEOUT_SECONDS) > 0 ? Number(process.env.QUEUE_BLOCK_TIMEOUT_SECONDS) : 2,
   disableSchedulers: parseBoolean(process.env.DISABLE_SCHEDULERS, false),
 
-  // ── Supabase ─────────────────────────────────────────────────────────────────
-  supabaseUrl:
-    process.env.SUPABASE_URL
-    || process.env.NEXT_PUBLIC_SUPABASE_URL
-    || process.env.EXPO_PUBLIC_SUPABASE_URL,
-  supabaseServiceRoleKey:
-    process.env.SUPABASE_SERVICE_ROLE_KEY
-    || process.env.SUPABASE_SERVICE_KEY
-    || process.env.SUPABASE_SECRET_KEY,
+  // -- Database ----------------------------------------------------------------
+  dbProvider,
+  isMysqlProvider: dbProvider === 'mysql',
+  mysqlUrl:
+    process.env.MYSQL_URL
+    || process.env.MYSQL_DATABASE_URL
+    || process.env.DATABASE_URL,
+  mysqlHost: normalizeText(process.env.MYSQL_HOST || 'localhost'),
+  mysqlPort: Number(process.env.MYSQL_PORT) || 3306,
+  mysqlUser: normalizeText(process.env.MYSQL_USER || 'root'),
+  mysqlPassword: process.env.MYSQL_PASSWORD || 'root',
+  mysqlDatabase: normalizeText(process.env.MYSQL_DATABASE || process.env.MYSQL_DB || 'hhh_jobs'),
+  mysqlSsl: parseBoolean(process.env.MYSQL_SSL, false),
+  publicApiUrl: normalizeUrl(
+    process.env.PUBLIC_API_URL
+    || process.env.API_PUBLIC_URL
+    || process.env.BACKEND_URL
+  ),
 
   // ── JWT ───────────────────────────────────────────────────────────────────────
   jwtSecret: process.env.JWT_SECRET,

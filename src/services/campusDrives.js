@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { normalizeCompanyKey } = require('./companyDirectory');
 const { notifyCompanySubscribersForCampusDrive } = require('./companySubscriptions');
 const { createNotification } = require('./notifications');
@@ -89,7 +89,7 @@ const loadCampusStudentByUserOrEmail = async ({ userId, email = '' } = {}) => {
   const normalizedEmail = String(email || '').trim().toLowerCase();
 
   if (userId) {
-    const byUserResponse = await supabase
+    const byUserResponse = await Database
       .from('campus_students')
       .select(CAMPUS_STUDENT_SELECT)
       .eq('student_user_id', userId)
@@ -101,7 +101,7 @@ const loadCampusStudentByUserOrEmail = async ({ userId, email = '' } = {}) => {
   }
 
   if (!campusStudent && normalizedEmail) {
-    const byEmailResponse = await supabase
+    const byEmailResponse = await Database
       .from('campus_students')
       .select(CAMPUS_STUDENT_SELECT)
       .eq('email', normalizedEmail)
@@ -118,7 +118,7 @@ const loadCampusStudentByUserOrEmail = async ({ userId, email = '' } = {}) => {
 const loadEligibleCurrentDrivesForStudent = async (student = {}) => {
   if (!student?.college_id) return [];
 
-  const { data: drives, error } = await supabase
+  const { data: drives, error } = await Database
     .from('campus_drives')
     .select('*')
     .eq('college_id', student.college_id)
@@ -132,7 +132,7 @@ const loadEligibleCurrentDrivesForStudent = async (student = {}) => {
 };
 
 const loadEligibleCampusStudents = async ({ collegeId, drive }) => {
-  const { data: students, error } = await supabase
+  const { data: students, error } = await Database
     .from('campus_students')
     .select('id, name, branch, cgpa, is_placed, student_user_id, account_status')
     .eq('college_id', collegeId)
@@ -153,7 +153,7 @@ const syncHrCompanyProfileToCampus = async ({
   userId,
   previousCompanyName = '',
   nextCompanyName = '',
-  supabaseClient = supabase
+  DatabaseClient = Database
 } = {}) => {
   const normalizedUserId = String(userId || '').trim();
   const previousName = String(previousCompanyName || '').trim();
@@ -168,7 +168,7 @@ const syncHrCompanyProfileToCampus = async ({
     };
   }
 
-  const connectionsResponse = await supabaseClient
+  const connectionsResponse = await DatabaseClient
     .from('campus_connections')
     .select('id, college_id, company_name')
     .eq('company_user_id', normalizedUserId);
@@ -185,7 +185,7 @@ const syncHrCompanyProfileToCampus = async ({
 
   let connectionsUpdated = 0;
   if (connections.length > 0 && connections.some((connection) => String(connection.company_name || '').trim() !== nextName)) {
-    const connectionUpdateResponse = await supabaseClient
+    const connectionUpdateResponse = await DatabaseClient
       .from('campus_connections')
       .update({ company_name: nextName })
       .eq('company_user_id', normalizedUserId)
@@ -210,7 +210,7 @@ const syncHrCompanyProfileToCampus = async ({
     };
   }
 
-  const drivesUpdateResponse = await supabaseClient
+  const drivesUpdateResponse = await DatabaseClient
     .from('campus_drives')
     .update({ company_name: nextName })
     .in('college_id', collegeIds)
@@ -281,7 +281,7 @@ const publishCampusDriveNotifications = async ({ collegeId, drive, actorUserId =
     }))
   );
 
-  await supabase
+  await Database
     .from('campus_students')
     .update({ last_drive_notification_at: new Date().toISOString() })
     .eq('college_id', collegeId)
@@ -323,7 +323,7 @@ const backfillCampusDriveNotificationsForStudent = async ({ userId, email = '' }
     return { eligibleDrives: 0, notificationsSent: 0 };
   }
 
-  const { data: existingNotifications, error: notificationLookupError } = await supabase
+  const { data: existingNotifications, error: notificationLookupError } = await Database
     .from('notifications')
     .select('meta')
     .eq('user_id', campusStudent.student_user_id)
@@ -374,7 +374,7 @@ const backfillCampusDriveNotificationsForStudent = async ({ userId, email = '' }
     }))
   );
 
-  await supabase
+  await Database
     .from('campus_students')
     .update({ last_drive_notification_at: new Date().toISOString() })
     .eq('id', campusStudent.id);

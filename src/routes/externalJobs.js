@@ -1,5 +1,5 @@
 const express = require('express');
-const { supabase, ensureServerConfig } = require('../supabase');
+const { Database, ensureDatabaseConfig } = require('../db');
 const { asyncHandler, clamp } = require('../utils/helpers');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
@@ -13,7 +13,7 @@ const router = express.Router();
 const isAdminRole = (role) => [ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.PLATFORM].includes(role);
 
 router.get('/', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = clamp(parseInt(req.query.limit) || 12, 1, 50);
@@ -26,7 +26,7 @@ router.get('/', asyncHandler(async (req, res) => {
   const sourceKey = String(req.query.source || '').trim();
   const isRemoteOnly = req.query.remote === 'true';
 
-  let query = supabase
+  let query = Database
     .from('external_jobs')
     .select('id,source_key,job_title,company_name,company_logo,job_location,employment_type,experience_level,category,apply_url,tags,is_remote,salary_min,salary_max,salary_currency,posted_at,created_at', { count: 'exact' })
     .eq('is_active', true)
@@ -57,11 +57,11 @@ router.get('/', asyncHandler(async (req, res) => {
 
   const [{ data, error, count }, sponsorsResp, profilesResp] = await Promise.all([
     query,
-    supabase
+    Database
       .from('sponsored_companies')
       .select('company_name, logo_url, website_url')
       .eq('is_active', true),
-    supabase
+    Database
       .from('hr_profiles')
       .select('company_name, logo_url, company_website')
   ]);
@@ -113,9 +113,9 @@ router.get('/', asyncHandler(async (req, res) => {
 }));
 
 router.get('/categories', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('external_jobs')
     .select('category')
     .eq('is_active', true)
@@ -141,10 +141,10 @@ router.get('/categories', asyncHandler(async (req, res) => {
 }));
 
 router.get('/sources', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
   await syncSourceRegistry();
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('job_sources')
     .select('key,name,base_url,is_active,last_fetched_at,last_fetch_status,last_fetch_count')
     .order('name');
@@ -162,7 +162,7 @@ router.post(
   requireAuth,
   requireActiveUser,
   asyncHandler(async (req, res) => {
-    if (!ensureServerConfig(res)) return;
+    if (!ensureDatabaseConfig(res)) return;
 
     if (!isAdminRole(req.user?.role)) {
       res.status(403).json({ status: false, message: 'Admin access required' });
@@ -187,7 +187,7 @@ router.post(
   requireAuth,
   requireActiveUser,
   asyncHandler(async (req, res) => {
-    if (!ensureServerConfig(res)) return;
+    if (!ensureDatabaseConfig(res)) return;
 
     if (!isAdminRole(req.user?.role)) {
       res.status(403).json({ status: false, message: 'Admin access required' });
@@ -204,7 +204,7 @@ router.get(
   requireAuth,
   requireActiveUser,
   asyncHandler(async (req, res) => {
-    if (!ensureServerConfig(res)) return;
+    if (!ensureDatabaseConfig(res)) return;
 
     if (!isAdminRole(req.user?.role)) {
       res.status(403).json({ status: false, message: 'Admin access required' });
@@ -221,7 +221,7 @@ router.get(
   requireAuth,
   requireActiveUser,
   asyncHandler(async (req, res) => {
-    if (!ensureServerConfig(res)) return;
+    if (!ensureDatabaseConfig(res)) return;
 
     if (!isAdminRole(req.user?.role)) {
       res.status(403).json({ status: false, message: 'Admin access required' });
@@ -233,7 +233,7 @@ router.get(
     const offset = (page - 1) * limit;
     const sourceKey = String(req.query.source || '').trim();
 
-    let query = supabase
+    let query = Database
       .from('external_jobs_sync_logs')
       .select('*', { count: 'exact' })
       .order('started_at', { ascending: false })
@@ -265,14 +265,14 @@ router.patch(
   requireAuth,
   requireActiveUser,
   asyncHandler(async (req, res) => {
-    if (!ensureServerConfig(res)) return;
+    if (!ensureDatabaseConfig(res)) return;
 
     if (!isAdminRole(req.user?.role)) {
       res.status(403).json({ status: false, message: 'Admin access required' });
       return;
     }
 
-    const { data: job, error: fetchError } = await supabase
+    const { data: job, error: fetchError } = await Database
       .from('external_jobs')
       .select('id, is_active')
       .eq('id', req.params.id)
@@ -283,7 +283,7 @@ router.patch(
       return;
     }
 
-    const { error: updateError } = await supabase
+    const { error: updateError } = await Database
       .from('external_jobs')
       .update({ is_active: !job.is_active })
       .eq('id', req.params.id);
@@ -302,7 +302,7 @@ router.get(
   requireAuth,
   requireActiveUser,
   asyncHandler(async (req, res) => {
-    if (!ensureServerConfig(res)) return;
+    if (!ensureDatabaseConfig(res)) return;
 
     if (!isAdminRole(req.user?.role)) {
       res.status(403).json({ status: false, message: 'Admin access required' });
@@ -313,7 +313,7 @@ router.get(
     const limit = clamp(parseInt(req.query.limit) || 15, 1, 100);
     const offset = (page - 1) * limit;
 
-    const { data, error, count } = await supabase
+    const { data, error, count } = await Database
       .from('external_jobs')
       .select(
         'id,source_key,job_title,company_name,job_location,category,apply_url,is_verified,is_active,verification_status,posted_at,created_at',
@@ -338,9 +338,9 @@ router.get(
 );
 
 router.get('/:id', asyncHandler(async (req, res) => {
-  if (!ensureServerConfig(res)) return;
+  if (!ensureDatabaseConfig(res)) return;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('external_jobs')
     .select('*')
     .eq('id', req.params.id)

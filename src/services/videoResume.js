@@ -1,11 +1,11 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const MAX_VIDEO_SIZE_MB = 50;
 const ALLOWED_TYPES = ['video/mp4', 'video/webm', 'video/quicktime'];
 const VIDEO_BUCKET = 'video-resumes';
 
 const ensureVideoBucket = async () => {
-  const { error } = await supabase.storage.createBucket(VIDEO_BUCKET, {
+  const { error } = await Database.storage.createBucket(VIDEO_BUCKET, {
     public: false,
     allowedMimeTypes: ALLOWED_TYPES,
     fileSizeLimit: `${MAX_VIDEO_SIZE_MB}MB`
@@ -18,17 +18,17 @@ const uploadVideoResume = async ({ userId, fileBuffer, fileName, mimeType }) => 
   const ext = mimeType === 'video/webm' ? '.webm' : mimeType === 'video/quicktime' ? '.mov' : '.mp4';
   const path = `${userId}/video-resume-${Date.now()}${ext}`;
 
-  const { data, error } = await supabase.storage.from(VIDEO_BUCKET).upload(path, fileBuffer, {
+  const { data, error } = await Database.storage.from(VIDEO_BUCKET).upload(path, fileBuffer, {
     contentType: mimeType,
     upsert: true
   });
 
   if (error) throw error;
 
-  const { data: urlData } = supabase.storage.from(VIDEO_BUCKET).getPublicUrl(path);
+  const { data: urlData } = Database.storage.from(VIDEO_BUCKET).getPublicUrl(path);
   const videoUrl = urlData?.publicUrl || '';
 
-  await supabase
+  await Database
     .from('student_profiles')
     .update({ video_resume_url: videoUrl, video_resume_updated_at: new Date().toISOString() })
     .eq('user_id', userId);
@@ -37,7 +37,7 @@ const uploadVideoResume = async ({ userId, fileBuffer, fileName, mimeType }) => 
 };
 
 const deleteVideoResume = async (userId) => {
-  const { data: profile } = await supabase
+  const { data: profile } = await Database
     .from('student_profiles')
     .select('video_resume_url')
     .eq('user_id', userId)
@@ -46,11 +46,11 @@ const deleteVideoResume = async (userId) => {
   if (profile?.video_resume_url) {
     const urlParts = profile.video_resume_url.split(`${VIDEO_BUCKET}/`);
     if (urlParts[1]) {
-      await supabase.storage.from(VIDEO_BUCKET).remove([urlParts[1]]);
+      await Database.storage.from(VIDEO_BUCKET).remove([urlParts[1]]);
     }
   }
 
-  await supabase
+  await Database
     .from('student_profiles')
     .update({ video_resume_url: null, video_resume_updated_at: null })
     .eq('user_id', userId);
@@ -59,7 +59,7 @@ const deleteVideoResume = async (userId) => {
 };
 
 const getVideoResume = async (userId) => {
-  const { data } = await supabase
+  const { data } = await Database
     .from('student_profiles')
     .select('video_resume_url, video_resume_updated_at')
     .eq('user_id', userId)

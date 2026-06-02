@@ -6,9 +6,10 @@
   "scripts": {
     "build": "echo \"No build step required\"",
     "start": "node index.js",
-    "test": "node --test",
+    "test": "node --test test/*.test.js tests/*.test.js",
     "dev": "node scripts/dev.js",
     "worker": "node scripts/worker.js",
+    "migrate:postgres-to-mysql": "node scripts/migrate-postgres-to-mysql.js",
     "create:super-admin": "node scripts/create-super-admin.js",
     "sync:eimager-user": "node scripts/replay-eimager-sync.js",
     "import:resume-candidates": "node scripts/resume-bulk-onboard.js",
@@ -18,7 +19,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -27,8 +27,10 @@
     "jsonwebtoken": "^9.0.2",
     "mammoth": "^1.12.0",
     "multer": "^2.1.1",
+    "mysql2": "^3.22.4",
     "nodemailer": "^8.0.7",
     "pdf-parse": "^2.4.5",
+    "pg": "^8.21.0",
     "redis": "^4.7.1",
     "typescript": "^5.9.3",
     "word-extractor": "^1.0.4"

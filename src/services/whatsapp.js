@@ -1,5 +1,5 @@
 const config = require('../config');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const WHATSAPP_PHONE_ID = config.whatsappPhoneId || '';
 const WHATSAPP_TOKEN = config.whatsappToken || '';
@@ -92,7 +92,7 @@ const sendJobAlertWhatsApp = async ({ to, jobTitle, companyName, location, match
 };
 
 const saveWhatsAppPreference = async ({ userId, phoneNumber, isEnabled = true }) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('whatsapp_preferences')
     .upsert({
       user_id: userId,
@@ -108,7 +108,7 @@ const saveWhatsAppPreference = async ({ userId, phoneNumber, isEnabled = true })
 };
 
 const getWhatsAppPreference = async (userId) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('whatsapp_preferences')
     .select('*')
     .eq('user_id', userId)

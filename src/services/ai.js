@@ -1,5 +1,5 @@
 const config = require('../config');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { isValidUuid } = require('../utils/helpers');
 
 const truncate = (value, maxLength) => String(value || '').slice(0, maxLength);
@@ -188,7 +188,7 @@ const logAiInteraction = async ({
   meta = {},
   jobId = null
 }) => {
-  if (!supabase || !isValidUuid(userId)) return;
+  if (!Database || !isValidUuid(userId)) return;
 
   try {
     const payload = {
@@ -201,7 +201,7 @@ const logAiInteraction = async ({
       job_id: isValidUuid(jobId) ? jobId : null
     };
 
-    const { error } = await supabase.from('ai_interactions').insert(payload);
+    const { error } = await Database.from('ai_interactions').insert(payload);
     if (!error) return;
 
     const message = String(error.message || '').toLowerCase();

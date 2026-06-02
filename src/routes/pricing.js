@@ -3,7 +3,7 @@ const { ROLES, AUDIT_ACTIONS } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('../middleware/roles');
 const { asyncHandler, isValidUuid } = require('../utils/helpers');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { createNotification } = require('../services/notifications');
 const {
   fetchPlans,
@@ -49,7 +49,7 @@ const sendRouteError = (res, error) => {
   }
 
   if (error?.code) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -64,7 +64,7 @@ const isDowngradeRequest = ({ currentPlan = null, nextPlan = null } = {}) => {
 };
 
 const notifySalesForRolePlanRequest = async ({ lead = null, user = {}, plan = {}, currentPlan = null, reason = '', notes = '' } = {}) => {
-  const { data: salesUsers } = await supabase
+  const { data: salesUsers } = await Database
     .from('users')
     .select('id')
     .in('role', [ROLES.SALES, ROLES.ADMIN, ROLES.SUPER_ADMIN])
@@ -548,7 +548,7 @@ router.post('/role-subscriptions/:id/cancel', requireAuth, requireActiveUser, re
   }
 
   try {
-    const { data: subscription, error } = await supabase
+    const { data: subscription, error } = await Database
       .from('role_plan_subscriptions')
       .select('*')
       .eq('id', subscriptionId)
@@ -597,7 +597,7 @@ router.post('/role-subscriptions/:id/cancel', requireAuth, requireActiveUser, re
       razorpayCancellationError: remoteCancellationError || null
     };
 
-    const { data: updated, error: updateError } = await supabase
+    const { data: updated, error: updateError } = await Database
       .from('role_plan_subscriptions')
       .update({
         status: 'cancelled',

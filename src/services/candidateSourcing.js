@@ -1,5 +1,5 @@
 const { ROLES } = require('../constants');
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { isValidUuid, maskEmail, maskMobile } = require('../utils/helpers');
 
 const DEFAULT_TEMPLATES = [
@@ -198,8 +198,8 @@ const selectStudentProfilesSafe = async ({
 
   for (let attempt = 0; attempt < workingFields.length; attempt += 1) {
     let query = count
-      ? supabase.from('student_profiles').select(workingFields.join(', '), { count, head })
-      : supabase.from('student_profiles').select(workingFields.join(', '));
+      ? Database.from('student_profiles').select(workingFields.join(', '), { count, head })
+      : Database.from('student_profiles').select(workingFields.join(', '));
 
     filters.forEach((apply) => {
       if (typeof apply === 'function') {
@@ -377,7 +377,7 @@ const buildStudentDbQuota = async ({ userId, subscription = null } = {}) => {
     };
   }
 
-  const usageResp = await supabase
+  const usageResp = await Database
     .from('role_plan_feature_usage')
     .select('subject_id, meta')
     .eq('user_id', userId)
@@ -410,7 +410,7 @@ const buildStudentDbQuota = async ({ userId, subscription = null } = {}) => {
   };
 };
 const getActiveHrRoleSubscription = async ({ userId }) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('role_plan_subscriptions')
     .select('*, role_plans(*)')
     .eq('user_id', userId)
@@ -438,7 +438,7 @@ const fetchRowsByIdsInChunks = async ({
 
   const rows = [];
   for (const idChunk of chunkList(normalizedIds, chunkSize)) {
-    let query = supabase.from(table).select(select).in(column, idChunk);
+    let query = Database.from(table).select(select).in(column, idChunk);
     if (typeof decorateQuery === 'function') {
       query = decorateQuery(query);
     }
@@ -688,7 +688,7 @@ const getHrSourcingAccess = async ({ userId, role }) => {
     };
   }
 
-  const { data: purchases, error } = await supabase
+  const { data: purchases, error } = await Database
     .from('job_plan_purchases')
     .select('id, plan_slug, paid_at, created_at')
     .eq('hr_id', userId)
@@ -713,7 +713,7 @@ const getHrSourcingAccess = async ({ userId, role }) => {
     };
   }
 
-  const { data: plan } = await supabase
+  const { data: plan } = await Database
     .from('job_posting_plans')
     .select('slug, name')
     .eq('slug', purchase.plan_slug)
@@ -734,7 +734,7 @@ const getHrSourcingAccess = async ({ userId, role }) => {
 };
 
 const listHrMessageTemplates = async ({ hrUserId }) => {
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_sourcing_message_templates')
     .select('*')
     .eq('hr_user_id', hrUserId)
@@ -776,7 +776,7 @@ const upsertHrMessageTemplate = async ({ hrUserId, templateId = null, name, mess
     throw error;
   }
 
-  let query = supabase.from('hr_sourcing_message_templates');
+  let query = Database.from('hr_sourcing_message_templates');
   if (templateId) {
     query = query.update(payload).eq('id', templateId).eq('hr_user_id', hrUserId);
   } else {
@@ -798,7 +798,7 @@ const upsertHrMessageTemplate = async ({ hrUserId, templateId = null, name, mess
 };
 
 const deleteHrMessageTemplate = async ({ hrUserId, templateId }) => {
-  const { error } = await supabase
+  const { error } = await Database
     .from('hr_sourcing_message_templates')
     .delete()
     .eq('id', templateId)
@@ -814,7 +814,7 @@ const resolveTemplateForInterest = async ({ hrUserId, templateId }) => {
   const systemTemplate = DEFAULT_TEMPLATES.find((item) => item.id === templateId);
   if (systemTemplate) return systemTemplate;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_sourcing_message_templates')
     .select('id, name, message')
     .eq('id', templateId)
@@ -854,7 +854,7 @@ const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consum
     };
   }
 
-  const usageResp = await supabase
+  const usageResp = await Database
     .from('role_plan_feature_usage')
     .select('subject_id, meta')
     .eq('user_id', hrUser.id)
@@ -911,7 +911,7 @@ const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consum
       }
     }));
 
-    const insertResp = await supabase
+    const insertResp = await Database
       .from('role_plan_feature_usage')
       .upsert(rows, {
         onConflict: 'user_id,feature_key,subject_type,subject_id'
@@ -966,7 +966,7 @@ const viewHrCandidateResume = async ({ hrUser, studentId } = {}) => {
   if (!unlock.allowed) return { allowed: false, code: 'STUDENT_DB_LIMIT_REACHED', access: unlock.access, reason: unlock.reason };
 
   const [{ data: user, error: userError }, profileResp] = await Promise.all([
-    supabase.from('users').select('id, name').eq('id', studentId).maybeSingle(),
+    Database.from('users').select('id, name').eq('id', studentId).maybeSingle(),
     selectStudentProfilesSafe({
       fields: ['user_id', 'resume_url', 'resume_text', 'headline', 'target_role'],
       userIds: [studentId]
@@ -1154,7 +1154,7 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
 
 const listHrCandidateInterests = async ({ hrUser }) => {
   const access = await getHrSourcingAccess({ userId: hrUser.id, role: hrUser.role });
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_candidate_interests')
     .select('*')
     .eq('hr_user_id', hrUser.id)
@@ -1223,7 +1223,7 @@ const listHrCandidateInterests = async ({ hrUser }) => {
 
 const listHrShortlistedCandidates = async ({ hrUser }) => {
   const access = await getHrSourcingAccess({ userId: hrUser.id, role: hrUser.role });
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('hr_shortlisted_candidates')
     .select('*')
     .eq('hr_user_id', hrUser.id)
@@ -1235,7 +1235,7 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
   const applicationRows = [];
   const campusRows = [];
 
-  const jobsResp = await supabase
+  const jobsResp = await Database
     .from('jobs')
     .select('id, job_title, company_name, contact_details_visible')
     .eq('created_by', hrUser.id);
@@ -1247,7 +1247,7 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
   const jobMap = Object.fromEntries(jobs.map((job) => [job.id, job]));
 
   if (jobIds.length > 0) {
-    const appsResp = await supabase
+    const appsResp = await Database
       .from('applications')
       .select('id, job_id, applicant_id, applicant_email, resume_url, status, status_updated_at, hr_notes, created_at, updated_at')
       .in('job_id', jobIds)
@@ -1258,7 +1258,7 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
     if (!appsResp.error) applicationRows.push(...(appsResp.data || []));
   }
 
-  const hrProfileResp = await supabase
+  const hrProfileResp = await Database
     .from('hr_profiles')
     .select('company_name')
     .eq('user_id', hrUser.id)
@@ -1268,7 +1268,7 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
 
   const companyName = normalizeText(hrProfileResp.data?.company_name);
   if (companyName) {
-    const connectionsResp = await supabase
+    const connectionsResp = await Database
       .from('campus_connections')
       .select('college_id')
       .eq('company_user_id', hrUser.id)
@@ -1279,7 +1279,7 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
     const connectedCollegeIds = connectionsResp.error ? [] : (connectionsResp.data || []).map((item) => item.college_id).filter(Boolean);
 
     if (connectedCollegeIds.length > 0) {
-      const drivesResp = await supabase
+      const drivesResp = await Database
         .from('campus_drives')
         .select('id, college_id, company_name, job_title, college:colleges!campus_drives_college_id_fkey(id, name)')
         .in('college_id', connectedCollegeIds)
@@ -1292,7 +1292,7 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
       const driveMap = Object.fromEntries(drives.map((drive) => [drive.id, drive]));
 
       if (driveIds.length > 0) {
-        const campusResp = await supabase
+        const campusResp = await Database
           .from('campus_drive_applications')
           .select('id, drive_id, campus_student_id, student_user_id, applicant_email, status, current_round, notes, applied_at, created_at, reviewed_at, decision_at, resume_url')
           .in('drive_id', driveIds)

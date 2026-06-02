@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
-const { ensureServerConfig, supabase, sendSupabaseError } = require('../supabase');
+const { ensureDatabaseConfig, Database, sendDatabaseError } = require('../db');
 const { mapPublicUser } = require('../utils/mappers');
 const { asyncHandler } = require('../utils/helpers');
 const authStore = require('../mock/authStore');
@@ -43,15 +43,15 @@ const requireAuth = asyncHandler(async (req, res, next) => {
 
   const devUser = parseDevUserHeader(req);
   if (devUser) {
-    if (supabase) {
-      const { data: refreshedUser, error: refreshError } = await supabase
+    if (Database) {
+      const { data: refreshedUser, error: refreshError } = await Database
         .from('users')
         .select('*')
         .eq('id', devUser.id)
         .maybeSingle();
 
       if (refreshError) {
-        sendSupabaseError(res, refreshError);
+        sendDatabaseError(res, refreshError);
         return;
       }
 
@@ -80,7 +80,7 @@ const requireAuth = asyncHandler(async (req, res, next) => {
     return;
   }
 
-  if (!supabase) {
+  if (!Database) {
     const user = authStore.findUserById(decoded.id);
     if (!user) {
       res.status(401).send({ status: false, message: 'User session is invalid' });
@@ -93,14 +93,14 @@ const requireAuth = asyncHandler(async (req, res, next) => {
     return;
   }
 
-  const { data: user, error } = await supabase
+  const { data: user, error } = await Database
     .from('users')
     .select('*')
     .eq('id', decoded.id)
     .maybeSingle();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -121,7 +121,7 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
     return;
   }
 
-  if (!config.jwtSecret || !supabase) {
+  if (!config.jwtSecret || !Database) {
     next();
     return;
   }
@@ -136,7 +136,7 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
     return;
   }
 
-  const { data: user, error } = await supabase
+  const { data: user, error } = await Database
     .from('users')
     .select('*')
     .eq('id', decoded.id)

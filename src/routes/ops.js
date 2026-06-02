@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES } = require('../constants');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
@@ -75,7 +75,7 @@ router.get('/client-search', asyncHandler(async (req, res) => {
   const queries = [];
 
   queries.push(
-    supabase
+    Database
       .from('users')
       .select('id, name, email, mobile, role, status, updated_at, created_at')
       .in('role', [ROLES.HR, ROLES.STUDENT, ROLES.CAMPUS_CONNECT])
@@ -83,28 +83,28 @@ router.get('/client-search', asyncHandler(async (req, res) => {
   );
 
   queries.push(
-    supabase
+    Database
       .from('hr_profiles')
       .select('user_id, company_name, location, state_name, contact_name, contact_email, contact_phone, updated_at, users(name, email, mobile, status)')
       .limit(limit)
   );
 
   queries.push(
-    supabase
+    Database
       .from('colleges')
       .select('id, user_id, name, city, state, state_name, contact_email, contact_phone, updated_at, users(email, mobile, status)')
       .limit(limit)
   );
 
   queries.push(
-    supabase
+    Database
       .from('sales_leads')
       .select('id, company_name, contact_name, contact_email, contact_phone, target_role, state_name, location, assigned_name, status, updated_at, created_at')
       .limit(limit)
   );
 
   queries.push(
-    supabase
+    Database
       .from('sales_customers')
       .select('id, company_name, contact_name, email, phone, audience_role, state_name, location, status, updated_at, created_at')
       .limit(limit)
@@ -112,7 +112,7 @@ router.get('/client-search', asyncHandler(async (req, res) => {
 
   const [usersResult, hrResult, campusResult, leadsResult, customersResult] = await Promise.all(queries);
   const firstError = [usersResult, hrResult, campusResult, leadsResult, customersResult].find((result) => result.error)?.error;
-  if (firstError) { sendSupabaseError(res, firstError); return; }
+  if (firstError) { sendDatabaseError(res, firstError); return; }
 
   const textMatches = (values = []) => {
     if (!search || search.length < 2) return true;

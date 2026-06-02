@@ -1,4 +1,4 @@
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 
 const SALARY_DATA = {
   'Software Engineer': { fresher: { min: 300000, median: 500000, max: 900000 }, mid: { min: 800000, median: 1400000, max: 2500000 }, senior: { min: 1800000, median: 3000000, max: 5500000 } },

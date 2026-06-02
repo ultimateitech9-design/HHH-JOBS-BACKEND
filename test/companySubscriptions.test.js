@@ -181,7 +181,7 @@ test('notifyCompanySubscribersForJob sends one notification per subscribed porta
       job_title: 'Frontend Intern',
       company_name: 'Acme Labs'
     },
-    supabaseClient: client
+    DatabaseClient: client
   });
 
   assert.deepEqual(summary, { skipped: false, notificationsSent: 3 });
@@ -203,14 +203,14 @@ test('listCompanySubscriptionsForUser returns active subscriptions for one user'
 
   const subscriptions = await listCompanySubscriptionsForUser({
     userId: 'student-1',
-    supabaseClient: client
+    DatabaseClient: client
   });
 
   assert.deepEqual(subscriptions.map((subscription) => subscription.companySlug), ['acme-labs']);
   assert.equal(subscriptions[0].subscribed, true);
 });
 
-test('company subscriptions fall back when Supabase table is missing', async () => {
+test('company subscriptions fall back when Database table is missing', async () => {
   const { client, state } = createUnavailableSubscriptionClient();
   const subscription = await setCompanySubscription({
     userId: 'fallback-student-1',
@@ -218,7 +218,7 @@ test('company subscriptions fall back when Supabase table is missing', async () 
     companyName: 'Fallback Labs',
     companySlug: 'fallback-labs',
     subscribed: true,
-    supabaseClient: client
+    DatabaseClient: client
   });
 
   assert.equal(subscription.subscribed, true);
@@ -228,7 +228,7 @@ test('company subscriptions fall back when Supabase table is missing', async () 
     userRole: 'student',
     companyName: 'Fallback Labs',
     companySlug: 'fallback-labs',
-    supabaseClient: client
+    DatabaseClient: client
   });
 
   assert.equal(status.subscribed, true);
@@ -239,7 +239,7 @@ test('company subscriptions fall back when Supabase table is missing', async () 
       job_title: 'Backend Intern',
       company_name: 'Fallback Labs'
     },
-    supabaseClient: client
+    DatabaseClient: client
   });
 
   assert.deepEqual(summary, { skipped: false, notificationsSent: 1 });
@@ -263,7 +263,7 @@ test('notifyCompanySubscribersForCampusDrive sends subscribed company drive noti
       job_title: 'Trainee Engineer',
       company_name: 'Eimager'
     },
-    supabaseClient: client
+    DatabaseClient: client
   });
 
   assert.deepEqual(summary, { skipped: false, notificationsSent: 2 });
@@ -294,7 +294,7 @@ test('notifyConnectedCampusesForJob notifies accepted campus connections', async
       company_name: 'Acme Labs',
       created_by: 'hr-1'
     },
-    supabaseClient: client
+    DatabaseClient: client
   });
 
   assert.deepEqual(summary, { skipped: false, notificationsSent: 1 });

@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { supabase } = require('../supabase');
+const { Database } = require('../db');
 const { normalizeCompanyKey, toCompanySlug } = require('./companyDirectory');
 const { pushNotificationEvent } = require('./notificationStream');
 
@@ -142,11 +142,11 @@ const getCampusDriveNotificationLink = ({ subscriberRole, companyName, companySl
   return `/companies/${toText(companySlug) || toCompanySlug(companyName)}`;
 };
 
-const insertNotifications = async ({ rows, supabaseClient = supabase } = {}) => {
+const insertNotifications = async ({ rows, DatabaseClient = Database } = {}) => {
   const payload = Array.isArray(rows) ? rows.filter((row) => row?.user_id && row.title && row.message) : [];
   if (payload.length === 0) return [];
 
-  const { data, error } = await supabaseClient
+  const { data, error } = await DatabaseClient
     .from('notifications')
     .insert(payload)
     .select('*');
@@ -165,7 +165,7 @@ const getCompanySubscriptionStatus = async ({
   userRole = '',
   companyName = '',
   companySlug = '',
-  supabaseClient = supabase
+  DatabaseClient = Database
 } = {}) => {
   const subscriberUserId = toText(userId);
   const companyKey = buildCompanySubscriptionKey({ companyName, companySlug });
@@ -174,11 +174,11 @@ const getCompanySubscriptionStatus = async ({
     return normalizeSubscription(null);
   }
 
-  if (!supabaseClient?.from) {
+  if (!DatabaseClient?.from) {
     return normalizeSubscription(getFallbackSubscription({ userId: subscriberUserId, companyKey }));
   }
 
-  const { data, error } = await supabaseClient
+  const { data, error } = await DatabaseClient
     .from('company_subscriptions')
     .select('*')
     .eq('subscriber_user_id', subscriberUserId)
@@ -198,7 +198,7 @@ const getCompanySubscriptionStatus = async ({
 const listCompanySubscriptionsForUser = async ({
   userId,
   activeOnly = true,
-  supabaseClient = supabase
+  DatabaseClient = Database
 } = {}) => {
   const subscriberUserId = toText(userId);
   if (!subscriberUserId) return [];
@@ -208,11 +208,11 @@ const listCompanySubscriptionsForUser = async ({
     activeOnly
   });
 
-  if (!supabaseClient?.from) {
+  if (!DatabaseClient?.from) {
     return fallbackSubscriptions.map(normalizeSubscription);
   }
 
-  let query = supabaseClient
+  let query = DatabaseClient
     .from('company_subscriptions')
     .select('*')
     .eq('subscriber_user_id', subscriberUserId);
@@ -239,7 +239,7 @@ const setCompanySubscription = async ({
   companyName = '',
   companySlug = '',
   subscribed = true,
-  supabaseClient = supabase
+  DatabaseClient = Database
 } = {}) => {
   const subscriberUserId = toText(userId);
   const subscriberRole = toText(userRole);
@@ -264,11 +264,11 @@ const setCompanySubscription = async ({
       subscribed: false
     });
 
-    if (!supabaseClient?.from) {
+    if (!DatabaseClient?.from) {
       return normalizeSubscription(fallbackRow);
     }
 
-    const { data, error } = await supabaseClient
+    const { data, error } = await DatabaseClient
       .from('company_subscriptions')
       .update({ is_active: false })
       .eq('subscriber_user_id', subscriberUserId)
@@ -304,11 +304,11 @@ const setCompanySubscription = async ({
     subscribed: true
   });
 
-  if (!supabaseClient?.from) {
+  if (!DatabaseClient?.from) {
     return normalizeSubscription(fallbackRow);
   }
 
-  const { data, error } = await supabaseClient
+  const { data, error } = await DatabaseClient
     .from('company_subscriptions')
     .upsert(payload, { onConflict: 'subscriber_user_id,company_key' })
     .select('*')
@@ -326,7 +326,7 @@ const setCompanySubscription = async ({
 
 const notifyCompanySubscribersForJob = async ({
   job,
-  supabaseClient = supabase
+  DatabaseClient = Database
 } = {}) => {
   const companyName = toText(job?.company_name);
   const companyKey = buildCompanySubscriptionKey({ companyName });
@@ -336,11 +336,11 @@ const notifyCompanySubscribersForJob = async ({
   }
 
   const fallbackSubscriptions = getActiveFallbackSubscriptionsForCompany(companyKey);
-  if (!supabaseClient?.from) {
-    return notifySubscriptionRowsForJob({ job, companyName, companyKey, subscriptions: fallbackSubscriptions, supabaseClient });
+  if (!DatabaseClient?.from) {
+    return notifySubscriptionRowsForJob({ job, companyName, companyKey, subscriptions: fallbackSubscriptions, DatabaseClient });
   }
 
-  const { data: subscriptions, error } = await supabaseClient
+  const { data: subscriptions, error } = await DatabaseClient
     .from('company_subscriptions')
     .select('subscriber_user_id, subscriber_role, company_name, company_slug')
     .eq('company_key', companyKey)
@@ -348,17 +348,17 @@ const notifyCompanySubscribersForJob = async ({
 
   if (error) {
     if (isStorageUnavailableError(error)) {
-      return notifySubscriptionRowsForJob({ job, companyName, companyKey, subscriptions: fallbackSubscriptions, supabaseClient });
+      return notifySubscriptionRowsForJob({ job, companyName, companyKey, subscriptions: fallbackSubscriptions, DatabaseClient });
     }
     throw error;
   }
 
-  return notifySubscriptionRowsForJob({ job, companyName, companyKey, subscriptions, supabaseClient });
+  return notifySubscriptionRowsForJob({ job, companyName, companyKey, subscriptions, DatabaseClient });
 };
 
 const notifyCompanySubscribersForCampusDrive = async ({
   drive,
-  supabaseClient = supabase
+  DatabaseClient = Database
 } = {}) => {
   const companyName = toText(drive?.company_name);
   const companyKey = buildCompanySubscriptionKey({ companyName });
@@ -368,7 +368,7 @@ const notifyCompanySubscribersForCampusDrive = async ({
   }
 
   const fallbackSubscriptions = getActiveFallbackSubscriptionsForCompany(companyKey);
-  if (!supabaseClient?.from) {
+  if (!DatabaseClient?.from) {
     return notifySubscriptionRowsForJob({
       job: {
         id: drive.id,
@@ -378,7 +378,7 @@ const notifyCompanySubscribersForCampusDrive = async ({
       companyName,
       companyKey,
       subscriptions: fallbackSubscriptions,
-      supabaseClient,
+      DatabaseClient,
       notificationType: 'company_campus_drive_posted',
       title: `${companyName || 'A subscribed company'} published a campus drive`,
       message: `${drive.job_title || 'A new campus drive'} is now available.`,
@@ -387,7 +387,7 @@ const notifyCompanySubscribersForCampusDrive = async ({
     });
   }
 
-  const { data: subscriptions, error } = await supabaseClient
+  const { data: subscriptions, error } = await DatabaseClient
     .from('company_subscriptions')
     .select('subscriber_user_id, subscriber_role, company_name, company_slug')
     .eq('company_key', companyKey)
@@ -404,7 +404,7 @@ const notifyCompanySubscribersForCampusDrive = async ({
         companyName,
         companyKey,
         subscriptions: fallbackSubscriptions,
-        supabaseClient,
+        DatabaseClient,
         notificationType: 'company_campus_drive_posted',
         title: `${companyName || 'A subscribed company'} published a campus drive`,
         message: `${drive.job_title || 'A new campus drive'} is now available.`,
@@ -424,7 +424,7 @@ const notifyCompanySubscribersForCampusDrive = async ({
     companyName,
     companyKey,
     subscriptions,
-    supabaseClient,
+    DatabaseClient,
     notificationType: 'company_campus_drive_posted',
     title: `${companyName || 'A subscribed company'} published a campus drive`,
     message: `${drive.job_title || 'A new campus drive'} is now available.`,
@@ -438,7 +438,7 @@ const notifySubscriptionRowsForJob = async ({
   companyName,
   companyKey,
   subscriptions = [],
-  supabaseClient = supabase,
+  DatabaseClient = Database,
   notificationType = 'company_job_posted',
   title = `${companyName || 'A subscribed company'} posted a new job`,
   message = `${job?.job_title || 'A new role'} is now open. Apply before it closes.`,
@@ -477,13 +477,13 @@ const notifySubscriptionRowsForJob = async ({
     }
   }));
 
-  const inserted = await insertNotifications({ rows, supabaseClient });
+  const inserted = await insertNotifications({ rows, DatabaseClient });
   return { skipped: false, notificationsSent: inserted.length };
 };
 
 const notifyConnectedCampusesForJob = async ({
   job,
-  supabaseClient = supabase
+  DatabaseClient = Database
 } = {}) => {
   const companyUserId = toText(job?.created_by);
   const companyName = toText(job?.company_name);
@@ -492,7 +492,7 @@ const notifyConnectedCampusesForJob = async ({
     return { skipped: true, reason: 'missing_job_or_company_user', notificationsSent: 0 };
   }
 
-  const { data: connections, error: connectionsError } = await supabaseClient
+  const { data: connections, error: connectionsError } = await DatabaseClient
     .from('campus_connections')
     .select('college_id, company_name, status')
     .eq('company_user_id', companyUserId)
@@ -510,7 +510,7 @@ const notifyConnectedCampusesForJob = async ({
     return { skipped: false, notificationsSent: 0 };
   }
 
-  const { data: colleges, error: collegesError } = await supabaseClient
+  const { data: colleges, error: collegesError } = await DatabaseClient
     .from('colleges')
     .select('id, user_id, name')
     .in('id', collegeIds);
@@ -541,7 +541,7 @@ const notifyConnectedCampusesForJob = async ({
     }
   }));
 
-  const inserted = await insertNotifications({ rows, supabaseClient });
+  const inserted = await insertNotifications({ rows, DatabaseClient });
   return { skipped: false, notificationsSent: inserted.length };
 };
 

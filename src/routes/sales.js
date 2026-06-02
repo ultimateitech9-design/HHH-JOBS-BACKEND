@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES } = require('../constants');
-const { supabase, countRows, sendSupabaseError } = require('../supabase');
+const { Database, countRows, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler, isValidUuid } = require('../utils/helpers');
@@ -228,7 +228,7 @@ const applyLeadListFilters = (query, {
 
 const buildLeadSummary = async (filters = {}, totalLeads = 0) => {
   const valueResult = await applyLeadListFilters(
-    supabase
+    Database
       .from('sales_leads')
       .select('status, onboarding_status, value')
       .limit(10000),
@@ -269,7 +269,7 @@ const buildSalesCode = (user = {}) => {
 };
 
 const getSalesProfileMeta = async (user = {}) => {
-  const { data } = await supabase
+  const { data } = await Database
     .from('sales_profiles')
     .select('meta')
     .eq('user_id', user.id)
@@ -325,7 +325,7 @@ const uniqueValues = (values = []) => [...new Set(values.filter(Boolean))];
 const fetchUsersByIds = async (ids = []) => {
   const userIds = uniqueValues(ids);
   if (userIds.length === 0) return {};
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('users')
     .select('id, name, email, mobile')
     .in('id', userIds);
@@ -336,7 +336,7 @@ const fetchUsersByIds = async (ids = []) => {
 const fetchRolePlansBySlugs = async (slugs = []) => {
   const planSlugs = uniqueValues(slugs);
   if (planSlugs.length === 0) return {};
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('role_plans')
     .select('slug, name, audience_role')
     .in('slug', planSlugs);
@@ -347,7 +347,7 @@ const fetchRolePlansBySlugs = async (slugs = []) => {
 const fetchJobPlansBySlugs = async (slugs = []) => {
   const planSlugs = uniqueValues(slugs);
   if (planSlugs.length === 0) return {};
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('job_posting_plans')
     .select('slug, name')
     .in('slug', planSlugs);
@@ -405,7 +405,7 @@ const fetchLiveSalesPayments = async ({ user = {}, status = '', limit = 500 } = 
   const normalizedStatus = String(status || '').toLowerCase();
   const maxRows = Math.min(1000, Math.max(1, Number(limit || 500)));
 
-  let roleQuery = supabase
+  let roleQuery = Database
     .from('role_plan_purchases')
     .select('id, user_id, audience_role, role_plan_slug, total_amount, status, provider, reference_id, created_at, paid_at, sales_owner_id')
     .order('created_at', { ascending: false })
@@ -413,7 +413,7 @@ const fetchLiveSalesPayments = async ({ user = {}, status = '', limit = 500 } = 
   if (VALID_PAYMENT_STATUSES.includes(normalizedStatus)) roleQuery = roleQuery.eq('status', normalizedStatus);
   if (!isSalesManager(user)) roleQuery = roleQuery.eq('sales_owner_id', user.id);
 
-  let jobQuery = supabase
+  let jobQuery = Database
     .from('job_plan_purchases')
     .select('id, hr_id, plan_slug, total_amount, status, provider, reference_id, created_at, paid_at')
     .order('created_at', { ascending: false })
@@ -445,13 +445,13 @@ const fetchLiveSalesPayments = async ({ user = {}, status = '', limit = 500 } = 
 const fetchLiveSalesPaymentById = async ({ id, user = {} } = {}) => {
   if (!id) return null;
   const [roleResult, jobResult] = await Promise.all([
-    supabase
+    Database
       .from('role_plan_purchases')
       .select('id, user_id, audience_role, role_plan_slug, total_amount, status, provider, reference_id, created_at, paid_at, sales_owner_id')
       .eq('id', id)
       .maybeSingle(),
     isSalesManager(user)
-      ? supabase
+      ? Database
         .from('job_plan_purchases')
         .select('id, hr_id, plan_slug, total_amount, status, provider, reference_id, created_at, paid_at')
         .eq('id', id)
@@ -553,7 +553,7 @@ const fetchLeadStatesByUserIds = async (userIds = []) => {
   const ids = uniqueValues(userIds);
   if (ids.length === 0) return {};
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_leads')
     .select('*')
     .in('user_id', ids)
@@ -574,19 +574,19 @@ const fetchCommercialPlanStateByUserIds = async (userIds = []) => {
   }
 
   const [subscriptionResult, purchaseResult, jobPurchaseResult] = await Promise.all([
-    supabase
+    Database
       .from('role_plan_subscriptions')
       .select('id, user_id, audience_role, role_plan_slug, status, amount, created_at, activated_at, sales_owner_id')
       .in('user_id', ids)
       .in('status', ACTIVE_CUSTOMER_STATUSES)
       .order('created_at', { ascending: false }),
-    supabase
+    Database
       .from('role_plan_purchases')
       .select('id, user_id, audience_role, role_plan_slug, total_amount, status, created_at, paid_at, sales_owner_id')
       .in('user_id', ids)
       .eq('status', 'paid')
       .order('created_at', { ascending: false }),
-    supabase
+    Database
       .from('job_plan_purchases')
       .select('id, hr_id, plan_slug, total_amount, status, created_at, paid_at')
       .in('hr_id', ids)
@@ -621,19 +621,19 @@ const fetchCommercialProfileStateByAccounts = async (accounts = []) => {
 
   const [hrResp, campusResp, studentResp] = await Promise.all([
     hrIds.length
-      ? supabase
+      ? Database
         .from('hr_profiles')
         .select('user_id, company_name, location, state_id, district_id, state_name, district_name, sector_id, sector_name, industry_type')
         .in('user_id', hrIds)
       : Promise.resolve({ data: [], error: null }),
     campusIds.length
-      ? supabase
+      ? Database
         .from('colleges')
         .select('user_id, name, city, state, contact_email, contact_phone, state_id, district_id, state_name, district_name, sector_id, sector_name')
         .in('user_id', campusIds)
       : Promise.resolve({ data: [], error: null }),
     studentIds.length
-      ? supabase
+      ? Database
         .from('student_profiles')
         .select('user_id, location, preferred_work_location, state_id, district_id, state_name, district_name')
         .in('user_id', studentIds)
@@ -720,19 +720,19 @@ const fetchPlanTakenUserIds = async ({ userIds = [], targetRole = '' } = {}) => 
   };
 
   const roleSubscriptionQuery = withCommercialPlanFilters(
-    supabase
+    Database
       .from('role_plan_subscriptions')
       .select('user_id')
       .in('status', ACTIVE_CUSTOMER_STATUSES)
   );
   const rolePurchaseQuery = withCommercialPlanFilters(
-    supabase
+    Database
       .from('role_plan_purchases')
       .select('user_id')
       .eq('status', 'paid')
   );
 
-  let jobPurchaseQuery = supabase
+  let jobPurchaseQuery = Database
     .from('job_plan_purchases')
     .select('hr_id')
     .eq('status', 'paid')
@@ -813,7 +813,7 @@ const buildLiveLeadSummary = async ({ targetRole = '', search = '' } = {}) => {
 
   if (String(search || '').trim()) {
     const { data: matchingUsers, error } = await applyCommercialUserFilters(
-      supabase
+      Database
         .from('users')
         .select('id')
         .limit(100000),
@@ -829,7 +829,7 @@ const buildLiveLeadSummary = async ({ targetRole = '', search = '' } = {}) => {
   }
 
   const valueResult = await applyLeadListFilters(
-    supabase
+    Database
       .from('sales_leads')
       .select('value')
       .limit(10000),
@@ -870,7 +870,7 @@ const buildCommercialAudienceBreakdown = async () => Promise.all(COMMERCIAL_AUDI
 }));
 
 const buildSalesFollowupSummary = async (user = {}) => {
-  let query = supabase
+  let query = Database
     .from('sales_leads')
     .select('id, user_id, company_name, contact_name, contact_phone, contact_email, status, assigned_to, assigned_name, target_role, next_followup_at, last_followup_at, last_contacted_at, updated_at, created_at')
     .order('updated_at', { ascending: false })
@@ -921,7 +921,7 @@ const buildSalesFollowupSummary = async (user = {}) => {
 };
 
 const fetchOverviewPaymentSummary = async (user = {}) => {
-  let roleQuery = supabase
+  let roleQuery = Database
     .from('role_plan_purchases')
     .select('id, user_id, audience_role, role_plan_slug, total_amount, status, provider, reference_id, created_at, paid_at, sales_owner_id')
     .not('status', 'in', '(failed,cancelled)')
@@ -930,7 +930,7 @@ const fetchOverviewPaymentSummary = async (user = {}) => {
   if (!isSalesManager(user)) roleQuery = roleQuery.eq('sales_owner_id', user.id);
 
   const jobQuery = isSalesManager(user)
-    ? supabase
+    ? Database
       .from('job_plan_purchases')
       .select('id, hr_id, plan_slug, total_amount, status, provider, reference_id, created_at, paid_at')
       .not('status', 'in', '(failed,cancelled)')
@@ -1021,7 +1021,7 @@ const fetchLiveSalesLeads = async ({
   const safeLimit = Math.min(100, Math.max(1, parseInt(limit || '100', 10)));
   const offset = (safePage - 1) * safeLimit;
 
-  let query = supabase
+  let query = Database
     .from('users')
     .select('id, name, email, mobile, role, status, created_at', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -1056,7 +1056,7 @@ const fetchLiveSalesLeads = async ({
 const fetchPlatformAccountLeadById = async ({ id, user = {} } = {}) => {
   if (!isValidUuid(id)) return null;
 
-  const { data: account, error } = await supabase
+  const { data: account, error } = await Database
     .from('users')
     .select('id, name, email, mobile, role, status, created_at')
     .eq('id', id)
@@ -1076,7 +1076,7 @@ const fetchPlatformAccountLeadById = async ({ id, user = {} } = {}) => {
 const fetchSalesLeadStateByIdOrUserId = async ({ id, user = {} } = {}) => {
   if (!isValidUuid(id)) return null;
 
-  const byLeadIdResult = await supabase
+  const byLeadIdResult = await Database
     .from('sales_leads')
     .select('*')
     .eq('id', id)
@@ -1086,7 +1086,7 @@ const fetchSalesLeadStateByIdOrUserId = async ({ id, user = {} } = {}) => {
     return canAccessLeadState(byLeadIdResult.data, user) ? byLeadIdResult.data : null;
   }
 
-  const byUserIdResult = await supabase
+  const byUserIdResult = await Database
     .from('sales_leads')
     .select('*')
     .eq('user_id', id)
@@ -1100,7 +1100,7 @@ const fetchSalesLeadStateByIdOrUserId = async ({ id, user = {} } = {}) => {
 const createLeadStateForPlatformAccount = async ({ userId, user = {} } = {}) => {
   if (!isValidUuid(userId)) return null;
 
-  const { data: account, error: accountError } = await supabase
+  const { data: account, error: accountError } = await Database
     .from('users')
     .select('id, name, email, mobile, role, status, created_at')
     .eq('id', userId)
@@ -1135,7 +1135,7 @@ const createLeadStateForPlatformAccount = async ({ userId, user = {} } = {}) => 
     assignment_source: isSalesManager(user) ? null : 'sales_call'
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_leads')
     .insert(payload)
     .select('*')
@@ -1143,7 +1143,7 @@ const createLeadStateForPlatformAccount = async ({ userId, user = {} } = {}) => 
   if (!error) return data;
   if (error.code !== '23505') throw error;
 
-  const { data: existingLead, error: existingError } = await supabase
+  const { data: existingLead, error: existingError } = await Database
     .from('sales_leads')
     .select('*')
     .eq('user_id', account.id)
@@ -1162,11 +1162,11 @@ const fetchCustomerAccountSummary = async () => {
   const [totalAccounts, activeAccountIds, purchaseRows, jobPurchaseRows] = await Promise.all([
     countRows('users', (q) => q.in('role', COMMERCIAL_AUDIENCE_ROLES)),
     fetchPlanTakenUserIds(),
-    supabase
+    Database
       .from('role_plan_purchases')
       .select('total_amount, status')
       .in('status', ['paid', 'refunded']),
-    supabase
+    Database
       .from('job_plan_purchases')
       .select('total_amount, status')
       .in('status', ['paid', 'refunded'])
@@ -1191,7 +1191,7 @@ const fetchLiveSalesCustomers = async ({ page = 1, limit = 50, search = '' } = {
   const safeLimit = Math.min(100, Math.max(1, parseInt(limit || '50', 10)));
   const offset = (safePage - 1) * safeLimit;
 
-  let query = supabase
+  let query = Database
     .from('users')
     .select('id, name, email, mobile, role, status, created_at', { count: 'exact' })
     .in('role', COMMERCIAL_AUDIENCE_ROLES)
@@ -1210,7 +1210,7 @@ const fetchLiveSalesCustomers = async ({ page = 1, limit = 50, search = '' } = {
   const userIds = (users || []).map((row) => row.id);
   const [subscriptionResult, purchaseResult, profileState] = await Promise.all([
     userIds.length
-      ? supabase
+      ? Database
         .from('role_plan_subscriptions')
         .select('id, user_id, audience_role, role_plan_slug, status, amount, created_at, activated_at, sales_owner_id')
         .in('user_id', userIds)
@@ -1218,7 +1218,7 @@ const fetchLiveSalesCustomers = async ({ page = 1, limit = 50, search = '' } = {
         .order('created_at', { ascending: false })
       : Promise.resolve({ data: [], error: null }),
     userIds.length
-      ? supabase
+      ? Database
         .from('role_plan_purchases')
         .select('id, user_id, audience_role, role_plan_slug, total_amount, status, created_at, paid_at, sales_owner_id')
         .in('user_id', userIds)
@@ -1249,7 +1249,7 @@ const fetchLiveSalesCustomers = async ({ page = 1, limit = 50, search = '' } = {
 
 const fetchLiveSalesCustomerById = async ({ id, user = {} } = {}) => {
   if (!id) return null;
-  const { data: account, error } = await supabase
+  const { data: account, error } = await Database
     .from('users')
     .select('id, name, email, mobile, role, status, created_at')
     .eq('id', id)
@@ -1258,14 +1258,14 @@ const fetchLiveSalesCustomerById = async ({ id, user = {} } = {}) => {
   if (!account || !COMMERCIAL_AUDIENCE_ROLES.includes(account.role)) return null;
 
   const [subscriptionResult, purchaseResult, profileState] = await Promise.all([
-    supabase
+    Database
       .from('role_plan_subscriptions')
       .select('id, user_id, audience_role, role_plan_slug, status, amount, created_at, activated_at, sales_owner_id')
       .eq('user_id', account.id)
       .in('status', ACTIVE_CUSTOMER_STATUSES)
       .order('created_at', { ascending: false })
       .limit(1),
-    supabase
+    Database
       .from('role_plan_purchases')
       .select('id, user_id, audience_role, role_plan_slug, total_amount, status, created_at, paid_at, sales_owner_id')
       .eq('user_id', account.id)
@@ -1287,7 +1287,7 @@ const fetchLiveSalesCustomerById = async ({ id, user = {} } = {}) => {
 // Overview
 // =============================================
 router.get('/overview', asyncHandler(async (req, res) => {
-  if (!supabase) {
+  if (!Database) {
     res.send({
       status: true,
       overview: formatSalesOverview()
@@ -1415,25 +1415,25 @@ router.get('/team', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('users')
     .select('id, name, email, status, created_at')
     .eq('role', ROLES.SALES)
     .order('name');
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   const agents = data || [];
   const agentIds = agents.map((agent) => agent.id).filter(Boolean);
 
   let leadStatsByAgent = {};
   if (agentIds.length > 0) {
-    const { data: leadsData, error: leadsError } = await supabase
+    const { data: leadsData, error: leadsError } = await Database
       .from('sales_leads')
       .select('assigned_to, status, value')
       .in('assigned_to', agentIds);
 
-    if (leadsError) { sendSupabaseError(res, leadsError); return; }
+    if (leadsError) { sendDatabaseError(res, leadsError); return; }
 
     leadStatsByAgent = (leadsData || []).reduce((acc, lead) => {
       const agentId = lead.assigned_to;
@@ -1474,20 +1474,20 @@ router.get('/team', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/products', asyncHandler(async (req, res) => {
   const [{ data, error }, { data: rolePlans, error: rolePlansError }] = await Promise.all([
-    supabase
+    Database
       .from('job_posting_plans')
       .select('id, slug, name, description, price, currency, is_active, sort_order')
       .eq('is_active', true)
       .order('sort_order'),
-    supabase
+    Database
       .from('role_plans')
       .select('id, slug, name, description, price, currency, is_active, sort_order, audience_role')
       .eq('is_active', true)
       .order('sort_order')
   ]);
 
-  if (error) { sendSupabaseError(res, error); return; }
-  if (rolePlansError) { sendSupabaseError(res, rolePlansError); return; }
+  if (error) { sendDatabaseError(res, error); return; }
+  if (rolePlansError) { sendDatabaseError(res, rolePlansError); return; }
 
   const jobProducts = data || [];
   const commercialProducts = rolePlans || [];
@@ -1503,12 +1503,12 @@ router.get('/products', asyncHandler(async (req, res) => {
 
   let purchaseSummaryBySlug = {};
   if (planSlugs.length > 0) {
-    const { data: purchasesData, error: purchasesError } = await supabase
+    const { data: purchasesData, error: purchasesError } = await Database
       .from('job_plan_purchases')
       .select('plan_slug, quantity, total_amount, status')
       .in('plan_slug', planSlugs);
 
-    if (purchasesError) { sendSupabaseError(res, purchasesError); return; }
+    if (purchasesError) { sendDatabaseError(res, purchasesError); return; }
 
     purchaseSummaryBySlug = (purchasesData || []).reduce((acc, purchase) => {
       const slug = purchase.plan_slug;
@@ -1524,12 +1524,12 @@ router.get('/products', asyncHandler(async (req, res) => {
 
   let rolePurchaseSummaryBySlug = {};
   if (rolePlanSlugs.length > 0) {
-    const { data: purchasesData, error: purchasesError } = await supabase
+    const { data: purchasesData, error: purchasesError } = await Database
       .from('role_plan_purchases')
       .select('role_plan_slug, quantity, total_amount, status')
       .in('role_plan_slug', rolePlanSlugs);
 
-    if (purchasesError) { sendSupabaseError(res, purchasesError); return; }
+    if (purchasesError) { sendDatabaseError(res, purchasesError); return; }
 
     rolePurchaseSummaryBySlug = (purchasesData || []).reduce((acc, purchase) => {
       const slug = purchase.role_plan_slug;
@@ -1581,7 +1581,7 @@ router.post('/orders', asyncHandler(async (req, res) => {
   const orderCount = await countRows('sales_orders');
   const orderNumber = `ORD-${String(orderCount + 1).padStart(6, '0')}`;
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_orders')
     .insert({
       order_number: orderNumber,
@@ -1597,7 +1597,7 @@ router.post('/orders', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.status(201).send({ status: true, order: data });
 }));
@@ -1608,14 +1608,14 @@ router.patch('/orders/:id/status', asyncHandler(async (req, res) => {
     return res.status(400).send({ status: false, message: 'Invalid status' });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_orders')
     .update({ status: newStatus, updated_at: new Date().toISOString() })
     .eq('id', req.params.id)
     .select('id, order_number, status, amount')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Order not found' });
 
   res.send({ status: true, order: data });
@@ -1629,7 +1629,7 @@ router.get('/referral-code', asyncHandler(async (req, res) => {
     : [];
 
   if (req.user?.role === ROLES.SALES && !meta.salesCode && !meta.sales_code) {
-    await supabase
+    await Database
       .from('sales_profiles')
       .upsert({
         user_id: req.user.id,
@@ -1671,7 +1671,7 @@ router.get('/leads', asyncHandler(async (req, res) => {
 
     res.send({ status: true, ...result });
   } catch (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
   }
 }));
 
@@ -1694,7 +1694,7 @@ router.get('/leads/:id', asyncHandler(async (req, res) => {
     if (!platformLead) return res.status(404).send({ status: false, message: 'Lead not found' });
     res.send({ status: true, lead: platformLead });
   } catch (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
   }
 }));
 
@@ -1720,7 +1720,7 @@ router.post('/leads', asyncHandler(async (req, res) => {
   if (!company_name) return res.status(400).send({ status: false, message: 'company_name is required' });
   const structuredZone = buildLeadZoneLabel({ stateName: state_name, districtName: district_name, location: zone || location });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_leads')
     .insert({
       company_name: String(company_name).trim(),
@@ -1748,7 +1748,7 @@ router.post('/leads', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.status(201).send({ status: true, lead: formatLeadRow(data) });
 }));
@@ -1766,7 +1766,7 @@ router.post('/onboarding-requests', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data: lead, error: leadError } = await supabase
+  const { data: lead, error: leadError } = await Database
     .from('sales_leads')
     .insert({
       company_name: companyName,
@@ -1796,9 +1796,9 @@ router.post('/onboarding-requests', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (leadError) { sendSupabaseError(res, leadError); return; }
+  if (leadError) { sendDatabaseError(res, leadError); return; }
 
-  const { data: dataEntryTask, error: taskError } = await supabase
+  const { data: dataEntryTask, error: taskError } = await Database
     .from('dataentry_entries')
     .insert({
       type: 'onboarding',
@@ -1822,7 +1822,7 @@ router.post('/onboarding-requests', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (taskError) { sendSupabaseError(res, taskError); return; }
+  if (taskError) { sendDatabaseError(res, taskError); return; }
 
   res.status(201).send({ status: true, lead: formatLeadRow(lead), dataEntryTask });
 }));
@@ -1879,14 +1879,14 @@ router.patch('/leads/:id', asyncHandler(async (req, res) => {
   updates.last_contacted_by = req.user?.id || null;
   updates.last_contacted_at = new Date().toISOString();
 
-  let query = supabase
+  let query = Database
     .from('sales_leads')
     .update(updates)
     .eq('id', req.params.id);
   query = applySalesOwnershipScope(query, req.user);
   const { data, error } = await query.select('*').maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Lead not found' });
 
   res.send({ status: true, lead: formatLeadRow(data) });
@@ -1904,7 +1904,7 @@ router.post('/leads/:id/call', asyncHandler(async (req, res) => {
       res.status(error.statusCode).send({ status: false, message: error.message });
       return;
     }
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -1938,14 +1938,14 @@ router.post('/leads/:id/call', asyncHandler(async (req, res) => {
     updates.followup_notes = String(req.body.followup_notes || '').trim() || null;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_leads')
     .update(updates)
     .eq('id', existingLead.id)
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Lead not found' });
 
   res.send({ status: true, lead: formatLeadRow(data) });
@@ -1972,7 +1972,7 @@ router.post('/leads/sync-commercial', asyncHandler(async (req, res) => {
       leads: syncedLeads.map(formatLeadRow)
     });
   } catch (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
   }
 }));
 
@@ -1982,7 +1982,7 @@ router.post('/leads/:id/claim', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_leads')
     .update({
       assigned_to: req.user.id,
@@ -1995,7 +1995,7 @@ router.post('/leads/:id/claim', asyncHandler(async (req, res) => {
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) {
     res.status(409).send({ status: false, message: 'Lead is already assigned to another sales person.' });
     return;
@@ -2027,7 +2027,7 @@ router.get('/customers/:id', asyncHandler(async (req, res) => {
 // Coupons
 // =============================================
 router.get('/coupons', asyncHandler(async (req, res) => {
-  let query = supabase
+  let query = Database
     .from('sales_coupons')
     .select('id, code, discount_type, discount_value, max_uses, used_count, valid_from, valid_until, is_active, created_at, audience_roles, plan_slugs, min_amount, max_discount_amount, assigned_to_sales_id, created_by')
     .order('created_at', { ascending: false });
@@ -2036,7 +2036,7 @@ router.get('/coupons', asyncHandler(async (req, res) => {
   }
   const { data, error } = await query;
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, coupons: data || [] });
 }));
@@ -2052,7 +2052,7 @@ router.post('/coupons/validate', asyncHandler(async (req, res) => {
     return;
   }
 
-  let query = supabase
+  let query = Database
     .from('sales_coupons')
     .select('*')
     .eq('code', code)
@@ -2062,7 +2062,7 @@ router.post('/coupons/validate', asyncHandler(async (req, res) => {
   }
 
   const { data: coupon, error } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!coupon) {
     res.status(404).send({ status: false, message: 'Coupon not found for this sales account' });
     return;
@@ -2091,7 +2091,7 @@ router.post('/coupons/validate', asyncHandler(async (req, res) => {
 }));
 
 router.get('/coupon-requests', asyncHandler(async (req, res) => {
-  let query = supabase
+  let query = Database
     .from('sales_coupon_requests')
     .select('*, requested_by_user:users!sales_coupon_requests_requested_by_fkey(name, email), sales_coupon:sales_coupons(code)')
     .order('created_at', { ascending: false })
@@ -2099,7 +2099,7 @@ router.get('/coupon-requests', asyncHandler(async (req, res) => {
   if (!isSalesManager(req.user)) query = query.eq('requested_by', req.user.id);
 
   const { data, error } = await query;
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.send({ status: true, requests: (data || []).map(formatCouponRequest) });
 }));
 
@@ -2122,7 +2122,7 @@ router.post('/coupon-requests', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_coupon_requests')
     .insert({
       requested_by: req.user?.id || null,
@@ -2140,7 +2140,7 @@ router.post('/coupon-requests', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   res.status(201).send({ status: true, request: data });
 }));
 
@@ -2155,14 +2155,14 @@ router.patch('/coupon-requests/:id', asyncHandler(async (req, res) => {
     if (req.body?.[key] !== undefined) updates[key] = req.body[key] || null;
   });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_coupon_requests')
     .update(updates)
     .eq('id', req.params.id)
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Coupon request not found' });
   res.send({ status: true, request: data });
 }));
@@ -2188,7 +2188,7 @@ router.post('/coupons', asyncHandler(async (req, res) => {
   } = req.body || {};
   if (!code || !discount_value) return res.status(400).send({ status: false, message: 'code and discount_value are required' });
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_coupons')
     .insert({
       code: String(code).trim().toUpperCase(),
@@ -2208,7 +2208,7 @@ router.post('/coupons', asyncHandler(async (req, res) => {
     .select('*')
     .single();
 
-  if (error) { sendSupabaseError(res, error, error.code === '23505' ? 400 : 500); return; }
+  if (error) { sendDatabaseError(res, error, error.code === '23505' ? 400 : 500); return; }
 
   res.status(201).send({ status: true, coupon: data });
 }));
@@ -2231,14 +2231,14 @@ router.patch('/coupons/:id', asyncHandler(async (req, res) => {
       : [];
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('sales_coupons')
     .update(updates)
     .eq('id', req.params.id)
     .select('*')
     .maybeSingle();
 
-  if (error) { sendSupabaseError(res, error); return; }
+  if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Coupon not found' });
 
   res.send({ status: true, coupon: data });
@@ -2259,7 +2259,7 @@ router.get('/funnel', asyncHandler(async (req, res) => {
   const stages = ['new', 'contacted', 'qualified', 'proposal', 'converted', 'lost'];
 
   const counts = await Promise.all(
-    stages.map((stage) => supabase.from('sales_leads').select('id', { count: 'exact', head: true }).eq('status', stage))
+    stages.map((stage) => Database.from('sales_leads').select('id', { count: 'exact', head: true }).eq('status', stage))
   );
 
   const funnel = stages.map((stage, i) => ({
@@ -2282,7 +2282,7 @@ router.get('/funnel', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/reports', asyncHandler(async (req, res) => {
   const leadQuery = applySalesOwnershipScope(
-    supabase.from('sales_leads').select('source, status, value, assigned_to, assigned_name, zone, location, state_name, district_name'),
+    Database.from('sales_leads').select('source, status, value, assigned_to, assigned_name, zone, location, state_name, district_name'),
     req.user
   );
   const [leadsResult, orders, customerSummary] = await Promise.all([
@@ -2291,7 +2291,7 @@ router.get('/reports', asyncHandler(async (req, res) => {
     fetchCustomerAccountSummary()
   ]);
 
-  if (leadsResult.error) { sendSupabaseError(res, leadsResult.error); return; }
+  if (leadsResult.error) { sendDatabaseError(res, leadsResult.error); return; }
 
   const leads = leadsResult.data || [];
   const totalLeads = leads.length;

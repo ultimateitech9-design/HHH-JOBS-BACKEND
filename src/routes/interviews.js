@@ -8,7 +8,7 @@ const ts = require('typescript');
 const { ROLES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
-const { supabase, sendSupabaseError } = require('../supabase');
+const { Database, sendDatabaseError } = require('../db');
 const { asyncHandler, isValidUuid, stripUndefined } = require('../utils/helpers');
 const { createNotification } = require('../services/notifications');
 const {
@@ -451,7 +451,7 @@ router.post('/:id/join', asyncHandler(async (req, res) => {
     ? 'live'
     : 'ready';
 
-  const updateQuery = supabase
+  const updateQuery = Database
     .from('interview_schedules')
     .update(updateDoc);
 
@@ -460,11 +460,11 @@ router.post('/:id/join', asyncHandler(async (req, res) => {
     : await updateQuery.eq('id', context.participantInterview.id);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
-  await supabase
+  await Database
     .from('interview_schedules')
     .update({ room_status: normalizeRoomStatus(nextRoomStatus) })
     .in('id', (context.roomInterviews || []).map((item) => item.id));
@@ -484,7 +484,7 @@ router.post('/:id/leave', asyncHandler(async (req, res) => {
     ? { hr_left_at: now }
     : { candidate_left_at: now };
 
-  const updateQuery = supabase
+  const updateQuery = Database
     .from('interview_schedules')
     .update(updateDoc);
 
@@ -493,7 +493,7 @@ router.post('/:id/leave', asyncHandler(async (req, res) => {
     : await updateQuery.eq('id', context.participantInterview.id);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -521,13 +521,13 @@ router.post('/:id/consent', asyncHandler(async (req, res) => {
       : (recordingConsent ? 'ready' : 'declined')
   });
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('interview_schedules')
     .update(updateDoc)
     .eq('id', context.participantInterview.id);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -545,7 +545,7 @@ router.get('/:id/signals', asyncHandler(async (req, res) => {
   );
 
   const isManager = canManageInterview({ interview: context.participantInterview || context.interview, user: req.user });
-  let query = supabase
+  let query = Database
     .from('interview_signals')
     .select('*')
     .eq('interview_id', context.interview.id)
@@ -563,7 +563,7 @@ router.get('/:id/signals', asyncHandler(async (req, res) => {
 
   const { data, error } = await query;
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -598,7 +598,7 @@ router.post('/:id/signals', asyncHandler(async (req, res) => {
     }
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await Database
     .from('interview_signals')
     .insert({
       interview_id: context.interview.id,
@@ -611,7 +611,7 @@ router.post('/:id/signals', asyncHandler(async (req, res) => {
     .single();
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -663,13 +663,13 @@ router.patch('/:id/workspace', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('interview_schedules')
     .update(updateDoc)
     .eq('id', workspaceInterview.id);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
@@ -747,20 +747,20 @@ router.post('/:id/end', asyncHandler(async (req, res) => {
     hr_left_at: new Date().toISOString()
   };
 
-  const { error } = await supabase
+  const { error } = await Database
     .from('interview_schedules')
     .update(updateDoc)
     .in('id', (context.roomInterviews || []).map((item) => item.id));
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
   if (isApplicationStatus(applicationStatus)) {
     const applicationIds = (context.roomInterviews || []).map((item) => item.application_id).filter(Boolean);
     if (applicationIds.length > 0) {
-      const appUpdate = await supabase
+      const appUpdate = await Database
         .from('applications')
         .update({
           status: String(applicationStatus).trim().toLowerCase(),
@@ -770,7 +770,7 @@ router.post('/:id/end', asyncHandler(async (req, res) => {
         .in('id', applicationIds);
 
       if (appUpdate.error) {
-        sendSupabaseError(res, appUpdate.error);
+        sendDatabaseError(res, appUpdate.error);
         return;
       }
     }
@@ -814,7 +814,7 @@ router.post('/:id/recording', upload.single('recording'), asyncHandler(async (re
     mimeType: req.file.mimetype || ''
   });
 
-  const { error: uploadError } = await supabase.storage
+  const { error: uploadError } = await Database.storage
     .from('interview-recordings')
     .upload(storagePath, req.file.buffer, {
       contentType: req.file.mimetype || 'video/webm',
@@ -822,11 +822,11 @@ router.post('/:id/recording', upload.single('recording'), asyncHandler(async (re
     });
 
   if (uploadError) {
-    sendSupabaseError(res, uploadError);
+    sendDatabaseError(res, uploadError);
     return;
   }
 
-  const { error: updateError } = await supabase
+  const { error: updateError } = await Database
     .from('interview_schedules')
     .update({
       recording_status: 'available',
@@ -838,16 +838,16 @@ router.post('/:id/recording', upload.single('recording'), asyncHandler(async (re
     .eq('id', context.interview.id);
 
   if (updateError) {
-    sendSupabaseError(res, updateError);
+    sendDatabaseError(res, updateError);
     return;
   }
 
-  const signed = await supabase.storage
+  const signed = await Database.storage
     .from('interview-recordings')
     .createSignedUrl(storagePath, 3600);
 
   if (signed.error) {
-    sendSupabaseError(res, signed.error);
+    sendDatabaseError(res, signed.error);
     return;
   }
 
@@ -869,12 +869,12 @@ router.get('/:id/recording', asyncHandler(async (req, res) => {
     return;
   }
 
-  const { data, error } = await supabase.storage
+  const { data, error } = await Database.storage
     .from('interview-recordings')
     .createSignedUrl(context.interview.recording_storage_path, 3600);
 
   if (error) {
-    sendSupabaseError(res, error);
+    sendDatabaseError(res, error);
     return;
   }
 
