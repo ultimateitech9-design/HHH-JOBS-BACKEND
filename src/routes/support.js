@@ -1,4 +1,5 @@
 const express = require('express');
+const { randomUUID } = require('crypto');
 const { ROLES } = require('../constants');
 const { Database, countRows, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
@@ -269,9 +270,11 @@ const assignWaitingSupportChats = async ({ stateName = '' } = {}) => {
 };
 
 const insertChatMessage = async ({ chatId, user, message, isInternal = false }) => {
+  const messageId = randomUUID();
   const { data, error } = await Database
     .from('support_chat_messages')
     .insert({
+      id: messageId,
       chat_id: chatId,
       author_id: user?.id || null,
       author_name: user?.name || user?.email || 'User',
@@ -958,9 +961,11 @@ router.post('/chats', asyncHandler(async (req, res) => {
   if (!chatRow) {
     const assignee = await chooseSupportAssignee(stateName);
     const isWaiting = !assignee;
+    const chatId = randomUUID();
     const { data: created, error } = await Database
       .from('support_chats')
       .insert({
+        id: chatId,
         visitor: req.user?.name || req.user?.email || 'Customer',
         customer_role: req.user?.role || null,
         contact_email: req.user?.email || null,
@@ -992,7 +997,7 @@ router.post('/chats', asyncHandler(async (req, res) => {
       .single();
 
     if (error) { sendDatabaseError(res, error); return; }
-    chatRow = created;
+    chatRow = created || { id: chatId, assignee_id: assignee?.id || null };
   }
 
   const messageResult = await insertChatMessage({ chatId: chatRow.id, user: req.user, message });
