@@ -1,5 +1,6 @@
 const { ROLES } = require('../constants');
 const { Database } = require('../db');
+const config = require('../config');
 
 const PLAN_TIERS = {
   free: 0,
@@ -53,6 +54,14 @@ const FEATURE_PLAN_REQUIREMENTS = {
   'campus.unlimited_drives': { minTier: 1, plans: ['campus_basic'] }
 };
 
+const isLivePaymentModeAllowed = (subscription = {}) => {
+  if (!config.razorpayRequireLive) return true;
+  const provider = String(subscription.provider || '').toLowerCase();
+  const isRazorpayBacked = provider === 'razorpay' || Boolean(subscription.provider_subscription_id);
+  if (!isRazorpayBacked) return true;
+  return String(subscription.meta?.razorpayKeyMode || '').toLowerCase() !== 'test';
+};
+
 const getUserActiveSubscription = async (userId, audienceRole) => {
   const { data, error } = await Database
     .from('role_plan_subscriptions')
@@ -66,6 +75,7 @@ const getUserActiveSubscription = async (userId, audienceRole) => {
 
   if (error || !data) return null;
   const status = String(data.status || '').toLowerCase();
+  if (!isLivePaymentModeAllowed(data)) return null;
   if (data.meta?.pendingAutopaySetup || data.meta?.pendingPlanChangeSetup) return null;
   if (!data.autopay_enabled && (status === 'trialing' || data.meta?.isTrial)) return null;
   if (data.ends_at && new Date(data.ends_at).getTime() < Date.now()) return null;
@@ -172,6 +182,7 @@ const attachPlanAccess = async (req, res, next) => {
 module.exports = {
   PLAN_TIERS,
   FEATURE_PLAN_REQUIREMENTS,
+  isLivePaymentModeAllowed,
   getUserPlanTier,
   checkFeatureAccess,
   requirePlanFeature,

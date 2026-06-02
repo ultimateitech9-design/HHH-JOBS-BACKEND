@@ -313,6 +313,21 @@ test('razorpay key mode detection separates test and live keys', () => {
   assert.equal(getRazorpayKeyMode(''), 'missing');
 });
 
+test('live-required plan access rejects Razorpay test-mode subscriptions', () => {
+  const config = require('../src/config');
+  const { isLivePaymentModeAllowed } = require('../src/middleware/planAccess');
+  const previousRequireLive = config.razorpayRequireLive;
+
+  config.razorpayRequireLive = true;
+  try {
+    assert.equal(isLivePaymentModeAllowed({ provider: 'razorpay', meta: { razorpayKeyMode: 'test' } }), false);
+    assert.equal(isLivePaymentModeAllowed({ provider: 'razorpay', meta: { razorpayKeyMode: 'live' } }), true);
+    assert.equal(isLivePaymentModeAllowed({ provider: 'manual', meta: { razorpayKeyMode: 'test' } }), true);
+  } finally {
+    config.razorpayRequireLive = previousRequireLive;
+  }
+});
+
 test('ensureRoleProfile seeds missing student profiles from legacy users without extra writes', async () => {
   const { ensureRoleProfile, buildProfileSeedFromUser } = require('../src/services/profileTables');
   const { Database, calls } = createProfileTablesDatabaseDouble();

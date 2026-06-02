@@ -67,6 +67,14 @@ const mergeMeta = (base = {}, patch = {}) => ({
   ...(base && typeof base === 'object' ? base : {}),
   ...(patch && typeof patch === 'object' ? patch : {})
 });
+const isSubscriptionPaymentModeAllowed = (subscription = {}) => {
+  const razorpayConfig = getRazorpayPublicConfig();
+  if (!razorpayConfig.requireLive) return true;
+  const isRazorpayBacked = normalizeLower(subscription.provider) === 'razorpay'
+    || Boolean(normalizeText(subscription.provider_subscription_id));
+  if (!isRazorpayBacked) return true;
+  return normalizeLower(subscription?.meta?.razorpayKeyMode) !== 'test';
+};
 const isMissingColumnError = (error = null) => (
   Boolean(error?.code)
   && (
@@ -1194,6 +1202,7 @@ const isSubscriptionStillUsable = (subscription = null) => {
   if (!subscription) return false;
   const status = normalizeLower(subscription.status);
   if (!ACTIVE_SUBSCRIPTION_STATUSES.has(status)) return false;
+  if (!isSubscriptionPaymentModeAllowed(subscription)) return false;
   if (subscription?.meta?.pendingAutopaySetup || subscription?.meta?.pendingPlanChangeSetup) return false;
   if (!subscription.autopay_enabled && (status === 'trialing' || subscription?.meta?.isTrial)) return false;
   if (!subscription.ends_at) return true;
@@ -1397,6 +1406,7 @@ const activateAutopayPlanChangeSubscription = async ({
     quantity: renewalQuantity,
     couponCode: existingMeta.renewalCouponCode || subscription.coupon_code || ''
   });
+  const razorpayConfig = getRazorpayPublicConfig();
   const nowIso = new Date().toISOString();
   const startsAt = nowIso;
   const endsAt = addDays(startsAt, plan.durationDays || 30);
@@ -1439,6 +1449,8 @@ const activateAutopayPlanChangeSubscription = async ({
         providerSubscriptionId: razorpaySubscriptionId,
         razorpayPaymentId,
         razorpayPaymentStatus: verifiedPayment?.status || null,
+        razorpayKeyMode: razorpayConfig.keyMode,
+        livePaymentVerified: razorpayConfig.keyMode === 'live',
         previousSubscriptionId: existingMeta.planChangeFromSubscriptionId || null,
         previousRolePlanSlug: existingMeta.previousRolePlanSlug || null
       }
@@ -1464,6 +1476,8 @@ const activateAutopayPlanChangeSubscription = async ({
     razorpaySignature,
     razorpayPaymentStatus: verifiedPayment?.status || null,
     razorpayPaymentAmount: verifiedPayment?.amount ? roundMoney(Number(verifiedPayment.amount) / 100) : null,
+    razorpayKeyMode: razorpayConfig.keyMode,
+    livePaymentVerified: razorpayConfig.keyMode === 'live',
     razorpayCustomerId: remoteSubscription.customer_id || null,
     razorpaySubscriptionStatus: remoteSubscription.status,
     autopayAuthenticatedAt: nowIso
@@ -1597,6 +1611,7 @@ const activateAutopayTrialSubscription = async ({
     quantity: renewalQuantity,
     couponCode: existingMeta.renewalCouponCode || subscription.coupon_code || ''
   });
+  const razorpayConfig = getRazorpayPublicConfig();
   const nowIso = new Date().toISOString();
   const trialDays = Math.max(1, parseInt(existingMeta.trialDays || plan.trialDays || plan.durationDays || 30, 10) || 30);
   const trialEndsAt = addDays(nowIso, trialDays);
@@ -1640,6 +1655,8 @@ const activateAutopayTrialSubscription = async ({
         providerSubscriptionId: razorpaySubscriptionId,
         razorpayPaymentId,
         razorpayPaymentStatus: verifiedPayment?.status || null,
+        razorpayKeyMode: razorpayConfig.keyMode,
+        livePaymentVerified: razorpayConfig.keyMode === 'live',
         renewalAmount: quote.totalAmount
       }
     };
@@ -1666,6 +1683,8 @@ const activateAutopayTrialSubscription = async ({
     razorpaySignature,
     razorpayPaymentStatus: verifiedPayment?.status || null,
     razorpayPaymentAmount: verifiedPayment?.amount ? roundMoney(Number(verifiedPayment.amount) / 100) : null,
+    razorpayKeyMode: razorpayConfig.keyMode,
+    livePaymentVerified: razorpayConfig.keyMode === 'live',
     razorpayCustomerId: remoteSubscription.customer_id || null,
     razorpaySubscriptionStatus: remoteSubscription.status,
     autopayAuthenticatedAt: nowIso
@@ -2081,6 +2100,8 @@ const confirmRolePlanAutopayPayment = async ({
     razorpaySignature,
     razorpayPaymentStatus: verifiedPayment?.status || null,
     razorpayPaymentAmount: verifiedPayment?.amount ? roundMoney(Number(verifiedPayment.amount) / 100) : null,
+    razorpayKeyMode: getRazorpayPublicConfig().keyMode,
+    livePaymentVerified: getRazorpayPublicConfig().keyMode === 'live',
     razorpayCustomerId: remoteSubscription.customer_id || null,
     razorpaySubscriptionStatus: remoteSubscription.status,
     autopayAuthenticatedAt: new Date().toISOString()
