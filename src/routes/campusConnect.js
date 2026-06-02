@@ -7,7 +7,7 @@ const { OTP_EXPIRY_MINUTES, ROLES, USER_STATUSES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { Database, ensureDatabaseConfig, sendDatabaseError } = require('../db');
-const { isValidUuid, extractUuidFromSlug, asyncHandler, normalizeEmail, stripUndefined } = require('../utils/helpers');
+const { isValidUuid, extractUuidFromSlug, asyncHandler, normalizeEmail, stripUndefined, buildSeoSlug } = require('../utils/helpers');
 const { createNotification } = require('../services/notifications');
 const { notifyUser } = require('../services/notificationOrchestrator');
 const { ensureRoleProfile } = require('../services/profileTables');
@@ -1334,6 +1334,7 @@ router.post('/drives', asyncHandler(async (req, res) => {
       college_id: collegeId,
       company_name: companyName,
       job_title: jobTitle,
+      seo_slug: buildSeoSlug(jobTitle, companyName, location),
       drive_date: normalizedDriveDate,
       drive_mode: driveMode || 'on-campus',
       location: location || null,
@@ -1428,6 +1429,11 @@ router.patch('/drives/:id', asyncHandler(async (req, res) => {
   const payload = stripUndefined({
     company_name: req.body?.companyName || undefined,
     job_title: req.body?.jobTitle || undefined,
+    seo_slug: buildSeoSlug(
+      req.body?.jobTitle || existingDrive.job_title,
+      req.body?.companyName || existingDrive.company_name,
+      req.body?.location || existingDrive.location
+    ),
     drive_date: normalizedDriveDateInput !== undefined ? normalizedDriveDateInput : undefined,
     drive_mode: req.body?.driveMode || undefined,
     location: req.body?.location || undefined,

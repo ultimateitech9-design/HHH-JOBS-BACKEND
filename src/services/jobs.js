@@ -1,6 +1,6 @@
 const { Database, sendDatabaseError } = require('../db');
 const { JOB_STATUSES, JOB_APPROVAL_STATUSES, ROLES } = require('../constants');
-const { normalizeEmail, stripUndefined, toArray, isValidUuid, extractUuidFromSlug } = require('../utils/helpers');
+const { normalizeEmail, stripUndefined, toArray, isValidUuid, extractUuidFromSlug, buildSeoSlug } = require('../utils/helpers');
 const { mapJobFromRow } = require('../utils/mappers');
 const { notifyUsersByRoles } = require('./notifications');
 const { notifyCompanySubscribersForJob } = require('./companySubscriptions');
@@ -186,10 +186,17 @@ const buildJobPayload = (body = {}) => {
     stateName,
     fallback: body.jobLocation ?? body.job_location
   });
+  const seoSlug = optionalText(body.seoSlug ?? body.seo_slug)
+    || buildSeoSlug(
+      body.jobTitle ?? body.job_title,
+      body.companyName ?? body.company_name,
+      primaryLocation
+    );
 
   return {
     job_title: body.jobTitle ?? body.job_title,
     company_name: body.companyName ?? body.company_name,
+    seo_slug: seoSlug || undefined,
     min_price: body.minPrice ?? body.min_price,
     max_price: body.maxPrice ?? body.max_price,
     salary_type: body.salaryType ?? body.salary_type,
@@ -681,10 +688,24 @@ const updateHrJob = async (req, res) => {
   }
 
   const didUpdateLocation = payload.job_locations !== undefined || payload.job_location !== undefined;
+  const effectiveJobLocationForSlug = didUpdateLocation
+    ? validation.normalizedLocations[0]
+    : payload.job_location !== undefined
+      ? payload.job_location
+      : existingJob.job_location;
+  const effectiveSeoSlug = optionalText(req.body?.seoSlug ?? req.body?.seo_slug)
+    || buildSeoSlug(
+      payload.job_title !== undefined ? payload.job_title : existingJob.job_title,
+      payload.company_name !== undefined ? payload.company_name : existingJob.company_name,
+      payload.city_name !== undefined ? payload.city_name : existingJob.city_name,
+      payload.district_name !== undefined ? payload.district_name : existingJob.district_name,
+      effectiveJobLocationForSlug
+    );
 
   const updateDoc = stripUndefined({
     ...payload,
     plan_slug: undefined,
+    seo_slug: effectiveSeoSlug || undefined,
     job_location: didUpdateLocation ? validation.normalizedLocations[0] : undefined,
     job_locations: didUpdateLocation ? validation.normalizedLocations : undefined,
     is_featured: plan.boostOnSearch,

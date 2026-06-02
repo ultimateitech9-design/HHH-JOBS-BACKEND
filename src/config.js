@@ -41,6 +41,27 @@ const configuredCorsOrigins = parseEnvList(
 );
 
 const isProduction = (process.env.NODE_ENV || 'development').toLowerCase() === 'production';
+const isHhhJobsProductionOrigin = (origin = '') => {
+  const rawOrigin = normalizeOrigin(origin);
+  if (!rawOrigin) return false;
+
+  try {
+    const normalizedUrl = /^[a-z]+:\/\//i.test(rawOrigin) ? rawOrigin : `https://${rawOrigin}`;
+    const hostname = new URL(normalizedUrl).hostname.toLowerCase();
+    return hostname === 'hhh-jobs.com' || hostname.endsWith('.hhh-jobs.com');
+  } catch {
+    return /(^|[/.])hhh-jobs\.com(?:[/:]|$)/i.test(rawOrigin);
+  }
+};
+const hasProductionWebOrigin = parseEnvList(
+  process.env.CORS_ORIGINS,
+  process.env.CLIENT_URLS,
+  process.env.FRONTEND_URL,
+  process.env.APP_URL,
+  process.env.WEB_URL,
+  process.env.OAUTH_CLIENT_URL,
+  process.env.CLIENT_URL
+).some(isHhhJobsProductionOrigin);
 
 const corsOrigins = configuredCorsOrigins.length === 0
   ? defaultOrigins.map(normalizeOrigin)
@@ -164,7 +185,9 @@ const config = {
   razorpayEnv: normalizeText(process.env.RAZORPAY_ENV || process.env.RAZORPAY_MODE).toLowerCase(),
   razorpayRequireLive: parseBoolean(
     process.env.RAZORPAY_REQUIRE_LIVE,
-    isProduction || ['live', 'production', 'prod'].includes(normalizeText(process.env.RAZORPAY_ENV || process.env.RAZORPAY_MODE).toLowerCase())
+    isProduction
+      || hasProductionWebOrigin
+      || ['live', 'production', 'prod'].includes(normalizeText(process.env.RAZORPAY_ENV || process.env.RAZORPAY_MODE).toLowerCase())
   ),
 
   // ── Web Push (VAPID) ───────────────────────────────────────────────────────

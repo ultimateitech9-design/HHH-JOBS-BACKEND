@@ -3,7 +3,7 @@ const { ROLES, USER_STATUSES, JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('.
 const { Database, countRows, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
-const { asyncHandler, normalizeEmail } = require('../utils/helpers');
+const { asyncHandler, normalizeEmail, buildSeoSlug } = require('../utils/helpers');
 const { getPasswordPolicyError } = require('../utils/passwordPolicy');
 const { upsertRoleProfile } = require('../services/profileTables');
 const { normalizeCompanyKey } = require('../services/companyDirectory');
@@ -237,10 +237,13 @@ const prepareDataEntryHrJob = async ({ title = '', entryData = {}, registeredCom
     throw error;
   }
 
+  const seoSlug = buildSeoSlug(jobTitle, registeredCompany.companyName, cityName || districtName || jobLocation);
+
   return {
     jobInsert: {
       job_title: jobTitle,
       company_name: registeredCompany.companyName,
+      seo_slug: seoSlug,
       min_price: minPrice || null,
       max_price: maxPrice,
       salary_type: DATA_ENTRY_JOB_SALARY_TYPE,
@@ -269,6 +272,7 @@ const prepareDataEntryHrJob = async ({ title = '', entryData = {}, registeredCom
     jobUpdate: {
       job_title: jobTitle,
       company_name: registeredCompany.companyName,
+      seo_slug: seoSlug,
       min_price: minPrice || null,
       max_price: maxPrice,
       salary_type: DATA_ENTRY_JOB_SALARY_TYPE,
