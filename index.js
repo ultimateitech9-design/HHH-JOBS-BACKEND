@@ -6,7 +6,7 @@ require('dotenv').config();
 
 const config = require('./src/config');
 const { ensureDatabaseConfig, Database, sendDatabaseError, closeDatabasePool } = require('./src/db');
-const { asyncHandler, isValidUuid, normalizeEmail } = require('./src/utils/helpers');
+const { asyncHandler, extractUuidFromSlug, isValidUuid, normalizeEmail } = require('./src/utils/helpers');
 const { mapJobFromRow } = require('./src/utils/mappers');
 const { requireAuth, optionalAuth } = require('./src/middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('./src/middleware/roles');
@@ -256,7 +256,7 @@ app.get('/public/govt-jobs', automationProtection, publicCatalogRateLimiter, set
 app.get('/public/govt-jobs/:jobId', automationProtection, publicCatalogRateLimiter, setGovtJobsCacheHeaders, asyncHandler(async (req, res) => {
   if (!ensureDatabaseConfig(res)) return;
 
-  const { jobId } = req.params;
+  const jobId = extractUuidFromSlug(req.params.jobId);
   if (!isValidUuid(jobId)) {
     res.status(400).send({ status: false, message: 'Invalid government job id' });
     return;
@@ -328,7 +328,8 @@ app.get('/all-jobs', automationProtection, publicCatalogRateLimiter, setCatalogC
 
 app.get('/all-jobs/:id', automationProtection, publicCatalogRateLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!ensureDatabaseConfig(res)) return;
-  const { data, error, statusCode } = await getJobByIdAndOptionallyTrackView(req.params.id, true);
+  const jobId = extractUuidFromSlug(req.params.id);
+  const { data, error, statusCode } = await getJobByIdAndOptionallyTrackView(jobId, true);
   if (error) {
     res.status(statusCode).send({ status: false, message: error.message });
     return;

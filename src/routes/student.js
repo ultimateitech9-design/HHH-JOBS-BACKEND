@@ -4,7 +4,7 @@ const { ROLES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { Database, ensureDatabaseConfig, sendDatabaseError } = require('../db');
-const { isValidUuid, toArray, asyncHandler, normalizeEmail, stripUndefined } = require('../utils/helpers');
+const { isValidUuid, extractUuidFromSlug, toArray, asyncHandler, normalizeEmail, stripUndefined } = require('../utils/helpers');
 const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
 const { extractResumeText } = require('../utils/resumeExtraction');
 const { extractStudentProfileFromResume } = require('../utils/studentResumeProfileImport');
@@ -961,7 +961,7 @@ router.get('/govt-jobs', asyncHandler(async (req, res) => {
 
 router.get('/govt-jobs/:jobId', asyncHandler(async (req, res) => {
   const targetUserId = getTargetStudentId(req, 'query');
-  const { jobId } = req.params;
+  const jobId = extractUuidFromSlug(req.params.jobId);
 
   if (!isValidUuid(jobId)) {
     res.status(400).send({ status: false, message: 'Invalid government job id' });
@@ -981,7 +981,7 @@ router.put('/govt-jobs/:jobId/tracker', asyncHandler(async (req, res) => {
   if (!ensureGovtJobTrackerStudent(req, res)) return;
 
   const targetUserId = getTargetStudentId(req, 'body');
-  const { jobId } = req.params;
+  const jobId = extractUuidFromSlug(req.params.jobId);
 
   if (!isValidUuid(jobId)) {
     res.status(400).send({ status: false, message: 'Invalid government job id' });
@@ -1011,7 +1011,7 @@ router.post('/govt-jobs/:jobId/mark-applied', asyncHandler(async (req, res) => {
   if (!ensureGovtJobTrackerStudent(req, res)) return;
 
   const targetUserId = getTargetStudentId(req, 'body');
-  const { jobId } = req.params;
+  const jobId = extractUuidFromSlug(req.params.jobId);
 
   if (!isValidUuid(jobId)) {
     res.status(400).send({ status: false, message: 'Invalid government job id' });
@@ -1034,7 +1034,7 @@ router.post('/govt-jobs/:jobId/reminder', asyncHandler(async (req, res) => {
   if (!ensureGovtJobTrackerStudent(req, res)) return;
 
   const targetUserId = getTargetStudentId(req, 'body');
-  const { jobId } = req.params;
+  const jobId = extractUuidFromSlug(req.params.jobId);
 
   if (!isValidUuid(jobId)) {
     res.status(400).send({ status: false, message: 'Invalid government job id' });
@@ -1076,7 +1076,7 @@ router.get('/campus-connect', asyncHandler(async (req, res) => {
 
 router.post('/campus-connect/drives/:driveId/apply', asyncHandler(async (req, res) => {
   const targetUserId = getTargetStudentId(req, 'body');
-  const { driveId } = req.params;
+  const driveId = extractUuidFromSlug(req.params.driveId);
 
   if (!isValidUuid(driveId)) {
     res.status(400).send({ status: false, message: 'Invalid drive id' });
@@ -1367,7 +1367,7 @@ router.get('/recommendations', asyncHandler(async (req, res) => {
 }));
 
 router.post('/recommendations/view-history/:jobId', asyncHandler(async (req, res) => {
-  const jobId = req.params.jobId;
+  const jobId = extractUuidFromSlug(req.params.jobId);
   const targetUserId = getTargetStudentId(req, 'body');
 
   if (!isValidUuid(jobId)) {
@@ -1972,7 +1972,7 @@ router.get('/saved-jobs', asyncHandler(async (req, res) => {
 router.post('/saved-jobs/:jobId', asyncHandler(async (req, res) => {
   const targetUserId = getTargetStudentId(req, 'body');
 
-  const { jobId } = req.params;
+  const jobId = extractUuidFromSlug(req.params.jobId);
   if (!isValidUuid(jobId)) {
     res.status(400).send({ status: false, message: 'Invalid job id' });
     return;
@@ -1999,7 +1999,7 @@ router.post('/saved-jobs/:jobId', asyncHandler(async (req, res) => {
 router.delete('/saved-jobs/:jobId', asyncHandler(async (req, res) => {
   const targetUserId = getTargetStudentId(req, 'body');
 
-  const { jobId } = req.params;
+  const jobId = extractUuidFromSlug(req.params.jobId);
   if (!isValidUuid(jobId)) {
     res.status(400).send({ status: false, message: 'Invalid job id' });
     return;

@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 
-const { normalizeEmail, clamp, toArray, isValidUuid, maskEmail, maskMobile } = require('../src/utils/helpers');
+const { normalizeEmail, clamp, toArray, extractUuidFromSlug, isValidUuid, maskEmail, maskMobile } = require('../src/utils/helpers');
 const { mapPublicUser, mapJobFromRow, mapApplicationFromRow } = require('../src/utils/mappers');
 const { ROLES, JOB_STATUSES, PRICING_PLAN_SLUGS } = require('../src/constants');
 const { normalizePlan, validateJobPayloadAgainstPlan, calculateQuote, calculateEntitlements } = require('../src/modules/pricing/engine');
@@ -204,6 +204,9 @@ test('helper utilities normalize and mask values safely', () => {
   assert.equal(clamp(25, 1, 20), 20);
   assert.deepEqual(toArray(' a, b , c '), ['a', 'b', 'c']);
   assert.equal(isValidUuid('550e8400-e29b-41d4-a716-446655440000'), true);
+  assert.equal(isValidUuid('8554f053-c7ba-f417-b5da-b9862ec05236'), true);
+  assert.equal(extractUuidFromSlug('upsc-civil-services-8554f053-c7ba-f417-b5da-b9862ec05236'), '8554f053-c7ba-f417-b5da-b9862ec05236');
+  assert.equal(isValidUuid('upsc-civil-services-8554f053-c7ba-f417-b5da-b9862ec05236'), false);
   assert.equal(maskEmail('john.doe@example.com'), 'jo******@example.com');
   assert.equal(maskMobile('+91 98765 43210'), '********3210');
 });

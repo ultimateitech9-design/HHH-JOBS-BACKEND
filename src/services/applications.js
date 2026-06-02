@@ -1,6 +1,6 @@
 const { Database, sendDatabaseError } = require('../db');
 const { JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
-const { normalizeEmail } = require('../utils/helpers');
+const { extractUuidFromSlug, normalizeEmail } = require('../utils/helpers');
 const { mapApplicationFromRow } = require('../utils/mappers');
 const { createNotification } = require('./notifications');
 const { notifyUser } = require('./notificationOrchestrator');
@@ -204,7 +204,7 @@ const submitApplicationForUser = async ({
 };
 
 const applyToJob = async (req, res) => {
-  const jobId = req.params.id;
+  const jobId = extractUuidFromSlug(req.params.id);
 
   try {
     const result = await submitApplicationForUser({

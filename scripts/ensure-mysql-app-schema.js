@@ -342,6 +342,41 @@ const ensureJobFacetSchema = async (db) => {
   );
 };
 
+const backfillSeoSlug = async (db, table, expression) => {
+  try {
+    await db.execute(`
+      UPDATE ${tableName(table)}
+      SET ${columnName('seo_slug')} = LEFT(
+        TRIM(BOTH '-' FROM LOWER(REGEXP_REPLACE(${expression}, '[^[:alnum:]]+', '-'))),
+        191
+      )
+      WHERE ${columnName('seo_slug')} IS NULL OR ${columnName('seo_slug')} = ''
+    `);
+  } catch (error) {
+    console.warn(`[schema] Could not backfill ${table}.seo_slug: ${error.message}`);
+  }
+};
+
+const ensureSeoSlugSchema = async (db) => {
+  if (await tableExists(db, 'jobs')) {
+    await addColumnIfMissing(db, 'jobs', 'seo_slug', 'VARCHAR(191) NULL');
+    await addIndexIfMissing(db, 'jobs', 'jobs_seo_slug_idx', '(`seo_slug`)');
+    await backfillSeoSlug(db, 'jobs', "CONCAT_WS('-', `job_title`, `company_name`, `city_name`, `district_name`, `job_location`)");
+  }
+
+  if (await tableExists(db, 'govt_jobs')) {
+    await addColumnIfMissing(db, 'govt_jobs', 'seo_slug', 'VARCHAR(191) NULL');
+    await addIndexIfMissing(db, 'govt_jobs', 'idx_govt_jobs_seo_slug', '(`seo_slug`)');
+    await backfillSeoSlug(db, 'govt_jobs', "CONCAT_WS('-', `title`, `organization`, `category`, `state`)");
+  }
+
+  if (await tableExists(db, 'campus_drives')) {
+    await addColumnIfMissing(db, 'campus_drives', 'seo_slug', 'VARCHAR(191) NULL');
+    await addIndexIfMissing(db, 'campus_drives', 'campus_drives_seo_slug_idx', '(`seo_slug`)');
+    await backfillSeoSlug(db, 'campus_drives', "CONCAT_WS('-', `job_title`, `company_name`, `location`)");
+  }
+};
+
 const ensureSupportChatSchema = async (db) => {
   await db.execute(`
     CREATE TABLE IF NOT EXISTS ${tableName('support_chats')} (
@@ -562,6 +597,7 @@ const ensureMySqlAppSchema = async () => {
   try {
     await ensureMissingFeatureTables(db);
     await ensureJobFacetSchema(db);
+    await ensureSeoSlugSchema(db);
     await ensureSupportChatSchema(db);
     await ensureIndexesForExistingTables(db);
     const relaxedColumns = await relaxMigratedTextJsonColumns(db);

@@ -5,7 +5,7 @@ const { ROLES, USER_STATUSES, JOB_STATUSES, APPLICATION_STATUSES } = require('..
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('../middleware/roles');
 const { Database, sendDatabaseError } = require('../db');
-const { isValidUuid, toArray, maskEmail, maskMobile, asyncHandler } = require('../utils/helpers');
+const { isValidUuid, extractUuidFromSlug, toArray, maskEmail, maskMobile, asyncHandler } = require('../utils/helpers');
 const { resolveStructuredLocation } = require('../utils/geography');
 const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
 const { notifyUser } = require('../services/notificationOrchestrator');
@@ -212,7 +212,7 @@ router.patch('/jobs/:id', requireApprovedHr, asyncHandler(updateHrJob));
 router.delete('/jobs/:id', requireApprovedHr, asyncHandler(deleteHrJob));
 
 router.post('/jobs/:id/payment', requireApprovedHr, asyncHandler(async (req, res) => {
-  const jobId = req.params.id;
+  const jobId = extractUuidFromSlug(req.params.id);
   const job = await assertJobOwnership(jobId, req.user, res);
   if (!job) return;
 
@@ -249,7 +249,7 @@ router.post('/jobs/:id/payment', requireApprovedHr, asyncHandler(async (req, res
 }));
 
 router.patch('/jobs/:id/close', requireApprovedHr, asyncHandler(async (req, res) => {
-  const jobId = req.params.id;
+  const jobId = extractUuidFromSlug(req.params.id);
   const existingJob = await assertJobOwnership(jobId, req.user, res);
   if (!existingJob) return;
 
@@ -289,7 +289,7 @@ router.get('/jobs', asyncHandler(async (req, res) => {
 }));
 
 router.get('/jobs/:id/applicants', requireApprovedHr, asyncHandler(async (req, res) => {
-  const jobId = req.params.id;
+  const jobId = extractUuidFromSlug(req.params.id);
   const job = await assertJobOwnership(jobId, req.user, res);
   if (!job) return;
   const canViewContacts = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) || Boolean(job.contact_details_visible);
@@ -1786,7 +1786,7 @@ router.delete('/interviews/:id', requireApprovedHr, asyncHandler(async (req, res
 // Bulk application action
 // =============================================
 router.post('/jobs/:id/applicants/bulk', requireApprovedHr, asyncHandler(async (req, res) => {
-  const jobId = req.params.id;
+  const jobId = extractUuidFromSlug(req.params.id);
   const job = await assertJobOwnership(jobId, req.user, res);
   if (!job) return;
 
@@ -2593,7 +2593,7 @@ router.get('/campus-drives', asyncHandler(async (req, res) => {
 
 // GET /hr/campus-drives/:driveId/applications — view applicants for a specific drive
 router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res) => {
-  const { driveId } = req.params;
+  const driveId = extractUuidFromSlug(req.params.driveId);
   if (!isValidUuid(driveId)) {
     res.status(400).send({ status: false, message: 'Invalid drive id.' });
     return;
@@ -2829,7 +2829,8 @@ router.get('/campus-drives/:driveId/applications', asyncHandler(async (req, res)
 
 // PATCH /hr/campus-drives/:driveId/applications/:applicationId — company updates a student result
 router.patch('/campus-drives/:driveId/applications/:applicationId', asyncHandler(async (req, res) => {
-  const { driveId, applicationId } = req.params;
+  const driveId = extractUuidFromSlug(req.params.driveId);
+  const applicationId = extractUuidFromSlug(req.params.applicationId);
   if (!isValidUuid(driveId) || !isValidUuid(applicationId)) {
     res.status(400).send({ status: false, message: 'Invalid drive or application id.' });
     return;

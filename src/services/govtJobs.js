@@ -168,6 +168,7 @@ const mapGovtJob = (row = {}) => {
 
   return {
     id: row.id,
+    seoSlug: row.seo_slug || '',
     title: row.title || '',
     organization: row.organization || '',
     department: row.department || '',
@@ -230,6 +231,7 @@ const ensureGovtJobsSchema = async () => {
       CREATE TABLE IF NOT EXISTS govt_jobs (
         id VARCHAR(36) PRIMARY KEY,
         title VARCHAR(220) NOT NULL,
+        seo_slug VARCHAR(191) NULL,
         organization VARCHAR(220) NOT NULL,
         department VARCHAR(220) NULL,
         vacancies INT NULL,
@@ -269,6 +271,7 @@ const ensureGovtJobsSchema = async () => {
         UNIQUE KEY uq_govt_jobs_title_org (title, organization),
         KEY idx_govt_jobs_active_last_date (is_active, last_date),
         KEY idx_govt_jobs_category (category),
+        KEY idx_govt_jobs_seo_slug (seo_slug),
         KEY idx_govt_jobs_state (state),
         KEY idx_govt_jobs_post_type (post_type),
         KEY idx_govt_jobs_review_status (review_status)
@@ -299,6 +302,7 @@ const ensureGovtJobsSchema = async () => {
     `);
 
     const govtJobColumns = [
+      ['seo_slug', 'VARCHAR(191) NULL'],
       ['department', 'VARCHAR(220) NULL'],
       ['qualification', "VARCHAR(255) NOT NULL DEFAULT 'As per official notification'"],
       ['qual_level', "VARCHAR(64) NOT NULL DEFAULT ''"],
@@ -351,6 +355,7 @@ const ensureGovtJobsSchema = async () => {
 
     await ensureIndex(db, 'govt_jobs', 'idx_govt_jobs_post_type', 'ALTER TABLE govt_jobs ADD KEY idx_govt_jobs_post_type (post_type)');
     await ensureIndex(db, 'govt_jobs', 'idx_govt_jobs_review_status', 'ALTER TABLE govt_jobs ADD KEY idx_govt_jobs_review_status (review_status)');
+    await ensureIndex(db, 'govt_jobs', 'idx_govt_jobs_seo_slug', 'ALTER TABLE govt_jobs ADD KEY idx_govt_jobs_seo_slug (seo_slug)');
     await ensureIndex(db, 'student_govt_job_trackers', 'idx_student_govt_tracker_reminder', 'ALTER TABLE student_govt_job_trackers ADD KEY idx_student_govt_tracker_reminder (reminder_enabled, reminder_at, reminder_sent_at)');
     await ensureIndex(db, 'student_govt_job_trackers', 'idx_student_govt_tracker_expiry', 'ALTER TABLE student_govt_job_trackers ADD KEY idx_student_govt_tracker_expiry (reminder_enabled, expiry_notified_at)');
   })();

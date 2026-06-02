@@ -5,7 +5,7 @@ const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { Database, sendDatabaseError } = require('../db');
 const { runAtsAnalysis } = require('../utils/ats');
 const { extractResumeText } = require('../utils/resumeExtraction');
-const { clamp, isValidUuid, asyncHandler } = require('../utils/helpers');
+const { clamp, extractUuidFromSlug, isValidUuid, asyncHandler } = require('../utils/helpers');
 const { enhanceAtsAnalysisWithAi } = require('../services/atsAi');
 const { enqueueAtsCheckPostProcessing } = require('../services/sideEffectQueue');
 
@@ -193,7 +193,7 @@ router.post('/check-preview', asyncHandler(async (req, res) => {
 }));
 
 router.post('/check/:jobId', asyncHandler(async (req, res) => {
-  const { jobId } = req.params;
+  const jobId = extractUuidFromSlug(req.params.jobId);
   const source = String(req.body?.source || 'profile_resume').toLowerCase();
   const applicationId = req.body?.applicationId || null;
 
@@ -286,7 +286,7 @@ router.get('/history', asyncHandler(async (req, res) => {
   const targetUserId = req.user.role === ROLES.ADMIN && isValidUuid(req.query.userId)
     ? req.query.userId
     : req.user.id;
-  const jobId = String(req.query.jobId || '').trim();
+  const jobId = extractUuidFromSlug(req.query.jobId);
 
   let query = Database
     .from('ats_checks')

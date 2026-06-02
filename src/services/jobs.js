@@ -1,6 +1,6 @@
 const { Database, sendDatabaseError } = require('../db');
 const { JOB_STATUSES, JOB_APPROVAL_STATUSES, ROLES } = require('../constants');
-const { normalizeEmail, stripUndefined, toArray, isValidUuid } = require('../utils/helpers');
+const { normalizeEmail, stripUndefined, toArray, isValidUuid, extractUuidFromSlug } = require('../utils/helpers');
 const { mapJobFromRow } = require('../utils/mappers');
 const { notifyUsersByRoles } = require('./notifications');
 const { notifyCompanySubscribersForJob } = require('./companySubscriptions');
@@ -576,7 +576,7 @@ const createHrJob = async (req, res) => {
 };
 
 const updateHrJob = async (req, res) => {
-  const jobId = req.params.id;
+  const jobId = extractUuidFromSlug(req.params.id);
   const existingJob = await assertJobOwnership(jobId, req.user, res);
   if (!existingJob) return;
 
@@ -745,7 +745,7 @@ const updateHrJob = async (req, res) => {
 };
 
 const deleteHrJob = async (req, res) => {
-  const jobId = req.params.id;
+  const jobId = extractUuidFromSlug(req.params.id);
   const existingJob = await assertJobOwnership(jobId, req.user, res);
   if (!existingJob) return;
 

@@ -14,7 +14,15 @@ const toArray = (value) => {
   return [];
 };
 
-const isValidUuid = (value = '') => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value));
+const UUID_FRAGMENT_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const extractUuidFromSlug = (value = '') => {
+  const match = String(value || '').match(UUID_FRAGMENT_PATTERN);
+  return match ? match[0].toLowerCase() : '';
+};
+
+const isValidUuid = (value = '') => UUID_PATTERN.test(String(value || '').trim());
 
 const maskEmail = (email = '') => {
   const value = String(email || '').trim();
@@ -51,6 +59,7 @@ module.exports = {
   stripUndefined,
   clamp,
   toArray,
+  extractUuidFromSlug,
   isValidUuid,
   maskEmail,
   maskMobile,

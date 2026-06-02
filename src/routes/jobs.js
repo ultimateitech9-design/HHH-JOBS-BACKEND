@@ -6,7 +6,7 @@ const { requireActiveUser, requireApprovedHr, requireRole } = require('../middle
 const { createRateLimitMiddleware, resolveRequestKey } = require('../middleware/rateLimit');
 const { createAutomationProtection, createBrowserWriteProtection } = require('../middleware/requestProtection');
 const { mapJobFromRow } = require('../utils/mappers');
-const { normalizeEmail, clamp, asyncHandler } = require('../utils/helpers');
+const { normalizeEmail, clamp, asyncHandler, extractUuidFromSlug } = require('../utils/helpers');
 const { applyJobFilters, createHrJob, updateHrJob, deleteHrJob, getJobByIdAndOptionallyTrackView } = require('../services/jobs');
 const { applyToJob } = require('../services/applications');
 const { buildCompanyBrandIndex, resolveCompanyBrand } = require('../services/companyBranding');
@@ -773,7 +773,8 @@ router.get('/:id', automationProtection, publicJobsReadLimiter, setCatalogCacheH
     return;
   }
 
-  const { data, error, statusCode } = await getJobByIdAndOptionallyTrackView(req.params.id, true);
+  const jobId = extractUuidFromSlug(req.params.id);
+  const { data, error, statusCode } = await getJobByIdAndOptionallyTrackView(jobId, true);
   if (error) {
     res.status(statusCode).send({ status: false, message: error.message });
     return;

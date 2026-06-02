@@ -7,7 +7,7 @@ const { OTP_EXPIRY_MINUTES, ROLES, USER_STATUSES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { Database, ensureDatabaseConfig, sendDatabaseError } = require('../db');
-const { isValidUuid, asyncHandler, normalizeEmail, stripUndefined } = require('../utils/helpers');
+const { isValidUuid, extractUuidFromSlug, asyncHandler, normalizeEmail, stripUndefined } = require('../utils/helpers');
 const { createNotification } = require('../services/notifications');
 const { notifyUser } = require('../services/notificationOrchestrator');
 const { ensureRoleProfile } = require('../services/profileTables');
@@ -1187,7 +1187,7 @@ router.patch('/students/:id', asyncHandler(async (req, res) => {
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  const { id } = req.params;
+  const id = extractUuidFromSlug(req.params.id);
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid student id.' }); return; }
 
   const payload = stripUndefined({
@@ -1221,7 +1221,7 @@ router.delete('/students/:id', asyncHandler(async (req, res) => {
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  const { id } = req.params;
+  const id = extractUuidFromSlug(req.params.id);
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid student id.' }); return; }
 
   const { error } = await Database
@@ -1377,7 +1377,7 @@ router.patch('/drives/:id', asyncHandler(async (req, res) => {
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  const { id } = req.params;
+  const id = extractUuidFromSlug(req.params.id);
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid drive id.' }); return; }
 
   const existingResponse = await Database
@@ -1465,7 +1465,7 @@ router.get('/drives/:id/applications', asyncHandler(async (req, res) => {
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  const { id } = req.params;
+  const id = extractUuidFromSlug(req.params.id);
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid drive id.' }); return; }
 
   const driveResponse = await Database
@@ -1501,7 +1501,7 @@ router.patch('/drives/:driveId/applications', asyncHandler(async (req, res) => {
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  const { driveId } = req.params;
+  const driveId = extractUuidFromSlug(req.params.driveId);
   if (!isValidUuid(driveId)) {
     res.status(400).send({ status: false, message: 'Invalid drive id.' });
     return;
@@ -1621,7 +1621,8 @@ router.patch('/drives/:driveId/applications/:applicationId', asyncHandler(async 
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  const { driveId, applicationId } = req.params;
+  const driveId = extractUuidFromSlug(req.params.driveId);
+  const applicationId = extractUuidFromSlug(req.params.applicationId);
   if (!isValidUuid(driveId) || !isValidUuid(applicationId)) {
     res.status(400).send({ status: false, message: 'Invalid drive or application id.' });
     return;
@@ -1707,7 +1708,7 @@ router.delete('/drives/:id', asyncHandler(async (req, res) => {
   const collegeId = await getCollegeId(req.user.id);
   if (!collegeId) { res.status(404).send({ status: false, message: 'College profile not found.' }); return; }
 
-  const { id } = req.params;
+  const id = extractUuidFromSlug(req.params.id);
   if (!isValidUuid(id)) { res.status(400).send({ status: false, message: 'Invalid drive id.' }); return; }
 
   const { error } = await Database

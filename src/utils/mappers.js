@@ -37,6 +37,7 @@ const mapJobFromRow = (row) => ({
   companyId: row.company_id || null,
   companyKey: row.company_key || '',
   companySlug: row.company_slug || '',
+  seoSlug: row.seo_slug || '',
   status: row.status,
   approvalStatus: row.approval_status,
   approvalNote: row.approval_note,
