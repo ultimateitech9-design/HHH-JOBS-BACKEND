@@ -123,11 +123,43 @@ else
   ensure_env_if_missing .env RAZORPAY_WEBHOOK_SECRET ""
 fi
 
+if [ -n "${RAZORPAY_KEY_ID:-}" ]; then
+  upsert_env .env RAZORPAY_KEY_ID "$RAZORPAY_KEY_ID"
+else
+  ensure_env_if_missing .env RAZORPAY_KEY_ID ""
+fi
+
+if [ -n "${RAZORPAY_KEY_SECRET:-}" ]; then
+  upsert_env .env RAZORPAY_KEY_SECRET "$RAZORPAY_KEY_SECRET"
+else
+  ensure_env_if_missing .env RAZORPAY_KEY_SECRET ""
+fi
+
+upsert_env .env RAZORPAY_REQUIRE_LIVE "${RAZORPAY_REQUIRE_LIVE:-true}"
+
 if ! grep -qE '^RAZORPAY_WEBHOOK_SECRET=.+$' .env; then
   echo "WARNING: RAZORPAY_WEBHOOK_SECRET is blank. Set it in $BACKEND_SRC/.env for Razorpay webhooks."
 fi
 
+if grep -qE '^RAZORPAY_KEY_ID=rzp_test_' .env; then
+  echo "ERROR: Production deploy is configured with a Razorpay test key. Set RAZORPAY_KEY_ID to a rzp_live_ key."
+  exit 1
+fi
+
+if grep -qiE '^RAZORPAY_REQUIRE_LIVE=(1|true|yes|on)$' .env; then
+  if ! grep -qE '^RAZORPAY_KEY_ID=rzp_live_' .env; then
+    echo "ERROR: RAZORPAY_REQUIRE_LIVE is enabled but RAZORPAY_KEY_ID is not a rzp_live_ key."
+    exit 1
+  fi
+
+  if ! grep -qE '^RAZORPAY_KEY_SECRET=.+$' .env; then
+    echo "ERROR: RAZORPAY_REQUIRE_LIVE is enabled but RAZORPAY_KEY_SECRET is blank."
+    exit 1
+  fi
+fi
+
 npm ci --omit=dev
+npm run ensure:mysql-schema
 
 echo "===== RESTART SERVICES ====="
 systemctl restart hhh-jobs-backend
