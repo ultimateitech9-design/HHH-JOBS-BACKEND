@@ -956,7 +956,7 @@ router.get('/govt-jobs', asyncHandler(async (req, res) => {
     }
   });
 
-  res.send({ status: true, ...result });
+  res.send({ status: true, viewer: { canTrackGovtJobs: req.user?.role === ROLES.STUDENT }, ...result });
 }));
 
 router.get('/govt-jobs/:jobId', asyncHandler(async (req, res) => {
@@ -974,7 +974,7 @@ router.get('/govt-jobs/:jobId', asyncHandler(async (req, res) => {
     return;
   }
 
-  res.send({ status: true, job });
+  res.send({ status: true, viewer: { canTrackGovtJobs: req.user?.role === ROLES.STUDENT }, job });
 }));
 
 router.put('/govt-jobs/:jobId/tracker', asyncHandler(async (req, res) => {

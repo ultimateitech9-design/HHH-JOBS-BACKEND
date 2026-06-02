@@ -103,6 +103,8 @@ const mapGovtJob = (row = {}) => {
     ageMax: row.age_max == null ? null : Number(row.age_max),
     lastDate,
     startDate: toIsoOrNull(row.start_date),
+    examDate: toIsoOrNull(row.exam_date),
+    resultDate: toIsoOrNull(row.result_date),
     appFee: row.app_fee || '',
     state: row.state || '',
     category: row.category || '',
@@ -120,6 +122,8 @@ const mapGovtJob = (row = {}) => {
     whoCanApply: row.who_can_apply || '',
     selectionProcess: row.selection_process || '',
     howToApply: row.how_to_apply || '',
+    officialLastCheckedAt: toIsoOrNull(row.official_last_checked_at),
+    verifiedAt: toIsoOrNull(row.verified_at),
     isActive: toBoolean(row.is_active),
     isFeatured: toBoolean(row.is_featured),
     seededDemo: toBoolean(row.seeded_demo),
@@ -550,6 +554,7 @@ const getGovtJobById = async ({ userId, jobId } = {}) => {
     LEFT JOIN student_govt_job_trackers t
       ON t.govt_job_id = g.id AND t.user_id = ?
     WHERE g.id = ?
+      AND (g.review_status IS NULL OR UPPER(g.review_status) <> 'REJECTED')
     LIMIT 1
   `, [userId || '', jobId]);
 
