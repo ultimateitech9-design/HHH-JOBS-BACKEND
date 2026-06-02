@@ -58,6 +58,7 @@ const config = {
   queueWorkerConcurrency: Number(process.env.QUEUE_WORKER_CONCURRENCY) > 0 ? Number(process.env.QUEUE_WORKER_CONCURRENCY) : 2,
   queueRetryLimit: Number(process.env.QUEUE_RETRY_LIMIT) > 0 ? Number(process.env.QUEUE_RETRY_LIMIT) : 3,
   queueBlockTimeoutSeconds: Number(process.env.QUEUE_BLOCK_TIMEOUT_SECONDS) > 0 ? Number(process.env.QUEUE_BLOCK_TIMEOUT_SECONDS) : 2,
+  disableSchedulers: parseBoolean(process.env.DISABLE_SCHEDULERS, false),
 
   // ── Supabase ─────────────────────────────────────────────────────────────────
   supabaseUrl:

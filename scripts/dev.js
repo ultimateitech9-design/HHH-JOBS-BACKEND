@@ -6,6 +6,7 @@ const { execFileSync, spawn, spawnSync } = require('child_process');
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 5500;
 const ROOT_DIR = path.resolve(__dirname, '..');
+require('dotenv').config({ path: path.join(ROOT_DIR, '.env') });
 const SERVER_ENTRY = path.join(ROOT_DIR, 'index.js');
 const NODEMON_BIN = require.resolve('nodemon/bin/nodemon.js');
 const NODEMON_IGNORE_PATTERNS = ['logs/**'];
@@ -24,7 +25,7 @@ const isPortBusy = (targetPort) => new Promise((resolve) => {
     tester.close(() => resolve(false));
   });
 
-  tester.listen(targetPort, HOST);
+  tester.listen(targetPort);
 });
 
 const request = (pathname) => new Promise((resolve, reject) => {
@@ -167,13 +168,9 @@ const main = async () => {
     const sameApiRunning = await looksLikeHhhApi();
 
     if (sameApiRunning && pid) {
-      console.log(`Existing HHH Job API detected on port ${port} (PID ${pid}). Restarting it under nodemon...`);
-      killProcess(pid);
-
-      const portFreed = await waitForPortToClear(port);
-      if (!portFreed) {
-        throw new Error(`Port ${port} did not become free after stopping PID ${pid}`);
-      }
+      console.log(`HHH Job API is already running on port ${port} (PID ${pid}).`);
+      console.log('Stop that terminal/process first if you want to restart it.');
+      return;
     } else {
       const ownerText = pid ? ` by PID ${pid}` : '';
       throw new Error(

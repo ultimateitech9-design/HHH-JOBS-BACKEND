@@ -340,8 +340,14 @@ const logStartupMode = () => {
 let server = null;
 let externalJobsScheduler = null;
 let autoApplyScheduler = null;
+let schedulerDisabledKeepAlive = null;
 
 const startExternalJobsScheduler = () => {
+  if (config.disableSchedulers) {
+    console.warn('[ExternalJobs Scheduler] Skipped - schedulers are disabled');
+    return;
+  }
+
   if (shouldUseUpstreamProxy) {
     console.warn('[ExternalJobs Scheduler] Skipped - local proxy mode is enabled');
     return;
@@ -360,6 +366,11 @@ const startExternalJobsScheduler = () => {
 };
 
 const startAutoApplyScheduler = () => {
+  if (config.disableSchedulers) {
+    console.warn('[AutoApply Scheduler] Skipped - schedulers are disabled');
+    return;
+  }
+
   if (shouldUseUpstreamProxy) {
     console.warn('[AutoApply Scheduler] Skipped - local proxy mode is enabled');
     return;
@@ -378,6 +389,14 @@ const startAutoApplyScheduler = () => {
   }
 };
 
+const startSchedulerDisabledKeepAlive = () => {
+  if (!config.disableSchedulers || schedulerDisabledKeepAlive) return;
+
+  schedulerDisabledKeepAlive = setInterval(() => {
+    // Keep local background runs alive when all schedulers are disabled.
+  }, 5 * 60 * 1000);
+};
+
 const startServer = () => {
   if (server) return server;
 
@@ -388,6 +407,7 @@ const startServer = () => {
     startSideEffectWorkers();
     startExternalJobsScheduler();
     startAutoApplyScheduler();
+    startSchedulerDisabledKeepAlive();
   });
 
   server.on('error', (error) => {
@@ -413,6 +433,10 @@ const shutdown = async (signal) => {
   }
   if (autoApplyScheduler) {
     try { autoApplyScheduler.stop(); } catch {}
+  }
+  if (schedulerDisabledKeepAlive) {
+    clearInterval(schedulerDisabledKeepAlive);
+    schedulerDisabledKeepAlive = null;
   }
   await stopSideEffectWorkers();
 

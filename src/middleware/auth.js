@@ -27,6 +27,7 @@ const parseDevUserHeader = (req) => {
       email: parsed.email || null,
       role,
       status: parsed.status || 'active',
+      is_hr_approved: parsed.is_hr_approved ?? parsed.isHrApproved ?? (role === 'hr' ? false : true),
       is_email_verified: parsed.is_email_verified ?? parsed.isEmailVerified ?? true
     });
   } catch (error) {
@@ -42,7 +43,22 @@ const requireAuth = asyncHandler(async (req, res, next) => {
 
   const devUser = parseDevUserHeader(req);
   if (devUser) {
-    req.user = devUser;
+    if (supabase) {
+      const { data: refreshedUser, error: refreshError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', devUser.id)
+        .maybeSingle();
+
+      if (refreshError) {
+        sendSupabaseError(res, refreshError);
+        return;
+      }
+
+      req.user = refreshedUser ? mapPublicUser(refreshedUser) : devUser;
+    } else {
+      req.user = devUser;
+    }
     req.tokenPayload = { id: devUser.id, role: devUser.role, devFallback: true };
     next();
     return;

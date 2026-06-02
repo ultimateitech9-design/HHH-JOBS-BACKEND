@@ -31,7 +31,7 @@ const normalizeDepartment = (value = '') => {
 const normalizeStateName = (value = '') => String(value || '').trim();
 const canManageChats = (user = {}) => CHAT_AGENT_ROLES.has(user?.role);
 const canUseCustomerChat = (user = {}) => CHAT_CUSTOMER_ROLES.has(user?.role);
-const canTransferChats = (user = {}) => [ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUPPORT].includes(user?.role);
+const canTransferChats = (user = {}) => CHAT_AGENT_ROLES.has(user?.role);
 const memoryChats = [];
 const memoryChatMessages = [];
 const memoryModerations = [];
@@ -140,7 +140,9 @@ const findMemoryChatForUser = (userId) =>
     .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))[0] || null;
 
 const listMemoryChatsForUser = (user = {}, { department = '', stateName = '' } = {}) => {
-  const roleDepartment = department || getRoleDepartment(user?.role);
+  const roleDepartment = user?.role === ROLES.SUPPORT && (!department || department === 'support')
+    ? ''
+    : (department || getRoleDepartment(user?.role));
   return memoryChats
     .filter((chat) => {
       if (roleDepartment && chat.assigned_department !== roleDepartment) return false;
@@ -765,6 +767,7 @@ router.get('/chats', asyncHandler(async (req, res) => {
   const department = requestedDepartment
     ? normalizeDepartment(requestedDepartment)
     : getRoleDepartment(req.user?.role);
+  const shouldShowAllDepartmentsForSupport = req.user?.role === ROLES.SUPPORT && (!department || department === 'support');
 
   if (!department || department === 'support') {
     await assignWaitingSupportChats({ stateName });
@@ -776,7 +779,7 @@ router.get('/chats', asyncHandler(async (req, res) => {
     .order('updated_at', { ascending: false })
     .limit(100);
 
-  if (department && TRANSFER_DEPARTMENTS.has(department)) query = query.eq('assigned_department', department);
+  if (!shouldShowAllDepartmentsForSupport && department && TRANSFER_DEPARTMENTS.has(department)) query = query.eq('assigned_department', department);
   if (stateName) query = query.eq('state_name', stateName);
   if (req.user?.role === ROLES.SUPPORT) {
     query = query.or(`assignee_id.eq.${req.user.id},assignee_id.is.null`);
@@ -1412,6 +1415,10 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
   if (isMemoryChatId(req.params.id)) {
     const memoryChat = memoryChats.find((item) => item.id === req.params.id);
     if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
     memoryChat.assigned_department = targetDepartment;
     memoryChat.transfer_reason = reason || null;
     memoryChat.transferred_at = new Date().toISOString();
@@ -1432,9 +1439,17 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
 
   const currentChatResp = await supabase
     .from('support_chats')
-    .select('state_name, meta')
+    .select('id, requester_id, assigned_department, assignee_id, state_name, meta')
     .eq('id', req.params.id)
     .maybeSingle();
+  if (currentChatResp.error && !isSupportChatSchemaError(currentChatResp.error)) {
+    sendSupabaseError(res, currentChatResp.error);
+    return;
+  }
+  if (currentChatResp.data && !canAccessChatRow(req.user, currentChatResp.data)) {
+    res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+    return;
+  }
   const transferStateName = currentChatResp.data?.state_name || '';
   const supportAssignee = targetDepartment === 'support' ? await chooseSupportAssignee(transferStateName) : null;
   const isWaitingForSupport = targetDepartment === 'support' && !supportAssignee;
@@ -1463,6 +1478,10 @@ router.patch('/chats/:id/transfer', asyncHandler(async (req, res) => {
   if (isSupportChatSchemaError(error)) {
     const memoryChat = memoryChats.find((item) => item.id === req.params.id);
     if (!memoryChat) return res.status(404).send({ status: false, message: 'Chat not found' });
+    if (!canAccessChatRow(req.user, memoryChat)) {
+      res.status(403).send({ status: false, message: 'Forbidden: this chat is not assigned to you' });
+      return;
+    }
     memoryChat.assigned_department = targetDepartment;
     memoryChat.transfer_reason = reason || null;
     memoryChat.transferred_at = new Date().toISOString();
