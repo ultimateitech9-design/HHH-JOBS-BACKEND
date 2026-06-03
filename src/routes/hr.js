@@ -672,37 +672,111 @@ const loadHrDashboardCampusSnapshot = async ({ targetUserId, companyName = '' } 
   return { campusDrives, campusApplications, candidateMap };
 };
 
-const fetchHrDashboardJobs = async (targetUserId) => {
-  const baseSelect = 'id, job_title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key';
-  const fallbackSelect = 'id, title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key';
+const mapHrDashboardJobRow = (job = {}, fallbackCompanyName = '') => ({
+  ...job,
+  job_title: job.job_title || job.title || 'Job post',
+  company_name: job.company_name || fallbackCompanyName || 'Your company',
+  job_location: job.job_location || job.location || job.city_name || job.district_name || '',
+  applications_count: Number(job.applications_count || 0),
+  views_count: Number(job.views_count || 0),
+  status: job.status || JOB_STATUSES.OPEN,
+  approval_status: job.approval_status || 'approved'
+});
 
-  const buildQuery = (selectColumns) => Database
-    .from('jobs')
-    .select(selectColumns)
-    .eq('created_by', targetUserId)
-    .neq('status', JOB_STATUSES.DELETED)
-    .order('updated_at', { ascending: false, nullsFirst: false })
-    .limit(500);
+const fetchHrProfileCompanyName = async (targetUserId) => {
+  const attempts = [
+    { select: 'company_name', field: 'company_name' },
+    { select: 'company', field: 'company' },
+    { select: 'organization_name', field: 'organization_name' },
+    { select: 'business_name', field: 'business_name' }
+  ];
 
-  const response = await buildQuery(baseSelect);
-  if (!response.error) return response;
-  if (!isMissingColumnError(response.error, 'job_title')) return response;
+  for (const attempt of attempts) {
+    const response = await Database
+      .from('hr_profiles')
+      .select(attempt.select)
+      .eq('user_id', targetUserId)
+      .maybeSingle();
 
-  const fallbackResponse = await buildQuery(fallbackSelect);
-  if (fallbackResponse.error) return fallbackResponse;
+    if (!response.error) return String(response.data?.[attempt.field] || '').trim();
+    if (!isMissingColumnError(response.error, attempt.field)) throw response.error;
+  }
 
-  return {
-    ...fallbackResponse,
-    data: (fallbackResponse.data || []).map((job) => ({
-      ...job,
-      job_title: job.job_title || job.title || 'Job post'
-    }))
+  return '';
+};
+
+const fetchHrDashboardJobs = async (targetUserId, fallbackCompanyName = '') => {
+  const selectAttempts = [
+    'id, job_title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key',
+    'id, title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key',
+    'id, title, job_location, status, approval_status, category, applications_count, views_count, created_at, updated_at',
+    'id, title, status, created_at, updated_at',
+    'id, title, status'
+  ];
+
+  const buildQuery = (selectColumns, orderColumn = 'updated_at') => {
+    let query = Database
+      .from('jobs')
+      .select(selectColumns)
+      .eq('created_by', targetUserId)
+      .neq('status', JOB_STATUSES.DELETED);
+
+    if (orderColumn) {
+      query = query.order(orderColumn, { ascending: false, nullsFirst: false });
+    }
+
+    return query.limit(500);
   };
+
+  let lastError = null;
+  for (const selectColumns of selectAttempts) {
+    let response = await buildQuery(selectColumns);
+    if (response.error && isMissingColumnError(response.error, 'updated_at')) {
+      response = await buildQuery(selectColumns, 'created_at');
+    }
+    if (response.error && isMissingColumnError(response.error, 'created_at')) {
+      response = await buildQuery(selectColumns, '');
+    }
+    if (!response.error) {
+      return {
+        ...response,
+        data: (response.data || []).map((job) => mapHrDashboardJobRow(job, fallbackCompanyName))
+      };
+    }
+
+    lastError = response.error;
+    if (!isMissingColumnError(response.error, 'job_title')
+      && !isMissingColumnError(response.error, 'company_name')
+      && !isMissingColumnError(response.error, 'job_location')
+      && !isMissingColumnError(response.error, 'job_locations')
+      && !isMissingColumnError(response.error, 'company_logo')
+      && !isMissingColumnError(response.error, 'employment_type')
+      && !isMissingColumnError(response.error, 'approval_status')
+      && !isMissingColumnError(response.error, 'category')
+      && !isMissingColumnError(response.error, 'sector_id')
+      && !isMissingColumnError(response.error, 'sector_name')
+      && !isMissingColumnError(response.error, 'state_id')
+      && !isMissingColumnError(response.error, 'district_id')
+      && !isMissingColumnError(response.error, 'state_name')
+      && !isMissingColumnError(response.error, 'district_name')
+      && !isMissingColumnError(response.error, 'city_name')
+      && !isMissingColumnError(response.error, 'applications_count')
+      && !isMissingColumnError(response.error, 'views_count')
+      && !isMissingColumnError(response.error, 'seo_slug')
+      && !isMissingColumnError(response.error, 'company_slug')
+      && !isMissingColumnError(response.error, 'company_key')
+      && !isMissingColumnError(response.error, 'updated_at')
+      && !isMissingColumnError(response.error, 'created_at')) {
+      return response;
+    }
+  }
+
+  return { data: [], error: lastError };
 };
 
 const fetchHrDashboardInterviews = async (targetUserId) => {
   const baseSelect = 'id, title, status, room_status, candidate_id, job_id, campus_drive_id, campus_application_id, scheduled_at, created_at, updated_at, job_title, company_name';
-  const fallbackSelect = 'id, title, status, room_status, candidate_id, job_id, campus_drive_id, campus_application_id, scheduled_at, created_at, updated_at, company_name';
+  const fallbackSelect = 'id, title, status, room_status, candidate_id, job_id, campus_drive_id, campus_application_id, scheduled_at, created_at, updated_at';
 
   const buildQuery = (selectColumns) => Database
     .from('interview_schedules')
@@ -713,26 +787,21 @@ const fetchHrDashboardInterviews = async (targetUserId) => {
 
   const response = await buildQuery(baseSelect);
   if (!response.error) return response;
-  if (!isMissingColumnError(response.error, 'job_title')) return response;
+  if (!isMissingColumnError(response.error, 'job_title') && !isMissingColumnError(response.error, 'company_name')) return response;
 
   return buildQuery(fallbackSelect);
 };
 
 const loadHrDashboardSnapshot = async (req) => {
   const targetUserId = resolveHrTargetUserId(req);
-  const [jobsResp, interviewsResp, profileResp] = await Promise.all([
-    fetchHrDashboardJobs(targetUserId),
+  const profileCompanyName = await fetchHrProfileCompanyName(targetUserId);
+  const [jobsResp, interviewsResp] = await Promise.all([
+    fetchHrDashboardJobs(targetUserId, profileCompanyName),
     fetchHrDashboardInterviews(targetUserId),
-    Database
-      .from('hr_profiles')
-      .select('company_name')
-      .eq('user_id', targetUserId)
-      .maybeSingle()
   ]);
 
   if (jobsResp.error) throw jobsResp.error;
   if (interviewsResp.error) throw interviewsResp.error;
-  if (profileResp.error) throw profileResp.error;
 
   const jobs = jobsResp.data || [];
   const jobIds = jobs.map((job) => job.id).filter(Boolean);
@@ -785,7 +854,7 @@ const loadHrDashboardSnapshot = async (req) => {
 
   const campusSnapshot = await loadHrDashboardCampusSnapshot({
     targetUserId,
-    companyName: profileResp.data?.company_name || ''
+    companyName: profileCompanyName
   });
   const combinedCandidateMap = { ...candidateMap, ...campusSnapshot.candidateMap };
   const interviews = (interviewsResp.data || []).map((item) => ({
