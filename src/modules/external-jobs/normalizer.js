@@ -45,7 +45,7 @@ const normalizeJob = (raw) => {
     is_remote: Boolean(raw.isRemote),
     salary_min: raw.salaryMin || null,
     salary_max: raw.salaryMax || null,
-    salary_currency: String(raw.salaryCurrency || 'USD').trim(),
+    salary_currency: String(raw.salaryCurrency || 'INR').trim(),
     posted_at: raw.postedAt || null,
     is_verified: false,
     is_active: true,
