@@ -7,8 +7,33 @@ const normalizeCompanyKey = (value = '') =>
     .replace(/\b(pvt|ltd|limited|llp|llc|inc|incorporated|corp|corporation|company|co)\b/g, ' ')
     .trim();
 
+const MAX_COMPANY_SLUG_LENGTH = 72;
+
+const trimSlug = (value = '', maxLength = MAX_COMPANY_SLUG_LENGTH) => {
+  const slug = String(value || '').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  if (slug.length <= maxLength) return slug;
+
+  return slug
+    .slice(0, maxLength)
+    .replace(/-[^-]*$/g, '')
+    .replace(/^-+|-+$/g, '') || slug.slice(0, maxLength).replace(/-+$/g, '');
+};
+
+const collapseRepeatedSlugWords = (value = '') => {
+  const words = String(value || '').split('-').filter(Boolean);
+  const collapsed = [];
+
+  words.forEach((word) => {
+    if (word !== collapsed[collapsed.length - 1]) {
+      collapsed.push(word);
+    }
+  });
+
+  return collapsed.join('-');
+};
+
 const toCompanySlug = (value = '') =>
-  normalizeCompanyKey(value).replace(/\s+/g, '-');
+  trimSlug(collapseRepeatedSlugWords(normalizeCompanyKey(value).replace(/\s+/g, '-')));
 
 const toTitleCase = (value = '') =>
   String(value || '')

@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 
-const { normalizeEmail, clamp, toArray, extractUuidFromSlug, isValidUuid, maskEmail, maskMobile } = require('../src/utils/helpers');
+const { normalizeEmail, clamp, toArray, extractUuidFromSlug, isValidUuid, maskEmail, maskMobile, buildSeoSlug } = require('../src/utils/helpers');
 const { mapPublicUser, mapJobFromRow, mapApplicationFromRow } = require('../src/utils/mappers');
 const { ROLES, JOB_STATUSES, PRICING_PLAN_SLUGS } = require('../src/constants');
 const { normalizePlan, validateJobPayloadAgainstPlan, calculateQuote, calculateEntitlements } = require('../src/modules/pricing/engine');
@@ -209,6 +209,27 @@ test('helper utilities normalize and mask values safely', () => {
   assert.equal(isValidUuid('upsc-civil-services-8554f053-c7ba-f417-b5da-b9862ec05236'), false);
   assert.equal(maskEmail('john.doe@example.com'), 'jo******@example.com');
   assert.equal(maskMobile('+91 98765 43210'), '********3210');
+});
+
+test('buildSeoSlug dedupes repeated SEO words and trims very long slugs', () => {
+  assert.equal(
+    buildSeoSlug(
+      'Administrative Executive',
+      'Ultimate Itech',
+      'Ghitorni, New Delhi',
+      'Administrative Executive',
+      'Ultimate Itech',
+      'Ghitorni, New Delhi'
+    ),
+    'administrative-executive-ultimate-itech-ghitorni-new-delhi'
+  );
+
+  const longSlug = buildSeoSlug(
+    'Senior Sales Executive',
+    'Acme Private Limited',
+    'North West South East Central Industrial Area Phase 7 Extension Near Metro Station'
+  );
+  assert.equal(longSlug.length <= 96, true);
 });
 
 test('mappers preserve the API contract shape', () => {

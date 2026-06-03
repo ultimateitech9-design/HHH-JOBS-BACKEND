@@ -1,1 +1,0 @@
-[QUEUE] REDIS_URL not configured. Falling back to in-process async tasks.

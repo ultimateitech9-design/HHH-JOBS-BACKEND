@@ -44,7 +44,9 @@ const ORIGINAL_ENV = {
   GMAIL_EMAIL: process.env.GMAIL_EMAIL,
   GMAIL_APP_PASSWORD: process.env.GMAIL_APP_PASSWORD,
   RESEND_API_KEY: process.env.RESEND_API_KEY,
+  RESEND_FROM: process.env.RESEND_FROM,
   SENDGRID_API_KEY: process.env.SENDGRID_API_KEY,
+  EMAIL_API_FALLBACK_ENABLED: process.env.EMAIL_API_FALLBACK_ENABLED,
   OTP_FROM_NAME: process.env.OTP_FROM_NAME,
   OTP_DELIVERY_WAIT_MS: process.env.OTP_DELIVERY_WAIT_MS
 };
@@ -539,6 +541,84 @@ test('email helper uses config-backed SMTP settings without sending network traf
   assert.equal(sentMail[0].options.socketTimeout, 10000);
 
   delete require.cache[nodemailerPath];
+  clearModule(emailPath);
+  clearModule(configPath);
+  restoreEnv();
+});
+
+test('email helper prefers SMTP when Resend is also configured', async () => {
+  process.env.SMTP_HOST = 'smtp.example.com';
+  process.env.SMTP_PORT = '587';
+  process.env.SMTP_SECURE = 'false';
+  process.env.SMTP_USER = 'otp@example.com';
+  process.env.SMTP_PASS = 'app-pass';
+  process.env.RESEND_API_KEY = 'resend-test-key';
+  process.env.SENDGRID_API_KEY = '';
+  process.env.EMAIL_FROM = 'noreply@example.com';
+  process.env.OTP_FROM_NAME = 'HHH Jobs';
+
+  const originalFetch = global.fetch;
+  let fetchCalled = false;
+  global.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('Resend should not be used when SMTP is configured');
+  };
+
+  const sentMail = [];
+  require.cache[nodemailerPath] = {
+    id: nodemailerPath,
+    filename: nodemailerPath,
+    loaded: true,
+    exports: {
+      createTransport: (options) => ({
+        options,
+        sendMail: async (message) => {
+          sentMail.push({ options, message });
+          return { messageId: 'smtp-first-message-id' };
+        }
+      })
+    }
+  };
+
+  try {
+    clearModule(configPath);
+    clearModule(emailPath);
+    const { sendOtpEmail } = require('../src/services/email');
+
+    const result = await sendOtpEmail({ to: 'user@example.com', otp: '234567', expiresInMinutes: 10 });
+
+    assert.deepEqual(result, { sent: true });
+    assert.equal(fetchCalled, false);
+    assert.equal(sentMail.length, 1);
+    assert.equal(sentMail[0].options.host, 'smtp.example.com');
+  } finally {
+    global.fetch = originalFetch;
+    delete require.cache[nodemailerPath];
+    clearModule(emailPath);
+    clearModule(configPath);
+    restoreEnv();
+  }
+});
+
+test('email helper does not treat Resend as configured unless API fallback is enabled', async () => {
+  process.env.SMTP_HOST = '';
+  process.env.SMTP_PORT = '';
+  process.env.SMTP_SECURE = '';
+  process.env.SMTP_USER = '';
+  process.env.SMTP_PASS = '';
+  process.env.RESEND_API_KEY = 'resend-test-key';
+  process.env.RESEND_FROM = 'HHH Jobs <noreply@example.com>';
+  process.env.SENDGRID_API_KEY = '';
+  process.env.EMAIL_API_FALLBACK_ENABLED = '';
+
+  clearModule(configPath);
+  clearModule(emailPath);
+  const { isEmailConfigured, sendOtpEmail } = require('../src/services/email');
+
+  assert.equal(isEmailConfigured(), false);
+  const result = await sendOtpEmail({ to: 'user@example.com', otp: '345678', expiresInMinutes: 10 });
+  assert.deepEqual(result, { sent: false, reason: 'smtp_not_configured' });
+
   clearModule(emailPath);
   clearModule(configPath);
   restoreEnv();

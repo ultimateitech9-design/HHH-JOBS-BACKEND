@@ -16,6 +16,7 @@ const toArray = (value) => {
 
 const UUID_FRAGMENT_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_SEO_SLUG_LENGTH = 96;
 
 const extractUuidFromSlug = (value = '') => {
   const rawValue = String(value || '').trim();
@@ -56,6 +57,30 @@ const slugify = (value = '') => String(value || '')
   .replace(/^-+|-+$/g, '')
   .slice(0, 120);
 
+const trimSlug = (value = '', maxLength = MAX_SEO_SLUG_LENGTH) => {
+  const slug = String(value || '').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  if (slug.length <= maxLength) return slug;
+
+  return slug
+    .slice(0, maxLength)
+    .replace(/-[^-]*$/g, '')
+    .replace(/^-+|-+$/g, '') || slug.slice(0, maxLength).replace(/-+$/g, '');
+};
+
+const dedupeSlugWords = (value = '') => {
+  const words = String(value || '').split('-').filter(Boolean);
+  const seen = new Set();
+  const deduped = [];
+
+  words.forEach((word) => {
+    if (seen.has(word)) return;
+    seen.add(word);
+    deduped.push(word);
+  });
+
+  return deduped.join('-');
+};
+
 const buildSeoSlug = (...parts) => {
   const slug = parts
     .map(slugify)
@@ -64,7 +89,16 @@ const buildSeoSlug = (...parts) => {
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '');
 
-  return slug || null;
+  return trimSlug(dedupeSlugWords(slug)) || null;
+};
+
+const cleanBasePath = (basePath = '') => String(basePath || '').replace(/\/+$/, '');
+
+const buildSeoEntityPath = (basePath = '', id = '', ...parts) => {
+  const entityId = extractUuidFromSlug(id);
+  if (!entityId) return cleanBasePath(basePath) || '/';
+
+  return `${cleanBasePath(basePath)}/${buildSeoSlug(...parts) || 'details'}-${entityId}`;
 };
 
 const maskEmail = (email = '') => {
@@ -107,6 +141,7 @@ module.exports = {
   isValidUuid,
   slugify,
   buildSeoSlug,
+  buildSeoEntityPath,
   maskEmail,
   maskMobile,
   asyncHandler

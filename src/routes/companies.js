@@ -17,7 +17,8 @@ const {
   buildCompanyDirectory,
   buildCompanyDirectorySummary,
   enrichPortalJobsWithHrProfiles,
-  normalizeCompanyKey
+  normalizeCompanyKey,
+  toCompanySlug
 } = require('../services/companyDirectory');
 
 const router = express.Router();
@@ -578,7 +579,8 @@ router.get('/:companySlug', asyncHandler(async (req, res) => {
     externalJobsResp
   });
 
-  const company = companies.find((entry) => entry.slug === companySlug);
+  const company = companies.find((entry) => entry.slug === companySlug)
+    || companies.find((entry) => toCompanySlug(entry.name) === companySlug);
 
   if (!company) {
     res.status(404).send({

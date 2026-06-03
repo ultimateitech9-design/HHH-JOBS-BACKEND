@@ -2,13 +2,16 @@ const fs = require('fs');
 const path = require('path');
 
 const { Database } = require('../db');
+const { buildSeoEntityPath } = require('../utils/helpers');
 const { normalizeCompanyKey, toCompanySlug } = require('./companyDirectory');
 const { pushNotificationEvent } = require('./notificationStream');
 
 const { ROLES } = require('../constants');
 
-const STUDENT_JOB_LINK = (jobId) => `/portal/student/jobs/${jobId}`;
-const RETIRED_JOB_LINK = (jobId) => `/portal/retired/jobs/${jobId}`;
+const STUDENT_JOB_LINK = ({ jobId, jobTitle, companyName, jobLocation, seoSlug }) =>
+  buildSeoEntityPath('/portal/student/jobs', jobId, seoSlug, jobTitle, companyName, jobLocation);
+const RETIRED_JOB_LINK = ({ jobId, jobTitle, companyName, jobLocation, seoSlug }) =>
+  buildSeoEntityPath('/portal/retired/jobs', jobId, seoSlug, jobTitle, companyName, jobLocation);
 const CAMPUS_COMPANY_JOBS_LINK = '/portal/campus-connect/connections';
 const HR_JOBS_LINK = '/portal/hr/jobs';
 const STUDENT_CAMPUS_DRIVE_LINK = '/portal/student/campus-connect';
@@ -127,9 +130,9 @@ const getActiveFallbackSubscriptionsForCompany = (companyKey) =>
     (row) => row.company_key === companyKey && row.is_active
   ));
 
-const getJobNotificationLink = ({ jobId, subscriberRole, companyName, companySlug }) => {
-  if (subscriberRole === ROLES.STUDENT) return STUDENT_JOB_LINK(jobId);
-  if (subscriberRole === ROLES.RETIRED_EMPLOYEE) return RETIRED_JOB_LINK(jobId);
+const getJobNotificationLink = ({ jobId, subscriberRole, companyName, companySlug, jobTitle, jobLocation, seoSlug }) => {
+  if (subscriberRole === ROLES.STUDENT) return STUDENT_JOB_LINK({ jobId, jobTitle, companyName, jobLocation, seoSlug });
+  if (subscriberRole === ROLES.RETIRED_EMPLOYEE) return RETIRED_JOB_LINK({ jobId, jobTitle, companyName, jobLocation, seoSlug });
   if (subscriberRole === ROLES.CAMPUS_CONNECT) return CAMPUS_COMPANY_JOBS_LINK;
   if (subscriberRole === ROLES.HR) return HR_JOBS_LINK;
   return `/companies/${toText(companySlug) || toCompanySlug(companyName)}`;
@@ -466,7 +469,10 @@ const notifySubscriptionRowsForJob = async ({
       jobId: job.id,
       subscriberRole: subscription.subscriber_role,
       companyName,
-      companySlug: subscription.company_slug || companySlug
+      companySlug: subscription.company_slug || companySlug,
+      jobTitle: job.job_title,
+      jobLocation: job.job_location || job.city_name || job.district_name || job.state_name,
+      seoSlug: job.seo_slug
     }),
     meta: {
       jobId: job.id,

@@ -172,12 +172,12 @@ const buildOtpEmailWarning = ({ sent, reason }) => {
   }
 
   if (reason === 'smtp_not_configured') {
-    return 'OTP email service is not configured right now. Add a Resend API key, SendGrid API key, or SMTP credentials on the backend.';
+    return 'OTP email service is not configured right now. Add SMTP credentials on the backend.';
   }
   if (reason === 'sendgrid_not_configured') {
     return 'OTP email service is not configured right now. Add a valid SendGrid API key on the backend and try again.';
   }
-  return 'We could not send the OTP email right now. Please check the configured email provider and try Resend OTP again.';
+  return 'We could not send the OTP email right now. Please check the configured SMTP provider and try again.';
 };
 
 const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
@@ -185,8 +185,8 @@ const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
 
   if (reason === 'smtp_not_configured') {
     return normalizedFlow === 'password_reset'
-      ? 'Password reset email service is not configured. Add a Resend API key, SendGrid API key, or valid SMTP credentials on the backend.'
-      : 'OTP email service is not configured on the backend. Add a Resend API key, SendGrid API key, or valid SMTP credentials in production.';
+      ? 'Password reset email service is not configured. Add valid SMTP credentials on the backend.'
+      : 'OTP email service is not configured on the backend. Add valid SMTP credentials in production.';
   }
 
   if (reason === 'sendgrid_not_configured') {
@@ -200,7 +200,7 @@ const buildOtpDeliveryFailureMessage = ({ reason, flow = 'verification' }) => {
 
   return normalizedFlow === 'password_reset'
     ? 'We could not send the password reset code right now. Please wait a moment and try again.'
-    : 'We could not send the OTP email right now. Please wait a moment and use Resend OTP.';
+    : 'We could not send the OTP email right now. Please wait a moment and try again.';
 };
 
 const buildDeferredOtpWarning = () => (
@@ -215,7 +215,7 @@ const buildPendingDeliveryMessage = ({ flow = 'verification' } = {}) => {
     return 'Your password reset code is being sent right now. It can take up to a minute to arrive. If it does not show up, try again from the same screen.';
   }
 
-  return 'Your OTP is being sent right now. It can take a few moments to arrive. If you do not receive it, use Resend OTP on the next screen.';
+  return 'Your OTP is being sent right now. It can take a few moments to arrive. If you do not receive it, try again from the OTP screen.';
 };
 const deliverEmailWithSoftTimeout = async ({ label, task }) => {
   const deliveryTask = Promise.resolve()

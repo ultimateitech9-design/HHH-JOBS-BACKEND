@@ -35,8 +35,11 @@ const isResendConfigured = () =>
 const isSendGridConfigured = () =>
   Boolean(SENDGRID_API_KEY && SMTP_FROM_ADDRESS);
 
+const shouldUseApiEmailProviders = () =>
+  ['1', 'true', 'yes', 'on'].includes(String(process.env.EMAIL_API_FALLBACK_ENABLED || '').trim().toLowerCase());
+
 const isEmailConfigured = () =>
-  isResendConfigured() || isSendGridConfigured() || isSmtpConfigured();
+  isSmtpConfigured() || (shouldUseApiEmailProviders() && (isResendConfigured() || isSendGridConfigured()));
 
 const parseFromAddress = (value = '') => {
   const rawValue = String(value || '').trim();
@@ -179,7 +182,7 @@ const dropTransporter = (options) => {
 };
 
 const scheduleTransportWarmup = () => {
-  if (warmupScheduled || !isSmtpConfigured() || isResendConfigured() || isSendGridConfigured()) return;
+  if (warmupScheduled || !isSmtpConfigured()) return;
 
   warmupScheduled = true;
   setTimeout(async () => {
@@ -305,7 +308,7 @@ const sendViaResend = async (message) => {
 const sendEmailWithFallback = async (message) => {
   const providerErrors = [];
 
-  if (isResendConfigured()) {
+  if (shouldUseApiEmailProviders() && isResendConfigured()) {
     try {
       const resendResult = await sendViaResend(message);
       if (resendResult.sent) return resendResult;
@@ -317,7 +320,7 @@ const sendEmailWithFallback = async (message) => {
     }
   }
 
-  if (isSendGridConfigured()) {
+  if (shouldUseApiEmailProviders() && isSendGridConfigured()) {
     try {
       const sendGridResult = await sendViaSendGrid(message);
       if (sendGridResult.sent) return sendGridResult;
@@ -366,7 +369,7 @@ scheduleTransportWarmup();
 const sendOtpEmail = async ({ to, otp, expiresInMinutes = 10 }) => {
   if (!isEmailConfigured()) {
     console.log(`[OTP EMAIL - NOT CONFIGURED] To: ${to} | OTP: ${otp} | Expires in: ${expiresInMinutes} min`);
-    console.log('  -> Set RESEND_API_KEY, SENDGRID_API_KEY, or SMTP credentials in .env to enable real email delivery.');
+    console.log('  -> Set SMTP_HOST, SMTP_USER, and SMTP_PASS in .env to enable real email delivery.');
     return { sent: false, reason: 'smtp_not_configured' };
   }
 
