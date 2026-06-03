@@ -17,6 +17,7 @@ const { getCreatedUserWelcomeTarget } = require('../src/services/createdUserWelc
 const DEFAULT_BASE_URL = String(config.oauthClientUrl || config.corsOrigins?.[0] || 'https://hhh-jobs.com').replace(/\/+$/, '');
 const DEFAULT_EMAIL_CONCURRENCY = 2;
 const DEFAULT_LIMIT = 500;
+const DB_PAGE_SIZE = 500;
 
 const usage = `
 Usage:
@@ -29,7 +30,8 @@ Options:
   --created-from <date>       DB selection start created_at. Example: "2026-06-02 00:00:00"
   --created-to <date>         DB selection end created_at. Example: "2026-06-03 23:59:59"
   --offset <n>                Skip first N DB-selected rows
-  --limit <n>                 Max users to process in DB selection (default: ${DEFAULT_LIMIT})
+  --limit <n|all>             Max users to process in DB selection (default: ${DEFAULT_LIMIT})
+  --allow-all                 Allow DB selection without a date range. Requires a role filter.
   --email-concurrency <n>     Parallel email workers in --send mode (default: ${DEFAULT_EMAIL_CONCURRENCY})
   --base-url <url>            Frontend base URL (default: ${DEFAULT_BASE_URL})
   --report-out <path>         CSV report path (default: tmp-logs/seeded-user-welcome-<timestamp>.csv)
@@ -39,7 +41,7 @@ Options:
 Notes:
   If password is present in --input, that password is set and emailed.
   If password is missing, a temporary password is generated, set in DB, and emailed.
-  Without --input or --emails, you must pass --created-from or --created-to to avoid emailing every user by mistake.
+  Without --input or --emails, pass --created-from/--created-to or --allow-all to avoid emailing every user by mistake.
 `.trim();
 
 const ROLE_VALUES = new Set(Object.values(ROLES));
@@ -74,6 +76,7 @@ const parseArgs = (argv = []) => {
     createdTo: '',
     offset: 0,
     limit: DEFAULT_LIMIT,
+    allowAll: false,
     emailConcurrency: DEFAULT_EMAIL_CONCURRENCY,
     baseUrl: DEFAULT_BASE_URL,
     reportOut: '',
@@ -117,8 +120,14 @@ const parseArgs = (argv = []) => {
       continue;
     }
     if (token === '--limit' && next) {
-      args.limit = Math.max(1, Number.parseInt(next, 10) || DEFAULT_LIMIT);
+      args.limit = String(next).trim().toLowerCase() === 'all'
+        ? null
+        : Math.max(1, Number.parseInt(next, 10) || DEFAULT_LIMIT);
       index += 1;
+      continue;
+    }
+    if (token === '--allow-all') {
+      args.allowAll = true;
       continue;
     }
     if (token === '--email-concurrency' && next) {
@@ -286,18 +295,27 @@ const fetchUsersByEmails = async ({ db, inputRows = [], emailList = [] }) => {
   return { accounts, missingEmails };
 };
 
-const fetchUsersByFilters = async ({ db, args }) => {
-  if (!args.input && args.emails.length === 0 && !args.createdFrom && !args.createdTo) {
-    throw new Error('Refusing broad DB selection. Pass --input, --emails, --created-from, or --created-to.');
-  }
+const mapUserToAccount = (user = {}) => {
+  const email = normalizeEmail(user.email);
+  return {
+    userId: user.id,
+    name: normalizeText(user.name) || email,
+    email,
+    role: normalizeRole(user.role),
+    status: user.status || '',
+    createdAt: user.created_at || '',
+    requestedPassword: '',
+    dashboardPath: '',
+    loginPath: ''
+  };
+};
 
-  validateRoleFilters(args.roles);
-
+const buildFilteredUsersQuery = ({ db, args, offset, limit }) => {
   let query = db
     .from('users')
     .select('id, name, email, role, status, created_at')
     .order('created_at', { ascending: true })
-    .range(args.offset, args.offset + args.limit - 1);
+    .range(offset, offset + limit - 1);
 
   if (!args.allRoles && args.roles.length > 0) {
     query = query.in('role', args.roles);
@@ -305,24 +323,40 @@ const fetchUsersByFilters = async ({ db, args }) => {
   if (args.createdFrom) query = query.gte('created_at', args.createdFrom);
   if (args.createdTo) query = query.lte('created_at', args.createdTo);
 
-  const { data, error } = await query;
-  if (error) throw error;
+  return query;
+};
+
+const fetchUsersByFilters = async ({ db, args }) => {
+  validateRoleFilters(args.roles);
+
+  if (!args.input && args.emails.length === 0 && !args.createdFrom && !args.createdTo && !args.allowAll) {
+    throw new Error('Refusing broad DB selection. Pass --input, --emails, --created-from/--created-to, or --allow-all.');
+  }
+
+  if (args.allowAll && (args.allRoles || args.roles.length === 0)) {
+    throw new Error('Refusing --allow-all without a specific role filter. Example: --roles student --allow-all');
+  }
+
+  const accounts = [];
+  const targetLimit = args.limit;
+  let offset = args.offset;
+  let remaining = targetLimit;
+
+  while (remaining === null || remaining > 0) {
+    const pageLimit = remaining === null ? DB_PAGE_SIZE : Math.min(DB_PAGE_SIZE, remaining);
+    const { data, error } = await buildFilteredUsersQuery({ db, args, offset, limit: pageLimit });
+    if (error) throw error;
+
+    const rows = data || [];
+    accounts.push(...rows.map(mapUserToAccount));
+
+    if (rows.length < pageLimit) break;
+    offset += pageLimit;
+    if (remaining !== null) remaining -= pageLimit;
+  }
 
   return {
-    accounts: (data || []).map((user) => {
-      const email = normalizeEmail(user.email);
-      return {
-        userId: user.id,
-        name: normalizeText(user.name) || email,
-        email,
-        role: normalizeRole(user.role),
-        status: user.status || '',
-        createdAt: user.created_at || '',
-        requestedPassword: '',
-        dashboardPath: '',
-        loginPath: ''
-      };
-    }),
+    accounts,
     missingEmails: []
   };
 };
