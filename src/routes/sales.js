@@ -529,6 +529,38 @@ const normalizeCommercialAudienceRole = (value = '') => {
   return COMMERCIAL_AUDIENCE_ROLES.includes(role) ? role : '';
 };
 
+const createCouponValidationError = (message) => {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+};
+
+const normalizeCouponCode = (value = '') => String(value || '')
+  .trim()
+  .toUpperCase()
+  .replace(/[^A-Z0-9_-]/g, '')
+  .slice(0, 40);
+
+const hasRealCouponCode = (coupon = {}) => {
+  const code = normalizeCouponCode(coupon.code || '');
+  return Boolean(code && code !== '-');
+};
+
+const normalizeCouponDate = (value, label) => {
+  if (value === undefined || value === null || value === '') return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw createCouponValidationError(`${label} must be a valid date.`);
+  return date.toISOString();
+};
+
+const normalizeCouponRoles = (roles = []) => uniqueValues((Array.isArray(roles) ? roles : String(roles || '').split(','))
+  .map((role) => normalizeCommercialAudienceRole(role))
+  .filter(Boolean));
+
+const normalizeCouponPlanSlugs = (planSlugs = []) => uniqueValues((Array.isArray(planSlugs) ? planSlugs : String(planSlugs || '').split(','))
+  .map((item) => String(item || '').trim().toLowerCase())
+  .filter(Boolean));
+
 const applyCommercialUserFilters = (query, { targetRole = '', search = '' } = {}) => {
   const normalizedRole = normalizeCommercialAudienceRole(targetRole);
   let scopedQuery = normalizedRole
@@ -2041,16 +2073,16 @@ router.get('/coupons', asyncHandler(async (req, res) => {
 
   if (error) { sendDatabaseError(res, error); return; }
 
-  res.send({ status: true, coupons: data || [] });
+  res.send({ status: true, coupons: (data || []).filter(hasRealCouponCode) });
 }));
 
 router.post('/coupons/validate', asyncHandler(async (req, res) => {
-  const code = String(req.body?.code || '').trim().toUpperCase();
+  const code = normalizeCouponCode(req.body?.code || '');
   const audienceRole = String(req.body?.audienceRole || req.body?.audience_role || '').trim().toLowerCase();
   const planSlug = String(req.body?.planSlug || req.body?.plan_slug || '').trim().toLowerCase();
   const amount = Number(req.body?.amount || 0);
 
-  if (!code) {
+  if (!code || code === '-') {
     res.status(400).send({ status: false, message: 'Coupon code is required' });
     return;
   }
@@ -2189,24 +2221,75 @@ router.post('/coupons', asyncHandler(async (req, res) => {
     max_discount_amount,
     assigned_to_sales_id
   } = req.body || {};
-  if (!code || !discount_value) return res.status(400).send({ status: false, message: 'code and discount_value are required' });
+
+  const normalizedCode = normalizeCouponCode(code);
+  const normalizedDiscountType = ['percent', 'fixed'].includes(String(discount_type || '').toLowerCase())
+    ? String(discount_type).toLowerCase()
+    : 'percent';
+  const normalizedDiscountValue = Number(discount_value);
+  const normalizedMaxUses = max_uses === undefined || max_uses === null || max_uses === '' ? null : Number(max_uses);
+  const normalizedMinAmount = min_amount === undefined || min_amount === null || min_amount === '' ? 0 : Number(min_amount);
+  const normalizedMaxDiscountAmount = max_discount_amount === undefined || max_discount_amount === null || max_discount_amount === '' ? null : Number(max_discount_amount);
+
+  if (!normalizedCode || normalizedCode === '-') {
+    res.status(400).send({ status: false, message: 'Coupon code is required' });
+    return;
+  }
+  if (!Number.isFinite(normalizedDiscountValue) || normalizedDiscountValue <= 0) {
+    res.status(400).send({ status: false, message: 'Discount value must be greater than 0' });
+    return;
+  }
+  if (normalizedDiscountType === 'percent' && normalizedDiscountValue > 100) {
+    res.status(400).send({ status: false, message: 'Percent discount cannot be more than 100' });
+    return;
+  }
+  if (normalizedMaxUses !== null && (!Number.isFinite(normalizedMaxUses) || normalizedMaxUses < 1)) {
+    res.status(400).send({ status: false, message: 'Max uses must be a positive number' });
+    return;
+  }
+  if (!Number.isFinite(normalizedMinAmount) || normalizedMinAmount < 0) {
+    res.status(400).send({ status: false, message: 'Minimum amount must be 0 or more' });
+    return;
+  }
+  if (normalizedMaxDiscountAmount !== null && (!Number.isFinite(normalizedMaxDiscountAmount) || normalizedMaxDiscountAmount < 0)) {
+    res.status(400).send({ status: false, message: 'Max discount amount must be 0 or more' });
+    return;
+  }
+
+  const normalizedValidFrom = normalizeCouponDate(valid_from, 'Valid from');
+  const normalizedValidUntil = normalizeCouponDate(valid_until, 'Valid until');
+  if (normalizedValidFrom && normalizedValidUntil && new Date(normalizedValidUntil).getTime() <= new Date(normalizedValidFrom).getTime()) {
+    res.status(400).send({ status: false, message: 'Valid until must be after valid from' });
+    return;
+  }
+
+  const existing = await Database
+    .from('sales_coupons')
+    .select('id')
+    .eq('code', normalizedCode)
+    .limit(1);
+  if (existing.error) { sendDatabaseError(res, existing.error); return; }
+  if ((existing.data || []).length > 0) {
+    res.status(400).send({ status: false, message: 'Coupon code already exists' });
+    return;
+  }
 
   const { data, error } = await Database
     .from('sales_coupons')
     .insert({
-      code: String(code).trim().toUpperCase(),
-      discount_type: ['percent', 'fixed'].includes(discount_type) ? discount_type : 'percent',
-      discount_value: Number(discount_value),
-      max_uses: max_uses ? Number(max_uses) : null,
-      valid_from: valid_from || null,
-      valid_until: valid_until || null,
+      code: normalizedCode,
+      discount_type: normalizedDiscountType,
+      discount_value: normalizedDiscountValue,
+      max_uses: normalizedMaxUses,
+      valid_from: normalizedValidFrom,
+      valid_until: normalizedValidUntil,
       is_active: true,
       created_by: req.user?.id || null,
-      assigned_to_sales_id: assigned_to_sales_id || null,
-      audience_roles: Array.isArray(audience_roles) ? audience_roles : [],
-      plan_slugs: Array.isArray(plan_slugs) ? plan_slugs.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean) : [],
-      min_amount: min_amount ? Number(min_amount) : 0,
-      max_discount_amount: max_discount_amount ? Number(max_discount_amount) : null
+      assigned_to_sales_id: isValidUuid(assigned_to_sales_id) ? assigned_to_sales_id : null,
+      audience_roles: normalizeCouponRoles(audience_roles),
+      plan_slugs: normalizeCouponPlanSlugs(plan_slugs),
+      min_amount: normalizedMinAmount,
+      max_discount_amount: normalizedMaxDiscountAmount
     })
     .select('*')
     .single();
