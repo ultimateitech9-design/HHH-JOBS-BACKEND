@@ -256,14 +256,8 @@ app.get('/public/govt-jobs', automationProtection, publicCatalogRateLimiter, set
 app.get('/public/govt-jobs/:jobId', automationProtection, publicCatalogRateLimiter, setGovtJobsCacheHeaders, asyncHandler(async (req, res) => {
   if (!ensureDatabaseConfig(res)) return;
 
-  const jobId = extractUuidFromSlug(req.params.jobId);
-  if (!isValidUuid(jobId)) {
-    res.status(400).send({ status: false, message: 'Invalid government job id' });
-    return;
-  }
-
   const canTrackGovtJobs = req.user?.role === ROLES.STUDENT;
-  const job = await getGovtJobById({ userId: canTrackGovtJobs ? req.user.id : '', jobId });
+  const job = await getGovtJobById({ userId: canTrackGovtJobs ? req.user.id : '', jobId: req.params.jobId });
   if (!job) {
     res.status(404).send({ status: false, message: 'Government job not found' });
     return;

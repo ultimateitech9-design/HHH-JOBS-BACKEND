@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const config = require('../config');
 const { getPool } = require('../mysqlDatabaseAdapter');
+const { buildSeoSlug, extractSeoPathSegment, extractUuidFromSlug, isValidUuid } = require('../utils/helpers');
 const { createNotification } = require('./notifications');
 const { sendEmailWithFallback } = require('./email');
 
@@ -58,6 +59,7 @@ const MASTER_STATES = [
 ];
 const MASTER_QUALIFICATIONS = ['8TH', '10TH', '12TH', 'DIPLOMA', 'GRADUATION', 'POST_GRADUATION', 'PHD'];
 const MASTER_POST_TYPES = ['RECRUITMENT', 'RESULT', 'ADMIT_CARD', 'ANSWER_KEY', 'SYLLABUS'];
+const UUID_FRAGMENT_REGEXP = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
 let schemaReadyPromise = null;
 let seedReadyPromise = null;
@@ -358,6 +360,34 @@ const ensureGovtJobsSchema = async () => {
     await ensureIndex(db, 'govt_jobs', 'idx_govt_jobs_seo_slug', 'ALTER TABLE govt_jobs ADD KEY idx_govt_jobs_seo_slug (seo_slug)');
     await ensureIndex(db, 'student_govt_job_trackers', 'idx_student_govt_tracker_reminder', 'ALTER TABLE student_govt_job_trackers ADD KEY idx_student_govt_tracker_reminder (reminder_enabled, reminder_at, reminder_sent_at)');
     await ensureIndex(db, 'student_govt_job_trackers', 'idx_student_govt_tracker_expiry', 'ALTER TABLE student_govt_job_trackers ADD KEY idx_student_govt_tracker_expiry (reminder_enabled, expiry_notified_at)');
+
+    const [missingSlugRows] = await db.execute(`
+      SELECT id, title, organization, category, state
+      FROM govt_jobs
+      WHERE seo_slug IS NULL OR seo_slug = ''
+      LIMIT 5000
+    `);
+
+    for (const row of missingSlugRows || []) {
+      const seoSlug = buildSeoSlug(row.title, row.organization, row.category, row.state);
+      if (seoSlug) {
+        await db.execute('UPDATE govt_jobs SET seo_slug = ? WHERE id = ?', [seoSlug, row.id]);
+      }
+    }
+
+    const [uuidSlugRows] = await db.execute(`
+      SELECT id, seo_slug, title, organization, category, state
+      FROM govt_jobs
+      WHERE LOWER(seo_slug) REGEXP ?
+      LIMIT 5000
+    `, [UUID_FRAGMENT_REGEXP]);
+
+    for (const row of uuidSlugRows || []) {
+      const seoSlug = buildSeoSlug(row.seo_slug) || buildSeoSlug(row.title, row.organization, row.category, row.state);
+      if (seoSlug && seoSlug !== row.seo_slug) {
+        await db.execute('UPDATE govt_jobs SET seo_slug = ? WHERE id = ?', [seoSlug, row.id]);
+      }
+    }
   })();
 
   return schemaReadyPromise;
@@ -919,7 +949,7 @@ const seedGovtJobsIfEmpty = async () => {
 
       await db.execute(`
         INSERT INTO govt_jobs (
-          id, title, organization, department, vacancies, qualification, qual_level,
+          id, title, seo_slug, organization, department, vacancies, qualification, qual_level,
           age_min, age_max, last_date, start_date, app_fee, state, category,
           description, notif_url, apply_url, source_name, source_url,
           official_url, official_notification_url, official_apply_url, post_type,
@@ -927,8 +957,9 @@ const seedGovtJobsIfEmpty = async () => {
           who_can_apply, selection_process, how_to_apply, official_last_checked_at,
           verified_at, review_status, is_active, is_featured, seeded_demo
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', 1, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', 1, ?, 1)
         ON DUPLICATE KEY UPDATE
+          seo_slug = COALESCE(NULLIF(govt_jobs.seo_slug, ''), VALUES(seo_slug)),
           department = VALUES(department),
           vacancies = VALUES(vacancies),
           qualification = VALUES(qualification),
@@ -965,6 +996,7 @@ const seedGovtJobsIfEmpty = async () => {
       `, [
         jobId,
         job.title,
+        buildSeoSlug(job.title, job.organization, job.category, job.state),
         job.organization,
         job.department || null,
         job.vacancies || null,
@@ -1229,6 +1261,13 @@ const getGovtJobById = async ({ userId, jobId } = {}) => {
   await seedGovtJobsIfEmpty();
 
   const db = getPool();
+  const rawIdentifier = normalizeText(jobId);
+  const uuidCandidate = extractUuidFromSlug(rawIdentifier);
+  const uuid = isValidUuid(uuidCandidate) ? uuidCandidate : '';
+  const seoSlug = uuid ? '' : buildSeoSlug(extractSeoPathSegment(rawIdentifier));
+
+  if (!uuid && !seoSlug) return null;
+
   const [rows] = await db.execute(`
     SELECT
       g.*,
@@ -1244,10 +1283,10 @@ const getGovtJobById = async ({ userId, jobId } = {}) => {
     FROM govt_jobs g
     LEFT JOIN student_govt_job_trackers t
       ON t.govt_job_id = g.id AND t.user_id = ?
-    WHERE g.id = ?
+    WHERE ${uuid ? 'g.id = ?' : 'g.seo_slug = ?'}
       AND (g.review_status IS NULL OR UPPER(g.review_status) <> 'REJECTED')
     LIMIT 1
-  `, [userId || '', jobId]);
+  `, [userId || '', uuid || seoSlug]);
 
   return rows?.[0] ? mapGovtJob(rows[0]) : null;
 };

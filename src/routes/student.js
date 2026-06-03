@@ -961,14 +961,8 @@ router.get('/govt-jobs', asyncHandler(async (req, res) => {
 
 router.get('/govt-jobs/:jobId', asyncHandler(async (req, res) => {
   const targetUserId = getTargetStudentId(req, 'query');
-  const jobId = extractUuidFromSlug(req.params.jobId);
 
-  if (!isValidUuid(jobId)) {
-    res.status(400).send({ status: false, message: 'Invalid government job id' });
-    return;
-  }
-
-  const job = await getGovtJobById({ userId: targetUserId, jobId });
+  const job = await getGovtJobById({ userId: targetUserId, jobId: req.params.jobId });
   if (!job) {
     res.status(404).send({ status: false, message: 'Government job not found' });
     return;

@@ -35,10 +35,20 @@ const extractUuidFromSlug = (value = '') => {
   return /^[a-z0-9]{6,}$/i.test(candidate) ? candidate : lastSegment;
 };
 
+const extractSeoPathSegment = (value = '') => {
+  const rawValue = String(value || '').trim();
+  return rawValue
+    .replace(/^\/+|\/+$/g, '')
+    .split('/')
+    .filter(Boolean)
+    .pop() || rawValue;
+};
+
 const isValidUuid = (value = '') => UUID_PATTERN.test(String(value || '').trim());
 
 const slugify = (value = '') => String(value || '')
   .normalize('NFKD')
+  .replace(UUID_FRAGMENT_PATTERN, ' ')
   .replace(/[\u0300-\u036f]/g, '')
   .toLowerCase()
   .replace(/&/g, ' and ')
@@ -92,6 +102,7 @@ module.exports = {
   stripUndefined,
   clamp,
   toArray,
+  extractSeoPathSegment,
   extractUuidFromSlug,
   isValidUuid,
   slugify,
