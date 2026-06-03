@@ -484,6 +484,21 @@ const hydrateRowsForSelect = async (db, table, columns, rows) => {
     }
   }
 
+  if (table === 'colleges' && selectText.includes('users!inner')) {
+    const userIds = [...new Set(rows.map((row) => row.user_id).filter(Boolean))];
+    if (userIds.length === 0) return [];
+
+    const [users] = await db.execute(
+      `SELECT id, name, email, status, is_hr_approved, last_login_at FROM ${quoteId('users')} WHERE ${quoteId('id')} IN (${userIds.map(() => '?').join(', ')})`,
+      userIds
+    );
+    const byId = new Map(users.map((user) => [user.id, user]));
+
+    return rows
+      .filter((row) => byId.has(row.user_id))
+      .map((row) => ({ ...row, users: [byId.get(row.user_id)] }));
+  }
+
   return rows;
 };
 
