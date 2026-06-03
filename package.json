@@ -18,7 +18,8 @@
     "import:resume-candidates": "node scripts/resume-bulk-onboard.js",
     "import:market-sectors": "node scripts/import-market-sectors.js",
     "notify:hr-job-metadata": "node scripts/notify-hr-job-metadata-update.js",
-    "email:seeded-students": "node scripts/send-seeded-student-welcome.js"
+    "email:seeded-students": "node scripts/send-seeded-student-welcome.js",
+    "email:seeded-users": "node scripts/send-seeded-user-welcome.js"
   },
   "keywords": [],
   "author": "",

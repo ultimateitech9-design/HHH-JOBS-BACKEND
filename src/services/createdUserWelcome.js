@@ -50,6 +50,16 @@ const CREATED_USER_WELCOME_TARGETS = {
     dashboardPath: '/portal/accounts/overview',
     loginPath: '/management/login/accounts'
   },
+  [ROLES.PLATFORM]: {
+    label: 'Platform Dashboard',
+    dashboardPath: '/portal/platform/dashboard',
+    loginPath: '/management/login/platform'
+  },
+  [ROLES.AUDIT]: {
+    label: 'Audit Dashboard',
+    dashboardPath: '/portal/audit/dashboard',
+    loginPath: '/management/login/audit'
+  },
   [ROLES.CAMPUS_CONNECT]: {
     label: 'Campus Connect Dashboard',
     dashboardPath: '/portal/campus-connect/dashboard',
