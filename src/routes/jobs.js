@@ -415,31 +415,22 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
 
   return {
     roles: mergeFacetItems({
-      activeRows: normalizeFacetRows(activeRoles[0]),
-      allRows: [
-        ...normalizeFacetRows(allJobRoles[0]),
-        ...normalizeFacetRows(masterCategories[0]).map((row) => ({ ...row, sourceRank: 3 }))
-      ],
+      activeRows: [],
+      allRows: normalizeFacetRows(masterCategories[0]).map((row) => ({ ...row, sourceRank: 0 })),
       fallbackNames: DEFAULT_ROLE_NAMES,
       limit: roleLimit,
       kind: 'role'
     }),
     sectors: mergeFacetItems({
-      activeRows: normalizeFacetRows(activeSectors[0]),
-      allRows: [
-        ...normalizeFacetRows(allJobSectors[0]),
-        ...normalizeFacetRows(masterSectors[0]).map((row) => ({ ...row, sourceRank: 2 }))
-      ],
+      activeRows: [],
+      allRows: normalizeFacetRows(masterSectors[0]).map((row) => ({ ...row, sourceRank: 0 })),
       fallbackNames: [],
       limit: sectorLimit,
       kind: 'sector'
     }),
     cities: mergeFacetItems({
-      activeRows: normalizeFacetRows(activeCities[0]),
-      allRows: [
-        ...normalizeFacetRows(allJobCities[0]),
-        ...normalizeFacetRows(masterDistricts[0]).map((row) => ({ ...row, sourceRank: 3 }))
-      ],
+      activeRows: [],
+      allRows: normalizeFacetRows(masterDistricts[0]).map((row) => ({ ...row, sourceRank: 0 })),
       fallbackNames: DEFAULT_CITY_NAMES,
       limit: cityLimit,
       kind: 'city'
@@ -569,10 +560,10 @@ router.get('/meta/homepage-facets', automationProtection, publicJobsReadLimiter,
     return;
   }
 
-  const facets = await getHomepageFacets({
-    roleLimit: getFacetLimit(req.query.roleLimit || req.query.role_limit, 90, 140),
-    sectorLimit: getFacetLimit(req.query.sectorLimit || req.query.sector_limit, 90, 120),
-    cityLimit: getFacetLimit(req.query.cityLimit || req.query.city_limit, 90, 160),
+    const facets = await getHomepageFacets({
+    roleLimit: getFacetLimit(req.query.roleLimit || req.query.role_limit, 90, 800),
+    sectorLimit: getFacetLimit(req.query.sectorLimit || req.query.sector_limit, 90, 200),
+    cityLimit: getFacetLimit(req.query.cityLimit || req.query.city_limit, 90, 1200),
     pincodeLimit: getFacetLimit(req.query.pincodeLimit || req.query.pincode_limit, 40, 80)
   });
 
