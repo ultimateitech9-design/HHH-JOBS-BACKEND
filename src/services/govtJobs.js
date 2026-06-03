@@ -1268,6 +1268,15 @@ const getGovtJobById = async ({ userId, jobId } = {}) => {
 
   if (!uuid && !seoSlug) return null;
 
+  const slugMatchSql = `
+    (
+      g.seo_slug = ?
+      OR (? LIKE CONCAT(g.seo_slug, '-%') AND g.seo_slug IS NOT NULL AND g.seo_slug <> '')
+    )
+  `;
+  const identifierParams = uuid ? [uuid] : [seoSlug, seoSlug];
+  const orderBy = uuid ? '' : 'ORDER BY CASE WHEN g.seo_slug = ? THEN 0 ELSE 1 END, CHAR_LENGTH(g.seo_slug) DESC';
+
   const [rows] = await db.execute(`
     SELECT
       g.*,
@@ -1283,10 +1292,11 @@ const getGovtJobById = async ({ userId, jobId } = {}) => {
     FROM govt_jobs g
     LEFT JOIN student_govt_job_trackers t
       ON t.govt_job_id = g.id AND t.user_id = ?
-    WHERE ${uuid ? 'g.id = ?' : 'g.seo_slug = ?'}
+    WHERE ${uuid ? 'g.id = ?' : slugMatchSql}
       AND (g.review_status IS NULL OR UPPER(g.review_status) <> 'REJECTED')
+    ${orderBy}
     LIMIT 1
-  `, [userId || '', uuid || seoSlug]);
+  `, [userId || '', ...identifierParams, ...(uuid ? [] : [seoSlug])]);
 
   return rows?.[0] ? mapGovtJob(rows[0]) : null;
 };
