@@ -13,6 +13,7 @@ const { buildEimagerHandoffUrl } = require('../services/eimagerHandoff');
 const { createNotification } = require('../services/notifications');
 const { notifyUser } = require('../services/notificationOrchestrator');
 const { resolveResumeForApplication } = require('../services/applications');
+const { buildHrJobApplicantsPath } = require('../services/jobs');
 const {
   getPersonalizedRecommendations,
   trackStudentJobView
@@ -1844,7 +1845,7 @@ router.post('/applications/:applicationId/offer-response', asyncHandler(async (r
       ? `${req.user.name || 'The student'} accepted the offer for ${job?.job_title || 'the role'} at ${job?.company_name || 'your company'}.`
       : `${req.user.name || 'The student'} rejected the offer for ${job?.job_title || 'the role'} at ${job?.company_name || 'your company'}.`;
     const link = job?.id
-      ? `/portal/hr/jobs/${job.id}/applicants?applicationId=${updatedApplication.id}`
+      ? buildHrJobApplicantsPath(job, updatedApplication.id)
       : '/portal/hr/jobs';
 
     await createNotification({

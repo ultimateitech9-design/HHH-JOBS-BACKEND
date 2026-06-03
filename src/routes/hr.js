@@ -9,7 +9,13 @@ const { isValidUuid, extractUuidFromSlug, toArray, maskEmail, maskMobile, asyncH
 const { resolveStructuredLocation } = require('../utils/geography');
 const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
 const { notifyUser } = require('../services/notificationOrchestrator');
-const { createHrJob, updateHrJob, deleteHrJob, assertJobOwnership } = require('../services/jobs');
+const {
+  createHrJob,
+  updateHrJob,
+  deleteHrJob,
+  assertJobOwnership,
+  buildHrJobApplicantsPath
+} = require('../services/jobs');
 const { createNotification } = require('../services/notifications');
 const {
   buildSystemTemplateMessage,
@@ -238,7 +244,7 @@ router.post('/jobs/:id/payment', requireApprovedHr, asyncHandler(async (req, res
   const { data, error } = await Database
     .from('job_payments')
     .insert({
-      job_id: jobId,
+      job_id: job.id,
       hr_id: req.user.id,
       amount: Number.isFinite(amount) ? amount : 0,
       currency,
@@ -256,7 +262,7 @@ router.post('/jobs/:id/payment', requireApprovedHr, asyncHandler(async (req, res
     return;
   }
 
-  await Database.from('jobs').update({ is_paid: true }).eq('id', jobId);
+  await Database.from('jobs').update({ is_paid: true }).eq('id', job.id);
 
   res.status(201).send({ status: true, payment: data });
 }));
@@ -269,7 +275,7 @@ router.patch('/jobs/:id/close', requireApprovedHr, asyncHandler(async (req, res)
   const { data, error } = await Database
     .from('jobs')
     .update({ status: JOB_STATUSES.CLOSED, closed_at: new Date().toISOString() })
-    .eq('id', jobId)
+    .eq('id', existingJob.id)
     .select('*')
     .single();
 
@@ -310,7 +316,7 @@ router.get('/jobs/:id/applicants', requireApprovedHr, asyncHandler(async (req, r
   const { data: applications, error } = await Database
     .from('applications')
     .select('*')
-    .eq('job_id', jobId)
+    .eq('job_id', job.id)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -420,7 +426,7 @@ router.patch('/applications/:id/status', requireApprovedHr, asyncHandler(async (
     companyName: job.company_name || req.user.name || 'HHH Jobs',
     candidateName: applicantUser?.name || applicantUser?.email || 'this candidate',
     studentLink: '/portal/student/applications',
-    hrLink: `/portal/hr/jobs/${job.id}/applicants`,
+    hrLink: buildHrJobApplicantsPath(job),
     studentDetailLines: hrNotes ? [`HR note: ${hrNotes}`] : [],
     hrDetailLines: [`Application ID: ${data.id}`],
     meta: { applicationId: data.id, jobId: job.id, status }
@@ -494,7 +500,7 @@ const buildHrDashboardActivities = ({
       subtitle: `Job post - ${job.company_name || 'Your company'} - ${Number(job.applications_count || 0)} applicants`,
       status: job.status || JOB_STATUSES.OPEN,
       time: job.updated_at || job.created_at,
-      to: `/portal/hr/jobs/${job.id}/applicants`,
+      to: buildHrJobApplicantsPath(job),
       icon: 'J'
     })),
     ...applications.slice(0, 14).map((application) => {
@@ -509,7 +515,7 @@ const buildHrDashboardActivities = ({
         subtitle: `Job applicant - ${job?.job_title || 'Job post'} - ${job?.company_name || 'Your company'}`,
         status: application.status || 'applied',
         time: application.status_updated_at || application.updated_at || application.created_at,
-        to: application.job_id ? `/portal/hr/jobs/${application.job_id}/applicants` : '/portal/hr/applications',
+        to: job ? buildHrJobApplicantsPath(job) : '/portal/hr/applications',
         icon: name[0] || 'A'
       };
     }),
@@ -1092,7 +1098,7 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
       subtitle: `Job post - ${job.company_name || 'Your company'} - ${Number(job.applications_count || 0)} applicants`,
       status: job.status || JOB_STATUSES.OPEN,
       time: job.updated_at || job.created_at,
-      to: `/portal/hr/jobs/${job.id}/applicants`,
+      to: buildHrJobApplicantsPath(job),
       icon: 'J'
     })),
     ...applications.map((application) => {
@@ -1107,7 +1113,7 @@ router.get('/recent-activity', asyncHandler(async (req, res) => {
         subtitle: `Job applicant - ${job?.job_title || 'Job post'} - ${job?.company_name || 'Your company'}`,
         status: application.status || 'applied',
         time: application.status_updated_at || application.updated_at || application.created_at,
-        to: application.job_id ? `/portal/hr/jobs/${application.job_id}/applicants` : '/portal/hr/applications',
+        to: job ? buildHrJobApplicantsPath(job) : '/portal/hr/applications',
         icon: name[0] || 'A'
       };
     }),
@@ -2287,7 +2293,7 @@ router.post('/jobs/:id/applicants/bulk', requireApprovedHr, asyncHandler(async (
     .from('applications')
     .update({ status: newStatus, hr_id: req.user.id, status_updated_at: new Date().toISOString() })
     .in('id', applicationIds)
-    .eq('job_id', jobId)
+    .eq('job_id', job.id)
     .select('id, applicant_id, status');
 
   if (error) { sendDatabaseError(res, error); return; }
@@ -2302,7 +2308,7 @@ router.post('/jobs/:id/applicants/bulk', requireApprovedHr, asyncHandler(async (
         title: `Application status updated: ${newStatusLabel}`,
         message: `${job.job_title} - your application is now ${newStatusLabel}.`,
         link: '/student',
-        meta: { applicationId: app.id, jobId, status: newStatus }
+        meta: { applicationId: app.id, jobId: job.id, status: newStatus }
       })
     )
   );
@@ -2337,7 +2343,7 @@ router.post('/jobs/:id/applicants/bulk', requireApprovedHr, asyncHandler(async (
     type: 'application_status',
     title: `Bulk action completed: ${newStatusLabel}`,
     message: `You marked ${updated.length} applicant${updated.length === 1 ? '' : 's'} as ${newStatusLabel} for ${job.job_title}.`,
-    link: `/portal/hr/jobs/${jobId}/applicants`,
+    link: buildHrJobApplicantsPath(job),
     detailLines: [`Job: ${job.job_title}`],
     meta: { jobId, status: newStatus, applicationIds: updated.map((app) => app.id) }
   });

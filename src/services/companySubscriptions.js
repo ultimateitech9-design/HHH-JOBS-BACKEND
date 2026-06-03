@@ -2,16 +2,16 @@ const fs = require('fs');
 const path = require('path');
 
 const { Database } = require('../db');
-const { buildSeoEntityPath } = require('../utils/helpers');
+const { buildSeoPath } = require('../utils/helpers');
 const { normalizeCompanyKey, toCompanySlug } = require('./companyDirectory');
 const { pushNotificationEvent } = require('./notificationStream');
 
 const { ROLES } = require('../constants');
 
 const STUDENT_JOB_LINK = ({ jobId, jobTitle, companyName, jobLocation, seoSlug }) =>
-  buildSeoEntityPath('/portal/student/jobs', jobId, seoSlug, jobTitle, companyName, jobLocation);
+  buildSeoPath('/portal/student/jobs', seoSlug, jobTitle, companyName, jobLocation);
 const RETIRED_JOB_LINK = ({ jobId, jobTitle, companyName, jobLocation, seoSlug }) =>
-  buildSeoEntityPath('/portal/retired/jobs', jobId, seoSlug, jobTitle, companyName, jobLocation);
+  buildSeoPath('/portal/retired/jobs', seoSlug, jobTitle, companyName, jobLocation);
 const CAMPUS_COMPANY_JOBS_LINK = '/portal/campus-connect/connections';
 const HR_JOBS_LINK = '/portal/hr/jobs';
 const STUDENT_CAMPUS_DRIVE_LINK = '/portal/student/campus-connect';

@@ -12,6 +12,7 @@ const { notifyCompanySubscribersForJob } = require('../services/companySubscript
 const { enqueueJobPostedSideEffects } = require('../services/sideEffectQueue');
 const { enqueueCreatedUserWelcomeEmail } = require('../services/createdUserWelcome');
 const { notifyUser } = require('../services/notificationOrchestrator');
+const { ensureUniqueJobSeoSlug } = require('../services/jobs');
 const { PLAN_SLUGS } = require('../modules/pricing/constants');
 const portalStore = require('../mock/portalStore');
 
@@ -237,7 +238,10 @@ const prepareDataEntryHrJob = async ({ title = '', entryData = {}, registeredCom
     throw error;
   }
 
-  const seoSlug = buildSeoSlug(jobTitle, registeredCompany.companyName, cityName || districtName || jobLocation);
+  const seoSlug = await ensureUniqueJobSeoSlug(
+    buildSeoSlug(jobTitle, registeredCompany.companyName, cityName || districtName || jobLocation),
+    { excludeJobId: entryData.jobId || entryData.job_id || '' }
+  );
 
   return {
     jobInsert: {

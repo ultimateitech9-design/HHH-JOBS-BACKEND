@@ -187,7 +187,7 @@ test('notifyCompanySubscribersForJob sends one notification per subscribed porta
   assert.deepEqual(summary, { skipped: false, notificationsSent: 3 });
   assert.deepEqual(state.notifications.map((item) => item.user_id).sort(), ['campus-1', 'hr-1', 'student-1']);
   assert.equal(state.notifications[0].type, 'company_job_posted');
-  assert.equal(state.notifications[0].link, '/portal/student/jobs/frontend-intern-acme-labs-job-1');
+  assert.equal(state.notifications[0].link, '/portal/student/jobs/frontend-intern-acme-labs');
   assert.equal(state.notifications.find((item) => item.user_id === 'hr-1').link, '/portal/hr/jobs');
   assert.equal(state.notifications.find((item) => item.user_id === 'campus-1').link, '/portal/campus-connect/connections');
 });
@@ -244,7 +244,7 @@ test('company subscriptions fall back when Database table is missing', async () 
 
   assert.deepEqual(summary, { skipped: false, notificationsSent: 1 });
   assert.equal(state.notifications[0].user_id, 'fallback-student-1');
-  assert.equal(state.notifications[0].link, '/portal/student/jobs/backend-intern-fallback-labs-fallback-job-1');
+  assert.equal(state.notifications[0].link, '/portal/student/jobs/backend-intern-fallback-labs');
 });
 
 test('notifyCompanySubscribersForCampusDrive sends subscribed company drive notifications', async () => {

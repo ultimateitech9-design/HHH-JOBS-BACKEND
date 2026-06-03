@@ -29,11 +29,7 @@ const extractUuidFromSlug = (value = '') => {
     .filter(Boolean)
     .pop() || '';
 
-  if (!lastSegment || !lastSegment.includes('-')) return lastSegment;
-
-  const parts = lastSegment.split('-').filter(Boolean);
-  const candidate = parts[parts.length - 1] || '';
-  return /^[a-z0-9]{6,}$/i.test(candidate) ? candidate : lastSegment;
+  return lastSegment || rawValue;
 };
 
 const extractSeoPathSegment = (value = '') => {
@@ -101,6 +97,9 @@ const buildSeoEntityPath = (basePath = '', id = '', ...parts) => {
   return `${cleanBasePath(basePath)}/${buildSeoSlug(...parts) || 'details'}-${entityId}`;
 };
 
+const buildSeoPath = (basePath = '', ...parts) =>
+  `${cleanBasePath(basePath)}/${buildSeoSlug(...parts) || 'details'}`;
+
 const maskEmail = (email = '') => {
   const value = String(email || '').trim();
   if (!value || !value.includes('@')) return null;
@@ -141,6 +140,7 @@ module.exports = {
   isValidUuid,
   slugify,
   buildSeoSlug,
+  buildSeoPath,
   buildSeoEntityPath,
   maskEmail,
   maskMobile,

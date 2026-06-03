@@ -4,7 +4,7 @@ const { extractUuidFromSlug, normalizeEmail } = require('../utils/helpers');
 const { mapApplicationFromRow } = require('../utils/mappers');
 const { createNotification } = require('./notifications');
 const { notifyUser } = require('./notificationOrchestrator');
-const { autoCloseExpiredJob } = require('./jobs');
+const { autoCloseExpiredJob, resolveJobIdentifier, buildHrJobApplicantsPath } = require('./jobs');
 const { isJobExpiredByApplications } = require('../modules/pricing/engine');
 
 const buildApplicationError = (statusCode, message, code = '') => {
@@ -15,14 +15,9 @@ const buildApplicationError = (statusCode, message, code = '') => {
 };
 
 const loadOpenJobForApplication = async (jobId) => {
-  const { data: fetchedJob, error: jobError } = await Database
-    .from('jobs')
-    .select('*')
-    .eq('id', jobId)
-    .maybeSingle();
-
+  const { data: fetchedJob, error: jobError, statusCode } = await resolveJobIdentifier(jobId);
   if (jobError) {
-    throw jobError;
+    throw buildApplicationError(statusCode || 500, jobError.message || 'Job not found');
   }
 
   if (!fetchedJob || fetchedJob.status !== JOB_STATUSES.OPEN) {
@@ -105,10 +100,10 @@ const submitApplicationForUser = async ({
   const normalizedCoverLetter = String(coverLetter || '').trim() || null;
   const studentMessage = studentNotification.message
     || `Your application to ${job.job_title} was submitted successfully.`;
-  const hrApplicantLink = `/portal/hr/jobs/${job.id || jobId}/applicants`;
+  const hrApplicantLink = buildHrJobApplicantsPath(job);
 
   const applicationInsert = {
-    job_id: jobId,
+    job_id: job.id,
     applicant_id: user.id,
     applicant_email: normalizeEmail(user.email),
     hr_id: job.created_by,
@@ -132,7 +127,7 @@ const submitApplicationForUser = async ({
   }
 
   await Database.from('job_applications').insert({
-    job_id: jobId,
+    job_id: job.id,
     applicant_email: normalizeEmail(user.email),
     resume_link: resolvedResume.resumeUrl || 'PROFILE_RESUME_TEXT'
   });

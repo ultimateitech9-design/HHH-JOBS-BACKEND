@@ -3,14 +3,13 @@ const { sendPushToUser } = require('./webPush');
 const { sendJobAlertWhatsApp, getWhatsAppPreference } = require('./whatsapp');
 const { sendEmailWithFallback } = require('./email');
 const { Database } = require('../db');
-const { buildSeoEntityPath } = require('../utils/helpers');
+const { buildSeoPath } = require('../utils/helpers');
 
 const CHANNELS = { IN_APP: 'in_app', EMAIL: 'email', PUSH: 'push', WHATSAPP: 'whatsapp' };
 
 const buildStudentJobSeoLink = (job = {}) =>
-  buildSeoEntityPath(
+  buildSeoPath(
     '/portal/student/jobs',
-    job.id,
     job.seo_slug || job.seoSlug,
     job.job_title || job.jobTitle,
     job.company_name || job.companyName,

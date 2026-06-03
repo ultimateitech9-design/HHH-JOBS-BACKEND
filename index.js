@@ -322,8 +322,7 @@ app.get('/all-jobs', automationProtection, publicCatalogRateLimiter, setCatalogC
 
 app.get('/all-jobs/:id', automationProtection, publicCatalogRateLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!ensureDatabaseConfig(res)) return;
-  const jobId = extractUuidFromSlug(req.params.id);
-  const { data, error, statusCode } = await getJobByIdAndOptionallyTrackView(jobId, true);
+  const { data, error, statusCode } = await getJobByIdAndOptionallyTrackView(req.params.id, true);
   if (error) {
     res.status(statusCode).send({ status: false, message: error.message });
     return;

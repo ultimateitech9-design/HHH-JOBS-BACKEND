@@ -206,6 +206,7 @@ test('helper utilities normalize and mask values safely', () => {
   assert.equal(isValidUuid('550e8400-e29b-41d4-a716-446655440000'), true);
   assert.equal(isValidUuid('8554f053-c7ba-f417-b5da-b9862ec05236'), true);
   assert.equal(extractUuidFromSlug('upsc-civil-services-8554f053-c7ba-f417-b5da-b9862ec05236'), '8554f053-c7ba-f417-b5da-b9862ec05236');
+  assert.equal(extractUuidFromSlug('data-analyst-ultimate-itech-ghitorni-new-delhi'), 'data-analyst-ultimate-itech-ghitorni-new-delhi');
   assert.equal(isValidUuid('upsc-civil-services-8554f053-c7ba-f417-b5da-b9862ec05236'), false);
   assert.equal(maskEmail('john.doe@example.com'), 'jo******@example.com');
   assert.equal(maskMobile('+91 98765 43210'), '********3210');

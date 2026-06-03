@@ -1,6 +1,15 @@
 const { Database, sendDatabaseError } = require('../db');
 const { JOB_STATUSES, JOB_APPROVAL_STATUSES, ROLES } = require('../constants');
-const { normalizeEmail, stripUndefined, toArray, isValidUuid, extractUuidFromSlug, buildSeoSlug } = require('../utils/helpers');
+const {
+  normalizeEmail,
+  stripUndefined,
+  toArray,
+  isValidUuid,
+  extractUuidFromSlug,
+  extractSeoPathSegment,
+  buildSeoSlug,
+  buildSeoPath
+} = require('../utils/helpers');
 const { mapJobFromRow } = require('../utils/mappers');
 const { notifyUsersByRoles } = require('./notifications');
 const { notifyCompanySubscribersForJob } = require('./companySubscriptions');
@@ -24,6 +33,136 @@ const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase
 const MAX_JOB_POSTING_LOCATIONS = 1;
 const MAX_JOB_POSTING_DESCRIPTION_CHARS = 250;
 const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
+
+const buildCanonicalJobSeoSlug = (job = {}) => buildSeoSlug(
+  job.seo_slug || job.seoSlug,
+  job.job_title || job.jobTitle,
+  job.company_name || job.companyName,
+  job.city_name || job.cityName,
+  job.district_name || job.districtName,
+  job.job_location || job.jobLocation
+);
+
+const buildHrJobApplicantsPath = (job = {}, applicationId = '') => {
+  const basePath = `${buildSeoPath('/portal/hr/jobs', buildCanonicalJobSeoSlug(job))}/applicants`;
+  return applicationId ? `${basePath}?applicationId=${applicationId}` : basePath;
+};
+
+const findJobBySeoSlug = async (rawIdentifier, { includeDeleted = false } = {}) => {
+  const seoSlug = buildSeoSlug(extractSeoPathSegment(rawIdentifier));
+  if (!seoSlug) return { data: null, error: null };
+
+  let exactQuery = Database
+    .from('jobs')
+    .select('*')
+    .eq('seo_slug', seoSlug)
+    .limit(25);
+
+  if (!includeDeleted) {
+    exactQuery = exactQuery.neq('status', JOB_STATUSES.DELETED);
+  }
+
+  const exactResponse = await exactQuery;
+  if (exactResponse.error) return { data: null, error: exactResponse.error };
+  if ((exactResponse.data || []).length > 0) {
+    const exactMatches = (exactResponse.data || []).sort((left, right) =>
+      new Date(right.created_at || 0).getTime() - new Date(left.created_at || 0).getTime()
+    );
+    return { data: exactMatches[0], error: null };
+  }
+
+  let prefixQuery = Database
+    .from('jobs')
+    .select('*')
+    .ilike('seo_slug', `${seoSlug}%`)
+    .limit(25);
+
+  if (!includeDeleted) {
+    prefixQuery = prefixQuery.neq('status', JOB_STATUSES.DELETED);
+  }
+
+  const { data, error } = await prefixQuery;
+  if (error) return { data: null, error };
+
+  const candidates = (data || [])
+    .map((job) => ({
+      job,
+      canonicalSeoSlug: buildCanonicalJobSeoSlug(job),
+      exactStoredSlug: String(job.seo_slug || '').trim().toLowerCase()
+    }))
+    .filter((entry) => entry.canonicalSeoSlug === seoSlug || entry.exactStoredSlug === seoSlug)
+    .sort((left, right) => {
+      const leftExact = Number(left.exactStoredSlug === seoSlug);
+      const rightExact = Number(right.exactStoredSlug === seoSlug);
+      if (rightExact !== leftExact) return rightExact - leftExact;
+
+      const leftCreatedAt = new Date(left.job.created_at || 0).getTime();
+      const rightCreatedAt = new Date(right.job.created_at || 0).getTime();
+      return rightCreatedAt - leftCreatedAt;
+    });
+
+  return { data: candidates[0]?.job || null, error: null };
+};
+
+const resolveJobIdentifier = async (rawIdentifier, { includeDeleted = false } = {}) => {
+  const identifier = String(rawIdentifier || '').trim();
+  if (!identifier) return { data: null, error: { message: 'Job not found' }, statusCode: 404 };
+
+  const uuidCandidate = extractUuidFromSlug(identifier);
+  if (isValidUuid(uuidCandidate)) {
+    let idQuery = Database
+      .from('jobs')
+      .select('*')
+      .eq('id', uuidCandidate);
+
+    if (!includeDeleted) {
+      idQuery = idQuery.neq('status', JOB_STATUSES.DELETED);
+    }
+
+    const { data, error } = await idQuery.maybeSingle();
+    if (error) return { data: null, error, statusCode: 500 };
+    if (data) return { data, error: null, statusCode: 200 };
+  }
+
+  const slugResult = await findJobBySeoSlug(identifier, { includeDeleted });
+  if (slugResult.error) return { data: null, error: slugResult.error, statusCode: 500 };
+  if (slugResult.data) return { data: slugResult.data, error: null, statusCode: 200 };
+
+  return { data: null, error: { message: 'Job not found' }, statusCode: 404 };
+};
+
+const ensureUniqueJobSeoSlug = async (rawSlug, { excludeJobId = '' } = {}) => {
+  const baseSlug = buildSeoSlug(rawSlug);
+  if (!baseSlug) return null;
+
+  let counter = 0;
+  while (counter < 200) {
+    const candidate = counter === 0 ? baseSlug : buildSeoSlug(`${baseSlug}-${counter + 1}`);
+    let query = Database
+      .from('jobs')
+      .select('*')
+      .ilike('seo_slug', `${candidate}%`)
+      .limit(25);
+
+    if (excludeJobId) {
+      query = query.neq('id', excludeJobId);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const hasConflict = (data || []).some((job) => {
+      const storedSlug = String(job.seo_slug || '').trim().toLowerCase();
+      const canonicalSeoSlug = buildCanonicalJobSeoSlug(job);
+      return storedSlug === candidate || canonicalSeoSlug === candidate;
+    });
+
+    if (!hasConflict) return candidate;
+    counter += 1;
+  }
+
+  return buildSeoSlug(`${baseSlug}-${Date.now()}`);
+};
 
 const isRoleSubscriptionUsableForPosting = (subscription = null) => {
   if (!subscription) return false;
@@ -325,13 +464,13 @@ const resolvePlanForJob = async (job = {}) => {
 };
 
 const assertJobOwnership = async (jobId, reqUser, res) => {
-  const { data: job, error } = await Database
-    .from('jobs')
-    .select('*')
-    .eq('id', jobId)
-    .maybeSingle();
+  const { data: job, error, statusCode } = await resolveJobIdentifier(jobId, { includeDeleted: true });
 
   if (error) {
+    if (statusCode === 404) {
+      res.status(404).send({ status: false, message: 'Job not found' });
+      return null;
+    }
     sendDatabaseError(res, error);
     return null;
   }
@@ -531,8 +670,11 @@ const createHrJob = async (req, res) => {
       });
     }
 
+    const uniqueSeoSlug = await ensureUniqueJobSeoSlug(payload.seo_slug);
+
     const jobInsert = {
       ...payload,
+      seo_slug: uniqueSeoSlug || undefined,
       company_logo: normalizeLogoInput(payload.company_logo) || fallbackCompanyLogo || null,
       ...planValidation.jobPlanFields,
       consumed_credit_id: null,
@@ -583,7 +725,7 @@ const createHrJob = async (req, res) => {
 };
 
 const updateHrJob = async (req, res) => {
-  const jobId = extractUuidFromSlug(req.params.id);
+  const jobId = req.params.id;
   const existingJob = await assertJobOwnership(jobId, req.user, res);
   if (!existingJob) return;
 
@@ -693,7 +835,7 @@ const updateHrJob = async (req, res) => {
     : payload.job_location !== undefined
       ? payload.job_location
       : existingJob.job_location;
-  const effectiveSeoSlug = optionalText(req.body?.seoSlug ?? req.body?.seo_slug)
+  const requestedSeoSlug = optionalText(req.body?.seoSlug ?? req.body?.seo_slug)
     || buildSeoSlug(
       payload.job_title !== undefined ? payload.job_title : existingJob.job_title,
       payload.company_name !== undefined ? payload.company_name : existingJob.company_name,
@@ -701,6 +843,7 @@ const updateHrJob = async (req, res) => {
       payload.district_name !== undefined ? payload.district_name : existingJob.district_name,
       effectiveJobLocationForSlug
     );
+  const effectiveSeoSlug = await ensureUniqueJobSeoSlug(requestedSeoSlug, { excludeJobId: existingJob.id });
 
   const updateDoc = stripUndefined({
     ...payload,
@@ -748,7 +891,7 @@ const updateHrJob = async (req, res) => {
   const { data, error } = await Database
     .from('jobs')
     .update(updateDoc)
-    .eq('id', jobId)
+    .eq('id', existingJob.id)
     .select('*')
     .single();
 
@@ -766,14 +909,14 @@ const updateHrJob = async (req, res) => {
 };
 
 const deleteHrJob = async (req, res) => {
-  const jobId = extractUuidFromSlug(req.params.id);
+  const jobId = req.params.id;
   const existingJob = await assertJobOwnership(jobId, req.user, res);
   if (!existingJob) return;
 
   const { data, error } = await Database
     .from('jobs')
     .update({ status: JOB_STATUSES.DELETED, closed_at: new Date().toISOString() })
-    .eq('id', jobId)
+    .eq('id', existingJob.id)
     .select('id')
     .maybeSingle();
 
@@ -816,14 +959,9 @@ const autoCloseExpiredJob = async (job) => {
 };
 
 const getJobByIdAndOptionallyTrackView = async (jobId, trackView = false) => {
-  const { data: job, error } = await Database
-    .from('jobs')
-    .select('*')
-    .eq('id', jobId)
-    .maybeSingle();
-
+  const { data: job, error, statusCode } = await resolveJobIdentifier(jobId);
   if (error || !job) {
-    return { data: null, error: error || { message: 'Job not found' }, statusCode: job ? 500 : 404 };
+    return { data: null, error: error || { message: 'Job not found' }, statusCode: statusCode || (job ? 500 : 404) };
   }
 
   const currentJob = await autoCloseExpiredJob(job);
@@ -836,7 +974,7 @@ const getJobByIdAndOptionallyTrackView = async (jobId, trackView = false) => {
   const { data: updated, error: updateError } = await Database
     .from('jobs')
     .update({ views_count: updatedViews })
-    .eq('id', jobId)
+    .eq('id', currentJob.id)
     .select('*')
     .single();
 
@@ -849,8 +987,12 @@ const getJobByIdAndOptionallyTrackView = async (jobId, trackView = false) => {
 
 module.exports = {
   buildJobPayload,
+  buildCanonicalJobSeoSlug,
+  buildHrJobApplicantsPath,
   applyJobFilters,
   assertJobOwnership,
+  ensureUniqueJobSeoSlug,
+  resolveJobIdentifier,
   createHrJob,
   updateHrJob,
   deleteHrJob,

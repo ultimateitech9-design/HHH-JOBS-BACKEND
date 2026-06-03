@@ -1,6 +1,7 @@
 const { ROLES } = require('../constants');
 const { Database } = require('../db');
 const { isValidUuid, maskEmail, maskMobile } = require('../utils/helpers');
+const { buildHrJobApplicantsPath } = require('./jobs');
 
 const DEFAULT_TEMPLATES = [
   {
@@ -1407,7 +1408,7 @@ const listHrShortlistedCandidates = async ({ hrUser }) => {
         id: `job-${item.id}`,
         sourceType: 'job_application',
         sourceLabel: 'Job Shortlisted',
-        sourceRoute: item.job_id ? `/portal/hr/jobs/${item.job_id}/applicants?applicationId=${item.id}` : '/portal/hr/applications?status=shortlisted',
+        sourceRoute: job?.id ? buildHrJobApplicantsPath(job, item.id) : '/portal/hr/applications?status=shortlisted',
         student_user_id: item.applicant_id || `job-${item.id}`,
         application_id: item.id,
         job_id: item.job_id,
