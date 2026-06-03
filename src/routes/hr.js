@@ -41,6 +41,19 @@ router.use(requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN, RO
 
 const getInterviewRoomHostId = (interview = {}) => interview.shared_room_host_interview_id || interview.id;
 const uniqueValidUuids = (values = []) => [...new Set((Array.isArray(values) ? values : []).filter((value) => isValidUuid(value)))];
+const isMissingColumnError = (error = {}, column = '') => {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || error?.details || '').toLowerCase();
+  const normalizedColumn = String(column || '').toLowerCase();
+
+  return ['42703', '42S22', 'ER_BAD_FIELD_ERROR', 'PGRST204'].includes(code)
+    || (normalizedColumn && message.includes(normalizedColumn) && (
+      message.includes('unknown column')
+      || message.includes('field list')
+      || message.includes('schema cache')
+      || message.includes('could not find')
+    ));
+};
 const P2P_INTERVIEW_ROOM_PARTICIPANTS = 25;
 const MAX_INTERVIEW_ROOM_PARTICIPANTS = 500;
 const DEFAULT_CAMPUS_APPLICANTS_PAGE_SIZE = 25;
@@ -659,22 +672,57 @@ const loadHrDashboardCampusSnapshot = async ({ targetUserId, companyName = '' } 
   return { campusDrives, campusApplications, candidateMap };
 };
 
+const fetchHrDashboardJobs = async (targetUserId) => {
+  const baseSelect = 'id, job_title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key';
+  const fallbackSelect = 'id, title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key';
+
+  const buildQuery = (selectColumns) => Database
+    .from('jobs')
+    .select(selectColumns)
+    .eq('created_by', targetUserId)
+    .neq('status', JOB_STATUSES.DELETED)
+    .order('updated_at', { ascending: false, nullsFirst: false })
+    .limit(500);
+
+  const response = await buildQuery(baseSelect);
+  if (!response.error) return response;
+  if (!isMissingColumnError(response.error, 'job_title')) return response;
+
+  const fallbackResponse = await buildQuery(fallbackSelect);
+  if (fallbackResponse.error) return fallbackResponse;
+
+  return {
+    ...fallbackResponse,
+    data: (fallbackResponse.data || []).map((job) => ({
+      ...job,
+      job_title: job.job_title || job.title || 'Job post'
+    }))
+  };
+};
+
+const fetchHrDashboardInterviews = async (targetUserId) => {
+  const baseSelect = 'id, title, status, room_status, candidate_id, job_id, campus_drive_id, campus_application_id, scheduled_at, created_at, updated_at, job_title, company_name';
+  const fallbackSelect = 'id, title, status, room_status, candidate_id, job_id, campus_drive_id, campus_application_id, scheduled_at, created_at, updated_at, company_name';
+
+  const buildQuery = (selectColumns) => Database
+    .from('interview_schedules')
+    .select(selectColumns)
+    .eq('hr_id', targetUserId)
+    .order('scheduled_at', { ascending: true, nullsFirst: false })
+    .limit(30);
+
+  const response = await buildQuery(baseSelect);
+  if (!response.error) return response;
+  if (!isMissingColumnError(response.error, 'job_title')) return response;
+
+  return buildQuery(fallbackSelect);
+};
+
 const loadHrDashboardSnapshot = async (req) => {
   const targetUserId = resolveHrTargetUserId(req);
   const [jobsResp, interviewsResp, profileResp] = await Promise.all([
-    Database
-      .from('jobs')
-      .select('id, job_title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key')
-      .eq('created_by', targetUserId)
-      .neq('status', JOB_STATUSES.DELETED)
-      .order('updated_at', { ascending: false, nullsFirst: false })
-      .limit(500),
-    Database
-      .from('interview_schedules')
-      .select('id, title, status, room_status, candidate_id, job_id, campus_drive_id, campus_application_id, scheduled_at, created_at, updated_at, job_title, company_name')
-      .eq('hr_id', targetUserId)
-      .order('scheduled_at', { ascending: true, nullsFirst: false })
-      .limit(30),
+    fetchHrDashboardJobs(targetUserId),
+    fetchHrDashboardInterviews(targetUserId),
     Database
       .from('hr_profiles')
       .select('company_name')
