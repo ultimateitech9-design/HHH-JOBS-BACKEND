@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES } = require('../constants');
-const { Database, countRows, sendDatabaseError } = require('../db');
+const { Database, countRows, sendDatabaseError, sumRows } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
@@ -9,46 +9,50 @@ const router = express.Router();
 
 router.use(requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.ACCOUNTS));
 
+const getCurrentMonthRange = () => {
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  return { monthStart, nextMonthStart };
+};
+
 // =============================================
 // Overview
 // =============================================
 router.get('/overview', asyncHandler(async (req, res) => {
+  const { monthStart, nextMonthStart } = getCurrentMonthRange();
   const [
     totalTransactions,
     totalInvoices,
     pendingInvoices,
     activeSubscriptions,
     pendingExpenses,
-    pendingPayouts
+    pendingPayouts,
+    totalRevenue,
+    monthRevenue,
+    totalExpenses
   ] = await Promise.all([
     countRows('accounts_transactions'),
     countRows('accounts_invoices'),
     countRows('accounts_invoices', (q) => q.eq('status', 'pending')),
     countRows('accounts_subscriptions', (q) => q.eq('status', 'active')),
     countRows('accounts_expenses', (q) => q.eq('status', 'pending')),
-    countRows('accounts_payouts', (q) => q.eq('status', 'pending'))
+    countRows('accounts_payouts', (q) => q.eq('status', 'pending')),
+    sumRows('accounts_transactions', 'amount', [
+      { column: 'type', operator: '=', value: 'credit' },
+      { column: 'status', operator: '=', value: 'completed' }
+    ]),
+    sumRows('accounts_transactions', 'amount', [
+      { column: 'type', operator: '=', value: 'credit' },
+      { column: 'status', operator: '=', value: 'completed' },
+      { column: 'created_at', operator: '>=', value: monthStart },
+      { column: 'created_at', operator: '<', value: nextMonthStart }
+    ]),
+    sumRows('accounts_transactions', 'amount', [
+      { column: 'type', operator: '=', value: 'debit' },
+      { column: 'status', operator: '=', value: 'completed' }
+    ])
   ]);
-
-  const { data: creditRows } = await Database
-    .from('accounts_transactions')
-    .select('amount, created_at')
-    .eq('type', 'credit')
-    .eq('status', 'completed');
-
-  const { data: debitRows } = await Database
-    .from('accounts_transactions')
-    .select('amount')
-    .eq('type', 'debit')
-    .eq('status', 'completed');
-
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-
-  const totalRevenue = (creditRows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
-  const monthRevenue = (creditRows || [])
-    .filter((r) => r.created_at >= monthStart)
-    .reduce((sum, r) => sum + Number(r.amount || 0), 0);
-  const totalExpenses = (debitRows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
 
   res.send({
     status: true,
@@ -431,25 +435,27 @@ router.put('/payment-settings', asyncHandler(async (req, res) => {
 // Revenue Report
 // =============================================
 router.get('/reports/revenue', asyncHandler(async (req, res) => {
-  const { data: creditRows } = await Database
-    .from('accounts_transactions')
-    .select('amount, created_at')
-    .eq('type', 'credit')
-    .eq('status', 'completed')
-    .order('created_at', { ascending: false })
-    .limit(1000);
-
-  const { data: debitRows } = await Database
-    .from('accounts_transactions')
-    .select('amount')
-    .eq('type', 'debit')
-    .eq('status', 'completed');
-
-  const totalRevenue = (creditRows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
-  const totalExpenses = (debitRows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
+  const [creditRowsResponse, totalRevenue, totalExpenses] = await Promise.all([
+    Database
+      .from('accounts_transactions')
+      .select('amount, created_at')
+      .eq('type', 'credit')
+      .eq('status', 'completed')
+      .order('created_at', { ascending: false })
+      .limit(1000),
+    sumRows('accounts_transactions', 'amount', [
+      { column: 'type', operator: '=', value: 'credit' },
+      { column: 'status', operator: '=', value: 'completed' }
+    ]),
+    sumRows('accounts_transactions', 'amount', [
+      { column: 'type', operator: '=', value: 'debit' },
+      { column: 'status', operator: '=', value: 'completed' }
+    ])
+  ]);
+  const creditRows = creditRowsResponse.data || [];
 
   const monthlyMap = {};
-  for (const row of (creditRows || [])) {
+  for (const row of creditRows) {
     const d = new Date(row.created_at);
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     monthlyMap[key] = (monthlyMap[key] || 0) + Number(row.amount || 0);

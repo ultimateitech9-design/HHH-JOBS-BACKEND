@@ -10,7 +10,7 @@ const {
   PAYMENT_STATUSES,
   AUDIT_ACTIONS
 } = require('../constants');
-const { Database, countRows, sendDatabaseError } = require('../db');
+const { Database, countRows, countRowsByColumn, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { mapJobFromRow, mapApplicationFromRow, mapReportFromRow } = require('../utils/mappers');
@@ -70,6 +70,22 @@ const toOptionalInteger = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const getCount = (countMap, key) => Number(countMap.get(String(key || '').toLowerCase()) || 0);
+const sumCountMap = (countMap) => [...countMap.values()].reduce((sum, value) => sum + Number(value || 0), 0);
+
+const applyOptionalRange = (query, req, { defaultLimit = 0, maxLimit = 100 } = {}) => {
+  const hasExplicitLimit = req.query.limit !== undefined;
+  const limit = hasExplicitLimit
+    ? clamp(parseInt(req.query.limit || defaultLimit, 10) || defaultLimit, 1, maxLimit)
+    : defaultLimit;
+
+  if (!limit) return query;
+
+  const page = Math.max(1, parseInt(req.query.page || '1', 10) || 1);
+  const offset = (page - 1) * limit;
+  return query.range(offset, offset + limit - 1);
+};
+
 const normalizeAdminSettings = (payload = {}) => {
   const source = payload && typeof payload === 'object' ? payload : {};
 
@@ -95,59 +111,45 @@ const normalizeAdminSettings = (payload = {}) => {
 // Analytics
 // =============================================
 router.get('/analytics', asyncHandler(async (req, res) => {
-  const excludeCampusConnectUsers = (query) => query.neq('role', ROLES.CAMPUS_CONNECT);
-
   const [
-    totalUsers,
-    totalHr,
+    userRoleCounts,
+    userStatusCounts,
     approvedHr,
-    totalStudents,
-    activeUsers,
-    blockedUsers,
-    bannedUsers,
-    totalJobs,
-    openJobs,
-    closedJobs,
-    deletedJobs,
+    jobStatusCounts,
     pendingJobs,
     totalApplications,
-    reportsOpen,
-    reportsTotal
+    reportStatusCounts
   ] = await Promise.all([
-    countRows('users', excludeCampusConnectUsers),
-    countRows('users', (q) => q.eq('role', ROLES.HR)),
+    countRowsByColumn('users', 'role', [{ column: 'role', operator: '<>', value: ROLES.CAMPUS_CONNECT }]),
+    countRowsByColumn('users', 'status', [{ column: 'role', operator: '<>', value: ROLES.CAMPUS_CONNECT }]),
     countRows('users', (q) => q.eq('role', ROLES.HR).eq('is_hr_approved', true)),
-    countRows('users', (q) => q.eq('role', ROLES.STUDENT)),
-    countRows('users', (q) => excludeCampusConnectUsers(q).eq('status', USER_STATUSES.ACTIVE)),
-    countRows('users', (q) => excludeCampusConnectUsers(q).eq('status', USER_STATUSES.BLOCKED)),
-    countRows('users', (q) => excludeCampusConnectUsers(q).eq('status', USER_STATUSES.BANNED)),
-    countRows('jobs'),
-    countRows('jobs', (q) => q.eq('status', JOB_STATUSES.OPEN)),
-    countRows('jobs', (q) => q.eq('status', JOB_STATUSES.CLOSED)),
-    countRows('jobs', (q) => q.eq('status', JOB_STATUSES.DELETED)),
+    countRowsByColumn('jobs', 'status'),
     countRows('jobs', (q) => q.eq('approval_status', JOB_APPROVAL_STATUSES.PENDING)),
     countRows('applications'),
-    countRows('reports', (q) => q.eq('status', 'open')),
-    countRows('reports')
+    countRowsByColumn('reports', 'status')
   ]);
+
+  const totalUsers = sumCountMap(userRoleCounts);
+  const totalJobs = sumCountMap(jobStatusCounts);
+  const reportsTotal = sumCountMap(reportStatusCounts);
 
   res.send({
     status: true,
     analytics: {
       totalUsers,
-      totalHr,
+      totalHr: getCount(userRoleCounts, ROLES.HR),
       approvedHr,
-      totalStudents,
-      activeUsers,
-      blockedUsers,
-      bannedUsers,
+      totalStudents: getCount(userRoleCounts, ROLES.STUDENT),
+      activeUsers: getCount(userStatusCounts, USER_STATUSES.ACTIVE),
+      blockedUsers: getCount(userStatusCounts, USER_STATUSES.BLOCKED),
+      bannedUsers: getCount(userStatusCounts, USER_STATUSES.BANNED),
       totalJobs,
-      openJobs,
-      closedJobs,
-      deletedJobs,
+      openJobs: getCount(jobStatusCounts, JOB_STATUSES.OPEN),
+      closedJobs: getCount(jobStatusCounts, JOB_STATUSES.CLOSED),
+      deletedJobs: getCount(jobStatusCounts, JOB_STATUSES.DELETED),
       pendingJobs,
       totalApplications,
-      reportsOpen,
+      reportsOpen: getCount(reportStatusCounts, 'open'),
       reportsTotal
     }
   });
@@ -160,6 +162,7 @@ router.get('/users', asyncHandler(async (req, res) => {
   const role = String(req.query.role || '').toLowerCase();
   const status = String(req.query.status || '').toLowerCase();
   const search = String(req.query.search || '').trim();
+  const approved = String(req.query.approved || '').toLowerCase();
 
   let query = Database
     .from('users')
@@ -168,7 +171,10 @@ router.get('/users', asyncHandler(async (req, res) => {
 
   if (ADMIN_USER_FILTER_ROLES.has(role)) query = query.eq('role', role);
   if ([USER_STATUSES.ACTIVE, USER_STATUSES.BLOCKED, USER_STATUSES.BANNED].includes(status)) query = query.eq('status', status);
+  if (approved === 'true') query = query.eq('is_hr_approved', true);
+  if (approved === 'false') query = query.or('is_hr_approved.eq.false,is_hr_approved.is.null');
   if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
+  query = applyOptionalRange(query, req, { maxLimit: 100 });
 
   const { data, error } = await query;
   if (error) {
@@ -264,8 +270,11 @@ router.patch('/hr/:id/approve', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/jobs', asyncHandler(async (req, res) => {
   const status = String(req.query.status || '').toLowerCase();
+  const approvalStatus = String(req.query.approvalStatus || req.query.approval_status || '').toLowerCase();
   let query = Database.from('jobs').select('*').order('created_at', { ascending: false });
   if ([JOB_STATUSES.OPEN, JOB_STATUSES.CLOSED, JOB_STATUSES.DELETED].includes(status)) query = query.eq('status', status);
+  if (Object.values(JOB_APPROVAL_STATUSES).includes(approvalStatus)) query = query.eq('approval_status', approvalStatus);
+  query = applyOptionalRange(query, req, { maxLimit: 100 });
 
   const { data, error } = await query;
   if (error) {
@@ -381,6 +390,7 @@ router.get('/reports', asyncHandler(async (req, res) => {
   const status = String(req.query.status || '').toLowerCase();
   let query = Database.from('reports').select('*').order('created_at', { ascending: false });
   if (REPORT_STATUSES.includes(status)) query = query.eq('status', status);
+  query = applyOptionalRange(query, req, { maxLimit: 100 });
 
   const { data, error } = await query;
   if (error) {

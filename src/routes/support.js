@@ -1,7 +1,7 @@
 const express = require('express');
 const { randomUUID } = require('crypto');
 const { ROLES } = require('../constants');
-const { Database, countRows, sendDatabaseError } = require('../db');
+const { Database, countRows, countRowsByColumn, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { asyncHandler } = require('../utils/helpers');
@@ -22,6 +22,8 @@ const SUPPORT_ACTIVE_CHAT_STATUSES = ['open', 'active', 'pending'];
 const CUSTOMER_OPEN_CHAT_STATUSES = ['open', 'active', 'pending', 'waiting'];
 const VISIBLE_CHAT_STATUSES = ['open', 'active', 'pending', 'waiting'];
 const SUPPORT_AGENT_MAX_ACTIVE_CHATS = Math.max(1, parseInt(process.env.SUPPORT_AGENT_MAX_ACTIVE_CHATS || '1', 10) || 1);
+const getCount = (countMap, key) => Number(countMap.get(String(key || '').toLowerCase()) || 0);
+const sumCountMap = (countMap) => [...countMap.values()].reduce((sum, value) => sum + Number(value || 0), 0);
 const normalizeDepartment = (value = '') => {
   const normalized = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, '');
   if (normalized === 'dataentry' || normalized === 'dataentryteam') return 'dataentry';
@@ -1781,19 +1783,22 @@ router.get('/feedback', asyncHandler(async (req, res) => {
 // Reports
 // =============================================
 router.get('/reports', asyncHandler(async (req, res) => {
-  const [total, open, pending, resolved, escalated, complaints, feedback] = await Promise.all([
-    countRows('support_tickets'),
-    countRows('support_tickets', (q) => q.eq('status', 'open')),
-    countRows('support_tickets', (q) => q.eq('status', 'pending')),
-    countRows('support_tickets', (q) => q.eq('status', 'resolved')),
-    countRows('support_tickets', (q) => q.eq('status', 'escalated')),
-    countRows('support_tickets', (q) => q.eq('category', 'complaint')),
-    countRows('support_tickets', (q) => q.eq('category', 'feedback'))
+  const [statusCounts, categoryCounts] = await Promise.all([
+    countRowsByColumn('support_tickets', 'status'),
+    countRowsByColumn('support_tickets', 'category')
   ]);
 
   res.send({
     status: true,
-    reports: { total, open, pending, resolved, escalated, complaints, feedback }
+    reports: {
+      total: sumCountMap(statusCounts),
+      open: getCount(statusCounts, 'open'),
+      pending: getCount(statusCounts, 'pending'),
+      resolved: getCount(statusCounts, 'resolved'),
+      escalated: getCount(statusCounts, 'escalated'),
+      complaints: getCount(categoryCounts, 'complaint'),
+      feedback: getCount(categoryCounts, 'feedback')
+    }
   });
 }));
 

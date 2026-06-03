@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES, USER_STATUSES, JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
-const { Database, countRows, sendDatabaseError } = require('../db');
+const { Database, countRows, countRowsByColumn, sendDatabaseError, sumRows } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { resetMaintenanceModeCache } = require('../middleware/maintenance');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
@@ -67,6 +67,15 @@ const enrichManagedUsers = async (users = []) => {
 const isLiveCampusDriveStatus = (value = '') => !['completed', 'cancelled', 'closed', 'archived'].includes(String(value || '').toLowerCase());
 
 const SYSTEM_LOG_FETCH_LIMIT = 5000;
+
+const getCount = (countMap, key) => Number(countMap.get(String(key || '').toLowerCase()) || 0);
+const sumCountMap = (countMap) => [...countMap.values()].reduce((sum, value) => sum + Number(value || 0), 0);
+const getCurrentMonthRange = () => {
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  return { monthStart, nextMonthStart };
+};
 
 const normalizeLogText = (value = '') => String(value || '').trim().toLowerCase();
 
@@ -186,37 +195,32 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
 
   const excludeCampusConnectUsers = (query) => query.neq('role', ROLES.CAMPUS_CONNECT);
 
+  const { monthStart, nextMonthStart } = getCurrentMonthRange();
+
   const [
-    totalUsers,
-    totalHr,
-    totalStudents,
+    userRoleCounts,
     totalJobs,
     totalApplications,
     openTickets,
-    totalRevenue,
+    monthlyRevenue,
     activeSubscriptions,
-    roleSyncSummary
   ] = await Promise.all([
-    countRows('users', excludeCampusConnectUsers),
-    countRows('users', (q) => q.eq('role', ROLES.HR)),
-    countRows('users', (q) => q.eq('role', ROLES.STUDENT)),
+    countRowsByColumn('users', 'role', [{ column: 'role', operator: '<>', value: ROLES.CAMPUS_CONNECT }]),
     countRows('jobs', (q) => q.neq('status', JOB_STATUSES.DELETED)),
     countRows('applications'),
     countRows('support_tickets', (q) => q.in('status', ['open', 'pending'])),
-    Database.from('accounts_transactions').select('amount').eq('type', 'credit').eq('status', 'completed'),
-    countRows('accounts_subscriptions', (q) => q.eq('status', 'active')),
-    getRoleSyncSummary({ Database })
+    sumRows('accounts_transactions', 'amount', [
+      { column: 'type', operator: '=', value: 'credit' },
+      { column: 'status', operator: '=', value: 'completed' },
+      { column: 'created_at', operator: '>=', value: monthStart },
+      { column: 'created_at', operator: '<', value: nextMonthStart }
+    ]),
+    countRows('accounts_subscriptions', (q) => q.eq('status', 'active'))
   ]);
 
-  const monthlyRevenue = totalRevenue.data
-    ? totalRevenue.data
-        .filter((t) => {
-          const d = new Date(t.created_at || Date.now());
-          const now = new Date();
-          return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-        })
-        .reduce((sum, t) => sum + Number(t.amount || 0), 0)
-    : 0;
+  const totalUsers = sumCountMap(userRoleCounts);
+  const totalHr = getCount(userRoleCounts, ROLES.HR);
+  const totalStudents = getCount(userRoleCounts, ROLES.STUDENT);
 
   const { data: recentUsers } = await Database
     .from('users')
@@ -260,7 +264,7 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
         criticalLogs: (recentLogs || []).filter((l) => l.level === 'critical').length,
         duplicateAccounts: 0
       },
-      roleSync: roleSyncSummary,
+      roleSync: [],
       users: recentUsers || [],
       jobs: recentJobs || [],
       supportTickets: recentTickets || [],
@@ -864,10 +868,11 @@ router.get('/reports', asyncHandler(async (req, res) => {
     countRows('applications'),
     countRows('support_tickets'),
     countRows('support_tickets', (q) => q.in('status', ['open', 'pending'])),
-    Database.from('accounts_transactions').select('amount').eq('type', 'credit').eq('status', 'completed')
+    sumRows('accounts_transactions', 'amount', [
+      { column: 'type', operator: '=', value: 'credit' },
+      { column: 'status', operator: '=', value: 'completed' }
+    ])
   ]);
-
-  const totalRevenue = (revenue.data || []).reduce((sum, t) => sum + Number(t.amount || 0), 0);
 
   res.send({
     status: true,
@@ -877,7 +882,7 @@ router.get('/reports', asyncHandler(async (req, res) => {
       totalApplications: appCount,
       totalTickets: ticketCount,
       openTickets,
-      totalRevenue
+      totalRevenue: revenue
     }
   });
 }));
