@@ -15,7 +15,10 @@ const { sendEmailWithFallback, isEmailConfigured } = require('../src/services/em
 const { getCreatedUserWelcomeTarget } = require('../src/services/createdUserWelcome');
 
 const DEFAULT_BASE_URL = String(config.oauthClientUrl || config.corsOrigins?.[0] || 'https://hhh-jobs.com').replace(/\/+$/, '');
-const DEFAULT_EMAIL_CONCURRENCY = 2;
+const DEFAULT_EMAIL_CONCURRENCY = 1;
+const DEFAULT_EMAIL_DELAY_MS = Number(process.env.SEED_EMAIL_DELAY_MS) || 750;
+const DEFAULT_EMAIL_RETRIES = Number(process.env.SEED_EMAIL_RETRIES) || 6;
+const DEFAULT_RETRY_BASE_DELAY_MS = Number(process.env.SEED_EMAIL_RETRY_BASE_DELAY_MS) || 2500;
 const DEFAULT_LIMIT = 500;
 const DB_PAGE_SIZE = 500;
 
@@ -33,8 +36,12 @@ Options:
   --limit <n|all>             Max users to process in DB selection (default: ${DEFAULT_LIMIT})
   --allow-all                 Allow DB selection without a date range. Requires a role filter.
   --email-concurrency <n>     Parallel email workers in --send mode (default: ${DEFAULT_EMAIL_CONCURRENCY})
+  --email-delay-ms <n>        Global delay between email API calls (default: ${DEFAULT_EMAIL_DELAY_MS})
+  --email-retries <n>         Retries for rate-limit/transient failures (default: ${DEFAULT_EMAIL_RETRIES})
+  --retry-base-delay-ms <n>   Base retry backoff delay (default: ${DEFAULT_RETRY_BASE_DELAY_MS})
   --base-url <url>            Frontend base URL (default: ${DEFAULT_BASE_URL})
   --report-out <path>         CSV report path (default: tmp-logs/seeded-user-welcome-<timestamp>.csv)
+  --skip-sent-report <path>   Skip emails already marked sent=yes in an existing report CSV
   --send                      Reset passwords and send emails. Without this, dry-run only.
   --help                      Show this help
 
@@ -65,6 +72,7 @@ const csvCell = (value) => {
   const text = String(value ?? '');
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
 const parseArgs = (argv = []) => {
   const args = {
@@ -78,8 +86,12 @@ const parseArgs = (argv = []) => {
     limit: DEFAULT_LIMIT,
     allowAll: false,
     emailConcurrency: DEFAULT_EMAIL_CONCURRENCY,
+    emailDelayMs: DEFAULT_EMAIL_DELAY_MS,
+    emailRetries: DEFAULT_EMAIL_RETRIES,
+    retryBaseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
     baseUrl: DEFAULT_BASE_URL,
     reportOut: '',
+    skipSentReport: '',
     send: false
   };
 
@@ -135,6 +147,21 @@ const parseArgs = (argv = []) => {
       index += 1;
       continue;
     }
+    if (token === '--email-delay-ms' && next) {
+      args.emailDelayMs = Math.max(0, Number.parseInt(next, 10) || DEFAULT_EMAIL_DELAY_MS);
+      index += 1;
+      continue;
+    }
+    if (token === '--email-retries' && next) {
+      args.emailRetries = Math.max(0, Number.parseInt(next, 10) || DEFAULT_EMAIL_RETRIES);
+      index += 1;
+      continue;
+    }
+    if (token === '--retry-base-delay-ms' && next) {
+      args.retryBaseDelayMs = Math.max(250, Number.parseInt(next, 10) || DEFAULT_RETRY_BASE_DELAY_MS);
+      index += 1;
+      continue;
+    }
     if (token === '--base-url' && next) {
       args.baseUrl = next.replace(/\/+$/, '');
       index += 1;
@@ -142,6 +169,11 @@ const parseArgs = (argv = []) => {
     }
     if (token === '--report-out' && next) {
       args.reportOut = next;
+      index += 1;
+      continue;
+    }
+    if (token === '--skip-sent-report' && next) {
+      args.skipSentReport = next;
       index += 1;
       continue;
     }
@@ -212,6 +244,22 @@ const readCsvRows = (filePath) => {
       }, {});
     })
     .filter((row) => normalizeEmail(row.email || row.login || row.username));
+};
+
+const readSentEmailsFromReport = (reportPath) => {
+  if (!reportPath) return new Set();
+  const resolvedPath = path.resolve(reportPath);
+  if (!fs.existsSync(resolvedPath)) return new Set();
+
+  const sentEmails = new Set();
+  for (const row of readCsvRows(resolvedPath)) {
+    const email = normalizeEmail(row.email);
+    const sent = normalizeText(row.sent).toLowerCase();
+    if (email && ['yes', 'true', '1', 'sent'].includes(sent)) {
+      sentEmails.add(email);
+    }
+  }
+  return sentEmails;
 };
 
 const readJsonRows = (filePath) => {
@@ -393,7 +441,6 @@ const buildWelcomeMessage = ({ account, password, baseUrl }) => {
     'Welcome to HHH Jobs. Your account has been created and is ready to use.',
     '',
     `Login ID / Email: ${account.email}`,
-    `HHH User ID: ${account.userId}`,
     `Role: ${roleLabel}`,
     `Password: ${password}`,
     '',
@@ -436,7 +483,6 @@ const buildWelcomeMessage = ({ account, password, baseUrl }) => {
                 <p style="margin:0 0 14px;font-size:13px;color:#4f6584;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Account details</p>
                 <table width="100%" cellpadding="0" cellspacing="0">
                   <tr><td style="padding:6px 0;color:#6b7a99;font-size:14px;width:150px;">Login ID / Email</td><td style="padding:6px 0;color:#0b1631;font-size:14px;font-weight:700;">${escapeHtml(account.email)}</td></tr>
-                  <tr><td style="padding:6px 0;color:#6b7a99;font-size:14px;">HHH User ID</td><td style="padding:6px 0;color:#0b1631;font-size:13px;font-weight:700;">${escapeHtml(account.userId)}</td></tr>
                   <tr><td style="padding:6px 0;color:#6b7a99;font-size:14px;">Role</td><td style="padding:6px 0;color:#0b1631;font-size:14px;font-weight:700;text-transform:capitalize;">${escapeHtml(roleLabel)}</td></tr>
                   <tr><td style="padding:6px 0;color:#6b7a99;font-size:14px;">Password</td><td style="padding:6px 0;color:#0b1631;font-size:16px;font-weight:800;letter-spacing:1px;">${escapeHtml(password)}</td></tr>
                 </table>
@@ -472,7 +518,53 @@ const buildWelcomeMessage = ({ account, password, baseUrl }) => {
   return { subject, text, html, loginUrl, dashboardUrl, forgotPasswordUrl };
 };
 
-const sendAccountWelcome = async ({ db, account, baseUrl }) => {
+const isRateLimitReason = (reason = '') =>
+  /429|rate[_ -]?limit|too many requests|requests per second/i.test(String(reason || ''));
+
+const isRetriableEmailReason = (reason = '') =>
+  isRateLimitReason(reason)
+  || /timeout|socket|econnreset|econnrefused|network|temporar|5\d\d/i.test(String(reason || ''));
+
+const createEmailRateLimiter = (delayMs = DEFAULT_EMAIL_DELAY_MS) => {
+  let nextSlotAt = 0;
+
+  return async () => {
+    const now = Date.now();
+    const waitMs = Math.max(0, nextSlotAt - now);
+    nextSlotAt = Math.max(now, nextSlotAt) + Math.max(0, delayMs);
+    if (waitMs > 0) await delay(waitMs);
+  };
+};
+
+const sendEmailWithRetry = async ({ message, recipient, args, waitForEmailSlot }) => {
+  let lastResult = { sent: false, reason: 'email_send_failed' };
+
+  for (let attempt = 0; attempt <= args.emailRetries; attempt += 1) {
+    if (typeof waitForEmailSlot === 'function') {
+      await waitForEmailSlot();
+    }
+
+    const result = await sendEmailWithFallback(message);
+    lastResult = result || lastResult;
+    if (lastResult.sent) return lastResult;
+
+    const reason = lastResult.reason || 'email_send_failed';
+    if (attempt >= args.emailRetries || !isRetriableEmailReason(reason)) {
+      return lastResult;
+    }
+
+    const exponentialDelay = args.retryBaseDelayMs * (2 ** Math.min(attempt, 5));
+    const retryDelayMs = isRateLimitReason(reason)
+      ? Math.max(exponentialDelay, 2500)
+      : Math.min(exponentialDelay, 30000);
+    console.warn(`[email retry ${attempt + 1}/${args.emailRetries}] ${recipient}: ${reason}. Waiting ${retryDelayMs}ms`);
+    await delay(retryDelayMs);
+  }
+
+  return lastResult;
+};
+
+const sendAccountWelcome = async ({ db, account, baseUrl, args, waitForEmailSlot }) => {
   const password = account.requestedPassword || generateTempPassword();
   const passwordHash = await bcrypt.hash(password, 10);
 
@@ -490,11 +582,16 @@ const sendAccountWelcome = async ({ db, account, baseUrl }) => {
   if (updateResult.error) throw updateResult.error;
 
   const message = buildWelcomeMessage({ account, password, baseUrl });
-  const emailResult = await sendEmailWithFallback({
-    to: account.email,
-    subject: message.subject,
-    text: message.text,
-    html: message.html
+  const emailResult = await sendEmailWithRetry({
+    recipient: account.email,
+    args,
+    waitForEmailSlot,
+    message: {
+      to: account.email,
+      subject: message.subject,
+      text: message.text,
+      html: message.html
+    }
   });
 
   return {
@@ -559,16 +656,24 @@ const main = async () => {
     ? await fetchUsersByEmails({ db, inputRows, emailList: args.emails })
     : await fetchUsersByFilters({ db, args });
 
-  const accounts = selection.accounts.filter((account) => account.email && account.userId);
+  const sentEmailsToSkip = readSentEmailsFromReport(args.skipSentReport);
+  const selectedAccounts = selection.accounts.filter((account) => account.email && account.userId);
+  const accounts = sentEmailsToSkip.size > 0
+    ? selectedAccounts.filter((account) => !sentEmailsToSkip.has(account.email))
+    : selectedAccounts;
   const summary = {
     mode: args.send ? 'send' : 'dry-run',
     inputRows: inputRows.length,
-    matchedUsers: accounts.length,
+    matchedUsers: selectedAccounts.length,
+    skippedAlreadySent: selectedAccounts.length - accounts.length,
+    pendingUsers: accounts.length,
     missingEmails: selection.missingEmails.length,
     passwordSource: inputRows.some((row) => row.password) ? 'input-or-generated' : 'generated',
     roles: args.allRoles ? 'all' : args.roles,
     createdFrom: args.createdFrom || null,
-    createdTo: args.createdTo || null
+    createdTo: args.createdTo || null,
+    emailDelayMs: args.emailDelayMs,
+    emailRetries: args.emailRetries
   };
   console.log(JSON.stringify(summary, null, 2));
 
@@ -594,8 +699,16 @@ const main = async () => {
   const reportPath = ensureReport(
     args.reportOut || path.join(__dirname, '..', 'tmp-logs', `seeded-user-welcome-${timestamp}.csv`)
   );
+  console.log(JSON.stringify({
+    reportPath,
+    skipSentReport: args.skipSentReport || null,
+    emailDelayMs: args.emailDelayMs,
+    emailRetries: args.emailRetries,
+    emailConcurrency: args.emailConcurrency
+  }, null, 2));
   const results = [];
   let pointer = 0;
+  const waitForEmailSlot = createEmailRateLimiter(args.emailDelayMs);
 
   const worker = async () => {
     while (pointer < accounts.length) {
@@ -604,7 +717,13 @@ const main = async () => {
       const account = accounts[currentIndex];
 
       try {
-        const result = await sendAccountWelcome({ db, account, baseUrl: args.baseUrl });
+        const result = await sendAccountWelcome({
+          db,
+          account,
+          baseUrl: args.baseUrl,
+          args,
+          waitForEmailSlot
+        });
         results.push(result);
         appendReportRow({ reportPath, result });
         console.log(`[sent:${result.sent ? 'yes' : 'no'}] ${account.email}${result.reason ? ` (${result.reason})` : ''}`);

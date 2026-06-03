@@ -246,7 +246,6 @@ const buildWelcomeMessage = ({ account, password, baseUrl, dashboardPath }) => {
     'Welcome to HHH Jobs. Your student account has been created from your imported resume profile.',
     '',
     `Login ID / Email: ${account.email}`,
-    `HHH Student ID: ${account.userId}`,
     `Eimager ID: ${eimagerDisplay}`,
     `Temporary password: ${password}`,
     '',
@@ -288,7 +287,6 @@ const buildWelcomeMessage = ({ account, password, baseUrl, dashboardPath }) => {
                 <p style="margin:0 0 14px;font-size:13px;color:#4f6584;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Account details</p>
                 <table width="100%" cellpadding="0" cellspacing="0">
                   <tr><td style="padding:6px 0;color:#6b7a99;font-size:14px;width:150px;">Login ID / Email</td><td style="padding:6px 0;color:#0b1631;font-size:14px;font-weight:700;">${escapeHtml(account.email)}</td></tr>
-                  <tr><td style="padding:6px 0;color:#6b7a99;font-size:14px;">HHH Student ID</td><td style="padding:6px 0;color:#0b1631;font-size:13px;font-weight:700;">${escapeHtml(account.userId)}</td></tr>
                   <tr><td style="padding:6px 0;color:#6b7a99;font-size:14px;">Eimager ID</td><td style="padding:6px 0;color:#0b1631;font-size:14px;font-weight:700;">${escapeHtml(eimagerDisplay)}</td></tr>
                   <tr><td style="padding:6px 0;color:#6b7a99;font-size:14px;">Temporary password</td><td style="padding:6px 0;color:#0b1631;font-size:16px;font-weight:800;letter-spacing:1px;">${escapeHtml(password)}</td></tr>
                 </table>
