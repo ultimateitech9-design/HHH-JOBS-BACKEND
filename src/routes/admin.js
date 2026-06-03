@@ -86,6 +86,48 @@ const applyOptionalRange = (query, req, { defaultLimit = 0, maxLimit = 100 } = {
   return query.range(offset, offset + limit - 1);
 };
 
+const buildAdminAnalytics = async () => {
+  const [
+    userRoleCounts,
+    userStatusCounts,
+    approvedHr,
+    jobStatusCounts,
+    pendingJobs,
+    totalApplications,
+    reportStatusCounts
+  ] = await Promise.all([
+    countRowsByColumn('users', 'role', [{ column: 'role', operator: '<>', value: ROLES.CAMPUS_CONNECT }]),
+    countRowsByColumn('users', 'status', [{ column: 'role', operator: '<>', value: ROLES.CAMPUS_CONNECT }]),
+    countRows('users', (q) => q.eq('role', ROLES.HR).eq('is_hr_approved', true)),
+    countRowsByColumn('jobs', 'status'),
+    countRows('jobs', (q) => q.eq('approval_status', JOB_APPROVAL_STATUSES.PENDING)),
+    countRows('applications'),
+    countRowsByColumn('reports', 'status')
+  ]);
+
+  const totalUsers = sumCountMap(userRoleCounts);
+  const totalJobs = sumCountMap(jobStatusCounts);
+  const reportsTotal = sumCountMap(reportStatusCounts);
+
+  return {
+    totalUsers,
+    totalHr: getCount(userRoleCounts, ROLES.HR),
+    approvedHr,
+    totalStudents: getCount(userRoleCounts, ROLES.STUDENT),
+    activeUsers: getCount(userStatusCounts, USER_STATUSES.ACTIVE),
+    blockedUsers: getCount(userStatusCounts, USER_STATUSES.BLOCKED),
+    bannedUsers: getCount(userStatusCounts, USER_STATUSES.BANNED),
+    totalJobs,
+    openJobs: getCount(jobStatusCounts, JOB_STATUSES.OPEN),
+    closedJobs: getCount(jobStatusCounts, JOB_STATUSES.CLOSED),
+    deletedJobs: getCount(jobStatusCounts, JOB_STATUSES.DELETED),
+    pendingJobs,
+    totalApplications,
+    reportsOpen: getCount(reportStatusCounts, 'open'),
+    reportsTotal
+  };
+};
+
 const normalizeAdminSettings = (payload = {}) => {
   const source = payload && typeof payload === 'object' ? payload : {};
 
@@ -111,46 +153,54 @@ const normalizeAdminSettings = (payload = {}) => {
 // Analytics
 // =============================================
 router.get('/analytics', asyncHandler(async (req, res) => {
+  res.send({
+    status: true,
+    analytics: await buildAdminAnalytics()
+  });
+}));
+
+router.get('/dashboard', asyncHandler(async (req, res) => {
   const [
-    userRoleCounts,
-    userStatusCounts,
-    approvedHr,
-    jobStatusCounts,
-    pendingJobs,
-    totalApplications,
-    reportStatusCounts
+    analytics,
+    pendingHrResult,
+    pendingJobsResult,
+    openReportsResult
   ] = await Promise.all([
-    countRowsByColumn('users', 'role', [{ column: 'role', operator: '<>', value: ROLES.CAMPUS_CONNECT }]),
-    countRowsByColumn('users', 'status', [{ column: 'role', operator: '<>', value: ROLES.CAMPUS_CONNECT }]),
-    countRows('users', (q) => q.eq('role', ROLES.HR).eq('is_hr_approved', true)),
-    countRowsByColumn('jobs', 'status'),
-    countRows('jobs', (q) => q.eq('approval_status', JOB_APPROVAL_STATUSES.PENDING)),
-    countRows('applications'),
-    countRowsByColumn('reports', 'status')
+    buildAdminAnalytics(),
+    Database
+      .from('users')
+      .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at')
+      .eq('role', ROLES.HR)
+      .or('is_hr_approved.eq.false,is_hr_approved.is.null')
+      .order('created_at', { ascending: false })
+      .limit(8),
+    Database
+      .from('jobs')
+      .select('*')
+      .eq('approval_status', JOB_APPROVAL_STATUSES.PENDING)
+      .order('created_at', { ascending: false })
+      .limit(8),
+    Database
+      .from('reports')
+      .select('*')
+      .eq('status', 'open')
+      .order('created_at', { ascending: false })
+      .limit(8)
   ]);
 
-  const totalUsers = sumCountMap(userRoleCounts);
-  const totalJobs = sumCountMap(jobStatusCounts);
-  const reportsTotal = sumCountMap(reportStatusCounts);
+  const error = pendingHrResult.error || pendingJobsResult.error || openReportsResult.error;
+  if (error) {
+    sendDatabaseError(res, error);
+    return;
+  }
 
   res.send({
     status: true,
-    analytics: {
-      totalUsers,
-      totalHr: getCount(userRoleCounts, ROLES.HR),
-      approvedHr,
-      totalStudents: getCount(userRoleCounts, ROLES.STUDENT),
-      activeUsers: getCount(userStatusCounts, USER_STATUSES.ACTIVE),
-      blockedUsers: getCount(userStatusCounts, USER_STATUSES.BLOCKED),
-      bannedUsers: getCount(userStatusCounts, USER_STATUSES.BANNED),
-      totalJobs,
-      openJobs: getCount(jobStatusCounts, JOB_STATUSES.OPEN),
-      closedJobs: getCount(jobStatusCounts, JOB_STATUSES.CLOSED),
-      deletedJobs: getCount(jobStatusCounts, JOB_STATUSES.DELETED),
-      pendingJobs,
-      totalApplications,
-      reportsOpen: getCount(reportStatusCounts, 'open'),
-      reportsTotal
+    dashboard: {
+      analytics,
+      pendingHr: pendingHrResult.data || [],
+      pendingJobs: (pendingJobsResult.data || []).map(mapJobFromRow),
+      openReports: (openReportsResult.data || []).map(mapReportFromRow)
     }
   });
 }));

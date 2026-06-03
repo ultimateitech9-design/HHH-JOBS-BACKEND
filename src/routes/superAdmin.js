@@ -222,30 +222,39 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
   const totalHr = getCount(userRoleCounts, ROLES.HR);
   const totalStudents = getCount(userRoleCounts, ROLES.STUDENT);
 
-  const { data: recentUsers } = await Database
-    .from('users')
-    .select('id, name, email, role, status, created_at')
-    .neq('role', ROLES.CAMPUS_CONNECT)
-    .order('created_at', { ascending: false })
-    .limit(10);
+  const [
+    recentUsersResult,
+    recentJobsResult,
+    recentTicketsResult,
+    recentLogsResult
+  ] = await Promise.all([
+    Database
+      .from('users')
+      .select('id, name, email, role, status, created_at')
+      .neq('role', ROLES.CAMPUS_CONNECT)
+      .order('created_at', { ascending: false })
+      .limit(10),
+    Database
+      .from('jobs')
+      .select('id, title, status, approval_status, created_at')
+      .order('created_at', { ascending: false })
+      .limit(10),
+    Database
+      .from('support_tickets')
+      .select('id, ticket_number, title, status, priority, created_at')
+      .order('created_at', { ascending: false })
+      .limit(10),
+    Database
+      .from('system_logs')
+      .select('id, action, module, level, actor_name, details, created_at')
+      .order('created_at', { ascending: false })
+      .limit(20)
+  ]);
 
-  const { data: recentJobs } = await Database
-    .from('jobs')
-    .select('id, title, status, approval_status, created_at')
-    .order('created_at', { ascending: false })
-    .limit(10);
-
-  const { data: recentTickets } = await Database
-    .from('support_tickets')
-    .select('id, ticket_number, title, status, priority, created_at')
-    .order('created_at', { ascending: false })
-    .limit(10);
-
-  const { data: recentLogs } = await Database
-    .from('system_logs')
-    .select('id, action, module, level, actor_name, details, created_at')
-    .order('created_at', { ascending: false })
-    .limit(20);
+  const recentUsers = recentUsersResult.data || [];
+  const recentJobs = recentJobsResult.data || [];
+  const recentTickets = recentTicketsResult.data || [];
+  const recentLogs = recentLogsResult.data || [];
 
   res.send({
     status: true,
@@ -265,10 +274,10 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
         duplicateAccounts: 0
       },
       roleSync: [],
-      users: recentUsers || [],
-      jobs: recentJobs || [],
-      supportTickets: recentTickets || [],
-      systemLogs: recentLogs || []
+      users: recentUsers,
+      jobs: recentJobs,
+      supportTickets: recentTickets,
+      systemLogs: recentLogs
     }
   });
 }));

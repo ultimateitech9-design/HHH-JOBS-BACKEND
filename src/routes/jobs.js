@@ -279,7 +279,8 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
     activePincodes,
     allPincodes,
     masterPincodes,
-    totals
+    totals,
+    catalogTotals
   ] = await Promise.all([
     db.execute(`
       SELECT MIN(TRIM(job_title)) AS name, COUNT(*) AS count
@@ -410,6 +411,12 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
         COUNT(DISTINCT LOWER(TRIM(company_name))) AS companies
       FROM jobs
       ${OPEN_JOBS_WHERE}
+    `),
+    db.execute(`
+      SELECT
+        (SELECT COUNT(DISTINCT LOWER(TRIM(name))) FROM master_categories WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS roles,
+        (SELECT COUNT(DISTINCT LOWER(TRIM(name))) FROM master_sectors WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS sectors,
+        (SELECT COUNT(DISTINCT LOWER(TRIM(name))) FROM master_districts WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS cities
     `)
   ]);
 
@@ -444,7 +451,10 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
     }),
     totals: {
       openJobs: Number(totals[0]?.[0]?.openJobs || 0),
-      companies: Number(totals[0]?.[0]?.companies || 0)
+      companies: Number(totals[0]?.[0]?.companies || 0),
+      roles: Number(catalogTotals[0]?.[0]?.roles || 0),
+      sectors: Number(catalogTotals[0]?.[0]?.sectors || 0),
+      cities: Number(catalogTotals[0]?.[0]?.cities || 0)
     }
   };
 };
