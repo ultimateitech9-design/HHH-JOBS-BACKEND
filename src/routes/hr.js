@@ -416,10 +416,376 @@ router.patch('/applications/:id/status', requireApprovedHr, asyncHandler(async (
   res.send({ status: true, application: mapApplicationFromRow(data) });
 }));
 
-router.get('/analytics', asyncHandler(async (req, res) => {
-  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query.userId)
+const resolveHrTargetUserId = (req) => (
+  [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query.userId)
     ? req.query.userId
-    : req.user.id;
+    : req.user.id
+);
+
+const getDashboardEventTime = (value) => {
+  const timestamp = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+};
+
+const mapCampusDriveForDashboard = (drive = {}, counts = {}) => ({
+  id: drive.id,
+  collegeId: drive.college_id,
+  companyName: drive.company_name,
+  jobTitle: drive.job_title,
+  driveDate: drive.drive_date,
+  driveMode: drive.drive_mode,
+  location: drive.location,
+  eligibleBranches: drive.eligible_branches || [],
+  eligibleCgpa: drive.eligible_cgpa,
+  description: drive.description,
+  packageMin: drive.package_min,
+  packageMax: drive.package_max,
+  status: drive.status,
+  applicationDeadline: drive.application_deadline,
+  createdAt: drive.created_at,
+  updatedAt: drive.updated_at,
+  college: drive.college ? {
+    id: drive.college.id,
+    name: drive.college.name || '',
+    city: drive.college.city || '',
+    state: drive.college.state || '',
+    logoUrl: drive.college.logo_url || '',
+    contactEmail: drive.college.contact_email || '',
+    placementOfficerName: drive.college.placement_officer_name || ''
+  } : null,
+  counts: {
+    total: Number(counts.total || 0),
+    shortlisted: Number(counts.shortlisted || 0),
+    selected: Number(counts.selected || 0),
+    rejected: Number(counts.rejected || 0)
+  }
+});
+
+const buildHrDashboardActivities = ({
+  jobs = [],
+  applications = [],
+  campusDrives = [],
+  campusApplications = [],
+  interviews = [],
+  candidateMap = {}
+} = {}) => {
+  const jobMap = Object.fromEntries(jobs.map((job) => [job.id, job]));
+  const driveMap = Object.fromEntries(campusDrives.map((drive) => [drive.id, drive]));
+  const candidateName = (candidateId, fallback = 'Applicant') => candidateMap[candidateId]?.name || fallback;
+
+  return [
+    ...jobs.slice(0, 10).map((job) => ({
+      id: `job-${job.id}`,
+      type: 'job',
+      title: job.job_title || 'Job post',
+      subtitle: `Job post - ${job.company_name || 'Your company'} - ${Number(job.applications_count || 0)} applicants`,
+      status: job.status || JOB_STATUSES.OPEN,
+      time: job.updated_at || job.created_at,
+      to: `/portal/hr/jobs/${job.id}/applicants`,
+      icon: 'J'
+    })),
+    ...applications.slice(0, 14).map((application) => {
+      const job = jobMap[application.job_id];
+      const fallbackName = application.applicant_email || 'Applicant';
+      const name = candidateName(application.applicant_id, fallbackName);
+
+      return {
+        id: `application-${application.id}`,
+        type: 'job_application',
+        title: name,
+        subtitle: `Job applicant - ${job?.job_title || 'Job post'} - ${job?.company_name || 'Your company'}`,
+        status: application.status || 'applied',
+        time: application.status_updated_at || application.updated_at || application.created_at,
+        to: application.job_id ? `/portal/hr/jobs/${application.job_id}/applicants` : '/portal/hr/applications',
+        icon: name[0] || 'A'
+      };
+    }),
+    ...campusDrives.slice(0, 8).map((drive) => ({
+      id: `campus-drive-${drive.id}`,
+      type: 'campus_drive',
+      title: drive.jobTitle || 'Campus drive',
+      subtitle: `Campus drive - ${drive.college?.name || 'College'} - ${drive.companyName || 'Your company'}`,
+      status: drive.status || 'ongoing',
+      time: drive.updatedAt || drive.createdAt || drive.driveDate,
+      to: '/portal/hr/campus-drives',
+      icon: 'C'
+    })),
+    ...campusApplications.slice(0, 12).map((application) => {
+      const drive = application.drive || driveMap[application.driveId] || {};
+      const name = application.candidateName || application.applicantEmail || 'Applicant';
+
+      return {
+        id: `campus-application-${application.id}`,
+        type: 'campus_application',
+        title: name,
+        subtitle: `Campus applicant - ${drive.jobTitle || 'Campus drive'} - ${drive.college?.name || 'College'}`,
+        status: application.status || 'applied',
+        time: application.decisionAt || application.reviewedAt || application.updatedAt || application.appliedAt || application.createdAt,
+        to: '/portal/hr/campus-drives',
+        icon: name[0] || 'A'
+      };
+    }),
+    ...interviews.slice(0, 10).map((interview) => {
+      const name = candidateName(interview.candidate_id, interview.candidate_name || 'Candidate');
+      const job = jobMap[interview.job_id];
+      const drive = driveMap[interview.campus_drive_id];
+
+      return {
+        id: `interview-${interview.id}`,
+        type: 'interview',
+        title: interview.title || `${name} interview`,
+        subtitle: `Interview - ${interview.job_title || job?.job_title || drive?.jobTitle || 'Role'} - ${name}`,
+        status: interview.status || 'scheduled',
+        time: interview.updated_at || interview.created_at || interview.scheduled_at,
+        to: '/portal/hr/interviews',
+        icon: 'I'
+      };
+    })
+  ]
+    .filter((activity) => getDashboardEventTime(activity.time) > 0)
+    .sort((left, right) => getDashboardEventTime(right.time) - getDashboardEventTime(left.time))
+    .slice(0, 6);
+};
+
+const loadHrDashboardCampusSnapshot = async ({ targetUserId, companyName = '' } = {}) => {
+  if (!String(companyName || '').trim()) {
+    return { campusDrives: [], campusApplications: [], candidateMap: {} };
+  }
+
+  const connectionsResp = await Database
+    .from('campus_connections')
+    .select('college_id')
+    .eq('company_user_id', targetUserId)
+    .eq('status', 'accepted');
+
+  if (connectionsResp.error) {
+    if (isMissingCampusTable(connectionsResp.error)) {
+      return { campusDrives: [], campusApplications: [], candidateMap: {} };
+    }
+    throw connectionsResp.error;
+  }
+
+  const collegeIds = (connectionsResp.data || []).map((connection) => connection.college_id).filter(Boolean);
+  if (collegeIds.length === 0) {
+    return { campusDrives: [], campusApplications: [], candidateMap: {} };
+  }
+
+  const drivesResp = await Database
+    .from('campus_drives')
+    .select('id, college_id, company_name, job_title, drive_date, drive_mode, location, eligible_branches, eligible_cgpa, description, package_min, package_max, status, application_deadline, created_at, updated_at, college:colleges!campus_drives_college_id_fkey(id, name, city, state, logo_url, contact_email, placement_officer_name)')
+    .ilike('company_name', String(companyName || '').trim())
+    .in('college_id', collegeIds)
+    .order('updated_at', { ascending: false, nullsFirst: false })
+    .limit(20);
+
+  if (drivesResp.error) {
+    if (isMissingCampusTable(drivesResp.error)) {
+      return { campusDrives: [], campusApplications: [], candidateMap: {} };
+    }
+    throw drivesResp.error;
+  }
+
+  const rawDrives = drivesResp.data || [];
+  const driveIds = rawDrives.map((drive) => drive.id).filter(Boolean);
+  if (driveIds.length === 0) {
+    return { campusDrives: [], campusApplications: [], candidateMap: {} };
+  }
+
+  const [countsResp, applicationsResp] = await Promise.all([
+    Database
+      .from('campus_drive_applications')
+      .select('drive_id, status')
+      .in('drive_id', driveIds),
+    Database
+      .from('campus_drive_applications')
+      .select('id, drive_id, student_user_id, applicant_email, status, applied_at, created_at, updated_at, reviewed_at, decision_at')
+      .in('drive_id', driveIds)
+      .order('updated_at', { ascending: false, nullsFirst: false })
+      .limit(40)
+  ]);
+
+  if (countsResp.error && !isMissingCampusTable(countsResp.error)) throw countsResp.error;
+  if (applicationsResp.error && !isMissingCampusTable(applicationsResp.error)) throw applicationsResp.error;
+
+  const driveCounts = (countsResp.data || []).reduce((acc, app) => {
+    if (!acc[app.drive_id]) acc[app.drive_id] = { total: 0, shortlisted: 0, selected: 0, rejected: 0 };
+    acc[app.drive_id].total += 1;
+    if (app.status === 'shortlisted') acc[app.drive_id].shortlisted += 1;
+    if (app.status === 'selected') acc[app.drive_id].selected += 1;
+    if (app.status === 'rejected') acc[app.drive_id].rejected += 1;
+    return acc;
+  }, {});
+  const campusDrives = rawDrives.map((drive) => mapCampusDriveForDashboard(drive, driveCounts[drive.id]));
+  const driveMap = Object.fromEntries(campusDrives.map((drive) => [drive.id, drive]));
+  const campusCandidateIds = uniqueValidUuids((applicationsResp.data || []).map((application) => application.student_user_id));
+  let candidateMap = {};
+
+  if (campusCandidateIds.length > 0) {
+    const candidatesResp = await Database
+      .from('users')
+      .select('id, name, email')
+      .in('id', campusCandidateIds);
+
+    if (candidatesResp.error) throw candidatesResp.error;
+    candidateMap = Object.fromEntries((candidatesResp.data || []).map((candidate) => [candidate.id, candidate]));
+  }
+
+  const campusApplications = (applicationsResp.data || []).map((application) => {
+    const candidate = candidateMap[application.student_user_id] || {};
+    return {
+      id: application.id,
+      driveId: application.drive_id,
+      drive_id: application.drive_id,
+      studentUserId: application.student_user_id,
+      student_user_id: application.student_user_id,
+      applicantEmail: application.applicant_email || candidate.email || '',
+      applicant_email: application.applicant_email || candidate.email || '',
+      candidateName: candidate.name || application.applicant_email || 'Applicant',
+      status: application.status || 'applied',
+      appliedAt: application.applied_at,
+      applied_at: application.applied_at,
+      createdAt: application.created_at,
+      created_at: application.created_at,
+      updatedAt: application.updated_at,
+      updated_at: application.updated_at,
+      reviewedAt: application.reviewed_at,
+      decisionAt: application.decision_at,
+      sourceType: 'campus',
+      drive: driveMap[application.drive_id] || null,
+      candidate
+    };
+  });
+
+  return { campusDrives, campusApplications, candidateMap };
+};
+
+const loadHrDashboardSnapshot = async (req) => {
+  const targetUserId = resolveHrTargetUserId(req);
+  const [jobsResp, interviewsResp, profileResp] = await Promise.all([
+    Database
+      .from('jobs')
+      .select('id, job_title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key')
+      .eq('created_by', targetUserId)
+      .neq('status', JOB_STATUSES.DELETED)
+      .order('updated_at', { ascending: false, nullsFirst: false })
+      .limit(500),
+    Database
+      .from('interview_schedules')
+      .select('id, title, status, room_status, candidate_id, job_id, campus_drive_id, campus_application_id, scheduled_at, created_at, updated_at, job_title, company_name')
+      .eq('hr_id', targetUserId)
+      .order('scheduled_at', { ascending: true, nullsFirst: false })
+      .limit(30),
+    Database
+      .from('hr_profiles')
+      .select('company_name')
+      .eq('user_id', targetUserId)
+      .maybeSingle()
+  ]);
+
+  if (jobsResp.error) throw jobsResp.error;
+  if (interviewsResp.error) throw interviewsResp.error;
+  if (profileResp.error) throw profileResp.error;
+
+  const jobs = jobsResp.data || [];
+  const jobIds = jobs.map((job) => job.id).filter(Boolean);
+  const applicationsResp = jobIds.length > 0
+    ? await Database
+      .from('applications')
+      .select('id, job_id, applicant_id, applicant_email, status, status_updated_at, created_at, updated_at')
+      .in('job_id', jobIds)
+      .order('status_updated_at', { ascending: false, nullsFirst: false })
+      .limit(1500)
+    : { data: [], error: null };
+
+  if (applicationsResp.error) throw applicationsResp.error;
+
+  const applications = applicationsResp.data || [];
+  const candidateIds = uniqueValidUuids([
+    ...applications.slice(0, 60).map((application) => application.applicant_id),
+    ...(interviewsResp.data || []).map((interview) => interview.candidate_id)
+  ]);
+  let candidateMap = {};
+  if (candidateIds.length > 0) {
+    const candidatesResp = await Database
+      .from('users')
+      .select('id, name, email')
+      .in('id', candidateIds);
+
+    if (candidatesResp.error) throw candidatesResp.error;
+    candidateMap = Object.fromEntries((candidatesResp.data || []).map((candidate) => [candidate.id, candidate]));
+  }
+
+  const jobMap = Object.fromEntries(jobs.map((job) => [job.id, job]));
+  const mappedJobs = jobs.slice(0, 30).map(mapJobFromRow);
+  const jobApplications = applications.slice(0, 60).map((application) => ({
+    ...mapApplicationFromRow(application),
+    applicant: candidateMap[application.applicant_id]
+      ? {
+        id: application.applicant_id,
+        name: candidateMap[application.applicant_id].name || '',
+        email: candidateMap[application.applicant_id].email || application.applicant_email || ''
+      }
+      : null,
+    sourceType: 'job',
+    job: jobMap[application.job_id] ? mapJobFromRow(jobMap[application.job_id]) : null
+  }));
+
+  const pipeline = { applied: 0, shortlisted: 0, interview_scheduled: 0, interviewed: 0, offered: 0, rejected: 0, hired: 0 };
+  applications.forEach((item) => {
+    if (pipeline[item.status] !== undefined) pipeline[item.status] += 1;
+  });
+
+  const campusSnapshot = await loadHrDashboardCampusSnapshot({
+    targetUserId,
+    companyName: profileResp.data?.company_name || ''
+  });
+  const combinedCandidateMap = { ...candidateMap, ...campusSnapshot.candidateMap };
+  const interviews = (interviewsResp.data || []).map((item) => ({
+    ...item,
+    room_interview_id: getInterviewRoomHostId(item),
+    candidate_name: combinedCandidateMap[item.candidate_id]?.name || item.candidate_name || null,
+    candidate_email: combinedCandidateMap[item.candidate_id]?.email || null,
+    job_title: item.job_title || jobMap[item.job_id]?.job_title || null,
+    company_name: item.company_name || jobMap[item.job_id]?.company_name || null
+  }));
+  const totalApplicationsFromJobs = jobs.reduce((sum, job) => sum + Number(job.applications_count || 0), 0);
+
+  return {
+    jobs: mappedJobs,
+    analytics: {
+      totalJobs: jobs.length,
+      openJobs: jobs.filter((job) => job.status === JOB_STATUSES.OPEN).length,
+      closedJobs: jobs.filter((job) => job.status === JOB_STATUSES.CLOSED).length,
+      totalViews: jobs.reduce((sum, job) => sum + Number(job.views_count || 0), 0),
+      totalApplications: Math.max(totalApplicationsFromJobs, applications.length),
+      pipeline
+    },
+    interviews,
+    jobApplications,
+    campusDrives: campusSnapshot.campusDrives,
+    campusApplications: campusSnapshot.campusApplications,
+    recentActivity: buildHrDashboardActivities({
+      jobs,
+      applications,
+      campusDrives: campusSnapshot.campusDrives,
+      campusApplications: campusSnapshot.campusApplications,
+      interviews,
+      candidateMap: combinedCandidateMap
+    })
+  };
+};
+
+router.get('/dashboard', asyncHandler(async (req, res) => {
+  try {
+    const dashboard = await loadHrDashboardSnapshot(req);
+    res.send({ status: true, dashboard });
+  } catch (error) {
+    sendDatabaseError(res, error);
+  }
+}));
+
+router.get('/analytics', asyncHandler(async (req, res) => {
+  const targetUserId = resolveHrTargetUserId(req);
 
   const { data: jobs, error: jobsError } = await Database
     .from('jobs')
@@ -469,9 +835,7 @@ router.get('/analytics', asyncHandler(async (req, res) => {
 }));
 
 router.get('/recent-activity', asyncHandler(async (req, res) => {
-  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query.userId)
-    ? req.query.userId
-    : req.user.id;
+  const targetUserId = resolveHrTargetUserId(req);
 
   const [{ data: jobs, error: jobsError }, { data: interviews, error: interviewsError }] = await Promise.all([
     Database

@@ -1786,28 +1786,6 @@ const createRolePlanAutopaySession = async ({
     error.statusCode = 400;
     throw error;
   }
-  if (!isRazorpayConfigured()) {
-    return createManualRolePlanCheckoutFallback({
-      user,
-      audienceRole: normalizedAudienceRole,
-      planSlug,
-      quantity,
-      couponCode,
-      fallbackReason: 'Razorpay auto-pay is not configured on the backend yet.'
-    });
-  }
-
-  const readiness = await getRolePlanAutopayReadiness({ audienceRole: normalizedAudienceRole });
-  if (!readiness.ready) {
-    return createManualRolePlanCheckoutFallback({
-      user,
-      audienceRole: normalizedAudienceRole,
-      planSlug,
-      quantity,
-      couponCode,
-      fallbackReason: readiness.message
-    });
-  }
 
   let currentSubscription = await getCurrentRolePlanSubscription({
     userId: user.id,
@@ -1834,11 +1812,14 @@ const createRolePlanAutopaySession = async ({
     error.statusCode = 400;
     throw error;
   }
-  if (
+  const isExistingActivePlanChange = Boolean(
     currentSubscription
     && normalizeLower(currentSubscription.status) !== 'pending'
     && isSubscriptionStillUsable(currentSubscription)
     && normalizeLower(currentSubscription.role_plan_slug) !== plan.slug
+  );
+  if (
+    isExistingActivePlanChange
   ) {
     const currentPlan = await getRolePlanBySlug(currentSubscription.role_plan_slug, {
       audienceRole: normalizedAudienceRole,
@@ -1851,6 +1832,71 @@ const createRolePlanAutopaySession = async ({
       error.statusCode = 400;
       throw error;
     }
+  }
+
+  if (quote.totalAmount <= 0) {
+    const shouldActivateAsTrial = !isExistingActivePlanChange && Number(plan.trialDays || 0) > 0;
+    const trialDays = shouldActivateAsTrial
+      ? Math.max(1, parseInt(plan.trialDays || plan.durationDays || 30, 10) || 30)
+      : 0;
+    const checkout = await createRolePlanPurchase({
+      user,
+      audienceRole: normalizedAudienceRole,
+      planSlug: plan.slug,
+      quantity: quote.quantity,
+      provider: quote.coupon?.code ? 'coupon_free_trial' : 'zero_amount_checkout',
+      referenceId: quote.coupon?.code ? `coupon_${quote.coupon.code}_${Date.now()}` : '',
+      note: quote.coupon?.code
+        ? 'Activated by a zero-amount coupon; Razorpay payment was not required.'
+        : 'Activated as a zero-amount checkout; Razorpay payment was not required.',
+      couponCode: quote.coupon?.code || couponCode,
+      status: PURCHASE_STATUSES.PAID,
+      precomputedQuote: quote,
+      meta: {
+        isTrial: shouldActivateAsTrial,
+        trialDays,
+        bypassedRazorpay: true,
+        couponFreeCheckout: Boolean(quote.coupon?.code),
+        previousSubscriptionId: currentSubscription?.id || null,
+        businessRule: shouldActivateAsTrial
+          ? 'coupon_free_trial_without_autopay'
+          : 'zero_amount_checkout_without_autopay'
+      }
+    });
+
+    return {
+      mode: quote.coupon?.code ? 'coupon_free_trial' : 'zero_amount_checkout',
+      alreadyAuthorized: true,
+      fallbackReason: null,
+      quote,
+      purchase: checkout.purchase,
+      subscription: checkout.subscription,
+      grantedCredit: checkout.grantedCredit,
+      paymentSession: null
+    };
+  }
+
+  if (!isRazorpayConfigured()) {
+    return createManualRolePlanCheckoutFallback({
+      user,
+      audienceRole: normalizedAudienceRole,
+      planSlug,
+      quantity,
+      couponCode,
+      fallbackReason: 'Razorpay auto-pay is not configured on the backend yet.'
+    });
+  }
+
+  const readiness = await getRolePlanAutopayReadiness({ audienceRole: normalizedAudienceRole });
+  if (!readiness.ready) {
+    return createManualRolePlanCheckoutFallback({
+      user,
+      audienceRole: normalizedAudienceRole,
+      planSlug,
+      quantity,
+      couponCode,
+      fallbackReason: readiness.message
+    });
   }
 
   if (!currentSubscription) {
@@ -1888,12 +1934,6 @@ const createRolePlanAutopaySession = async ({
 
   const razorpayPlanId = await createOrReuseRazorpayPlanForRolePlan(plan);
   const billingProfile = resolveRolePlanBillingProfile(plan);
-  const isExistingActivePlanChange = Boolean(
-    currentSubscription
-    && normalizeLower(currentSubscription.status) !== 'pending'
-    && isSubscriptionStillUsable(currentSubscription)
-    && normalizeLower(currentSubscription.role_plan_slug) !== plan.slug
-  );
   const renewalStartAt = isExistingActivePlanChange
     ? addMinutes(new Date().toISOString(), 10)
     : (currentSubscription.trial_ends_at
@@ -2523,7 +2563,10 @@ const createRolePlanPurchase = async ({
   note = '',
   couponCode = '',
   salesOwnerId = null,
-  status = PURCHASE_STATUSES.PENDING
+  status = PURCHASE_STATUSES.PENDING,
+  precomputedQuote = null,
+  currentSubscription = null,
+  meta = {}
 } = {}) => {
   const normalizedAudienceRole = normalizeAudienceRole(audienceRole || user?.role);
   if (!normalizedAudienceRole) {
@@ -2532,11 +2575,12 @@ const createRolePlanPurchase = async ({
     throw error;
   }
 
-  const quote = await quoteRolePlan({
+  const quote = precomputedQuote || await quoteRolePlan({
     planSlug,
     audienceRole: normalizedAudienceRole,
     quantity,
-    couponCode
+    couponCode,
+    currentSubscription
   });
   if (Boolean(quote.plan?.meta?.contactSales) || quote.plan?.meta?.selfCheckout === false) {
     const error = new Error('Enterprise plan requires Contact Sales.');
@@ -2570,7 +2614,8 @@ const createRolePlanPurchase = async ({
     coupon_code: quote.coupon?.code || null,
     coupon_snapshot: quote.coupon || {},
     sales_owner_id: isValidUuid(salesOwnerId) ? salesOwnerId : null,
-    paid_at: normalizedStatus === PURCHASE_STATUSES.PAID ? new Date().toISOString() : null
+    paid_at: normalizedStatus === PURCHASE_STATUSES.PAID ? new Date().toISOString() : null,
+    meta: meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : {}
   };
 
   const { data: purchase, error } = await Database

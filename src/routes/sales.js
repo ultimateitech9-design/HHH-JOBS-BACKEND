@@ -183,6 +183,7 @@ const isSalesManager = (user = {}) => [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(
 const ACTIVE_LEAD_STATUSES = ['new', 'contacted', 'qualified', 'proposal'];
 const CLOSED_LEAD_STATUSES = ['converted', 'lost'];
 const FOLLOWUP_MIN_LEAD_TIME_MS = 60 * 1000;
+const SALES_OVERVIEW_MAX_ROWS = 10000;
 
 const getDefaultNextFollowupAt = () => {
   const date = new Date(Date.now() + 24 * 60 * 60 * 1000);
@@ -707,16 +708,17 @@ const fetchCommercialProfileStateByAccounts = async (accounts = []) => {
   return profilesByUserId;
 };
 
-const fetchPlanTakenUserIds = async ({ userIds = [], targetRole = '' } = {}) => {
+const fetchPlanTakenUserIds = async ({ userIds = [], targetRole = '', maxRows = 100000 } = {}) => {
   const ids = uniqueValues(userIds);
   const normalizedRole = normalizeCommercialAudienceRole(targetRole);
+  const safeMaxRows = Math.min(100000, Math.max(1, parseInt(maxRows || 100000, 10) || 100000));
 
   const withCommercialPlanFilters = (query) => {
     let scopedQuery = normalizedRole
       ? query.eq('audience_role', normalizedRole)
       : query.in('audience_role', COMMERCIAL_AUDIENCE_ROLES);
     if (ids.length > 0) scopedQuery = scopedQuery.in('user_id', ids);
-    return scopedQuery.limit(100000);
+    return scopedQuery.limit(safeMaxRows);
   };
 
   const roleSubscriptionQuery = withCommercialPlanFilters(
@@ -736,7 +738,7 @@ const fetchPlanTakenUserIds = async ({ userIds = [], targetRole = '' } = {}) => 
     .from('job_plan_purchases')
     .select('hr_id')
     .eq('status', 'paid')
-    .limit(100000);
+    .limit(safeMaxRows);
   if (ids.length > 0) jobPurchaseQuery = jobPurchaseQuery.in('hr_id', ids);
 
   const includeHrJobPurchases = !normalizedRole || normalizedRole === ROLES.HR;
@@ -822,10 +824,11 @@ const buildLiveLeadSummary = async ({ targetRole = '', search = '' } = {}) => {
     if (error) throw error;
     planTakenUserIds = await fetchPlanTakenUserIds({
       userIds: (matchingUsers || []).map((row) => row.id),
-      targetRole
+      targetRole,
+      maxRows: SALES_OVERVIEW_MAX_ROWS
     });
   } else {
-    planTakenUserIds = await fetchPlanTakenUserIds({ targetRole });
+    planTakenUserIds = await fetchPlanTakenUserIds({ targetRole, maxRows: SALES_OVERVIEW_MAX_ROWS });
   }
 
   const valueResult = await applyLeadListFilters(
@@ -855,7 +858,7 @@ const formatAudienceRoleLabel = (role = '') => {
 const buildCommercialAudienceBreakdown = async () => Promise.all(COMMERCIAL_AUDIENCE_ROLES.map(async (role) => {
   const [total, planTakenUserIds] = await Promise.all([
     countRows('users', (query) => query.eq('role', role)),
-    fetchPlanTakenUserIds({ targetRole: role })
+    fetchPlanTakenUserIds({ targetRole: role, maxRows: SALES_OVERVIEW_MAX_ROWS })
   ]);
   const planTaken = planTakenUserIds.size;
   const planPending = Math.max(0, total - planTaken);
@@ -874,7 +877,7 @@ const buildSalesFollowupSummary = async (user = {}) => {
     .from('sales_leads')
     .select('id, user_id, company_name, contact_name, contact_phone, contact_email, status, assigned_to, assigned_name, target_role, next_followup_at, last_followup_at, last_contacted_at, updated_at, created_at')
     .order('updated_at', { ascending: false })
-    .limit(100000);
+    .limit(SALES_OVERVIEW_MAX_ROWS);
   query = applySalesOwnershipScope(query, user);
 
   const { data, error } = await query;
@@ -926,7 +929,7 @@ const fetchOverviewPaymentSummary = async (user = {}) => {
     .select('id, user_id, audience_role, role_plan_slug, total_amount, status, provider, reference_id, created_at, paid_at, sales_owner_id')
     .not('status', 'in', '(failed,cancelled)')
     .order('created_at', { ascending: false })
-    .limit(100000);
+    .limit(SALES_OVERVIEW_MAX_ROWS);
   if (!isSalesManager(user)) roleQuery = roleQuery.eq('sales_owner_id', user.id);
 
   const jobQuery = isSalesManager(user)
@@ -935,7 +938,7 @@ const fetchOverviewPaymentSummary = async (user = {}) => {
       .select('id, hr_id, plan_slug, total_amount, status, provider, reference_id, created_at, paid_at')
       .not('status', 'in', '(failed,cancelled)')
       .order('created_at', { ascending: false })
-      .limit(100000)
+      .limit(SALES_OVERVIEW_MAX_ROWS)
     : Promise.resolve({ data: [], error: null });
 
   const [roleResult, jobResult] = await Promise.all([roleQuery, jobQuery]);
