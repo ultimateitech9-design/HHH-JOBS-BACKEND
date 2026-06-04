@@ -2477,40 +2477,121 @@ const activateRolePlanPurchase = async ({ purchaseId }) => {
   );
   const isTrialActivation = Boolean(purchaseMeta.isTrial);
   const endsAt = addDays(startsAt, effectiveDurationDays);
-
-  const subscriptionPayload = {
-    user_id: purchase.user_id,
-    audience_role: purchase.audience_role,
-    role_plan_slug: purchase.role_plan_slug,
-    source_purchase_id: purchase.id,
-    status: 'active',
-    amount: roundMoney(purchase.total_amount),
-    currency: purchase.currency || plan.currency,
-    billing_cycle: plan.billingCycle,
-    starts_at: startsAt,
-    ends_at: endsAt,
-    activated_at: startsAt,
-    trial_ends_at: isTrialActivation ? endsAt : null,
-    coupon_code: purchase.coupon_code || null,
-    coupon_snapshot: purchase.coupon_snapshot || {},
-    sales_owner_id: purchase.sales_owner_id || null,
-    autopay_enabled: false,
-    autopay_status: AUTOPAY_STATUSES.NOT_CONFIGURED,
-    meta: {
-      isTrial: isTrialActivation,
-      trialDays: isTrialActivation ? effectiveDurationDays : 0,
-      includedJobCredits: plan.includedJobCredits,
-      includedJobPlanSlug: plan.includedJobPlanSlug || null
-    }
+  const activationMeta = {
+    isTrial: isTrialActivation,
+    trialDays: isTrialActivation ? effectiveDurationDays : 0,
+    pendingAutopaySetup: false,
+    pendingPlanChangeSetup: false,
+    trialRequiresAutopay: false,
+    includedJobCredits: plan.includedJobCredits,
+    includedJobPlanSlug: plan.includedJobPlanSlug || null,
+    activatedWithoutAutopay: !purchase.provider || ['coupon_free_trial', 'zero_amount_checkout', 'manual', 'system_trial'].includes(normalizeLower(purchase.provider)),
+    activatedPurchaseId: purchase.id
   };
 
-  const { data: subscription, error: subscriptionError } = await Database
+  const { data: pendingSubscriptions, error: pendingSubscriptionsError } = await Database
     .from('role_plan_subscriptions')
-    .insert(subscriptionPayload)
     .select('*')
-    .single();
+    .eq('user_id', purchase.user_id)
+    .eq('audience_role', purchase.audience_role)
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false })
+    .limit(10);
 
-  if (subscriptionError) throw subscriptionError;
+  if (pendingSubscriptionsError) throw pendingSubscriptionsError;
+
+  const pendingSetupSubscription = (pendingSubscriptions || []).find((subscription) => {
+    const pendingMeta = subscription.meta || {};
+    const configuredPlanSlug = normalizeLower(
+      pendingMeta.renewalRolePlanSlug
+      || subscription.role_plan_slug
+    );
+
+    return configuredPlanSlug === normalizeLower(plan.slug);
+  }) || null;
+
+  let subscription = null;
+  if (pendingSetupSubscription) {
+    const { data: updatedSubscription, error: pendingActivationError } = await Database
+      .from('role_plan_subscriptions')
+      .update({
+        role_plan_slug: purchase.role_plan_slug,
+        source_purchase_id: purchase.id,
+        status: 'active',
+        amount: roundMoney(purchase.total_amount),
+        currency: purchase.currency || plan.currency,
+        billing_cycle: plan.billingCycle,
+        starts_at: startsAt,
+        ends_at: endsAt,
+        activated_at: startsAt,
+        trial_ends_at: isTrialActivation ? endsAt : null,
+        coupon_code: purchase.coupon_code || null,
+        coupon_snapshot: purchase.coupon_snapshot || {},
+        sales_owner_id: purchase.sales_owner_id || pendingSetupSubscription.sales_owner_id || null,
+        provider: null,
+        provider_subscription_id: null,
+        provider_customer_id: null,
+        autopay_enabled: false,
+        autopay_status: AUTOPAY_STATUSES.NOT_CONFIGURED,
+        last_renewed_at: startsAt,
+        meta: mergeMeta(pendingSetupSubscription.meta, activationMeta)
+      })
+      .eq('id', pendingSetupSubscription.id)
+      .select('*')
+      .single();
+
+    if (pendingActivationError) throw pendingActivationError;
+    subscription = updatedSubscription;
+  } else {
+    const subscriptionPayload = {
+      user_id: purchase.user_id,
+      audience_role: purchase.audience_role,
+      role_plan_slug: purchase.role_plan_slug,
+      source_purchase_id: purchase.id,
+      status: 'active',
+      amount: roundMoney(purchase.total_amount),
+      currency: purchase.currency || plan.currency,
+      billing_cycle: plan.billingCycle,
+      starts_at: startsAt,
+      ends_at: endsAt,
+      activated_at: startsAt,
+      trial_ends_at: isTrialActivation ? endsAt : null,
+      coupon_code: purchase.coupon_code || null,
+      coupon_snapshot: purchase.coupon_snapshot || {},
+      sales_owner_id: purchase.sales_owner_id || null,
+      autopay_enabled: false,
+      autopay_status: AUTOPAY_STATUSES.NOT_CONFIGURED,
+      meta: activationMeta
+    };
+
+    const { data: insertedSubscription, error: subscriptionError } = await Database
+      .from('role_plan_subscriptions')
+      .insert(subscriptionPayload)
+      .select('*')
+      .single();
+
+    if (subscriptionError) throw subscriptionError;
+    subscription = insertedSubscription;
+  }
+
+  const stalePendingIds = (pendingSubscriptions || [])
+    .map((row) => row.id)
+    .filter((id) => id && id !== subscription.id);
+
+  if (stalePendingIds.length > 0) {
+    await Database
+      .from('role_plan_subscriptions')
+      .update({
+        status: 'cancelled',
+        ends_at: startsAt,
+        meta: {
+          resolvedByPurchaseId: purchase.id,
+          resolvedAt: startsAt,
+          resolution: 'superseded_by_paid_activation'
+        }
+      })
+      .in('id', stalePendingIds);
+  }
 
   const profile = await resolveCommercialProfile({
     userId: purchase.user_id,
