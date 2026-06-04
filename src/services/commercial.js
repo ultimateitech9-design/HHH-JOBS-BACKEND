@@ -16,7 +16,7 @@ const {
   verifySuccessfulSubscriptionPayment,
   fetchPaymentDetails
 } = require('./razorpay');
-const { isRoleSubscriptionUsable } = require('../utils/roleSubscriptionAccess');
+const { isRoleSubscriptionUsable, pickCurrentRoleSubscription } = require('../utils/roleSubscriptionAccess');
 
 const SUPPORTED_AUDIENCE_ROLES = new Set([ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT]);
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
@@ -1008,8 +1008,7 @@ const ensureRolePlanTrialSubscription = async ({ userId, audienceRole = '', user
 
   if (existingSubscriptionsError) throw existingSubscriptionsError;
   if ((existingSubscriptions || []).length > 0) {
-    const active = existingSubscriptions.find((row) => ACTIVE_SUBSCRIPTION_STATUSES.has(normalizeLower(row.status)));
-    return active || existingSubscriptions[0];
+    return pickCurrentRoleSubscription(existingSubscriptions);
   }
 
   const { data: existingPurchases, error: existingPurchasesError } = await Database
@@ -2951,14 +2950,13 @@ const getCurrentRolePlanSubscription = async ({ userId, audienceRole = '' } = {}
     .select('*')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
-    .limit(1);
+    .limit(25);
 
   if (normalizedAudienceRole) query = query.eq('audience_role', normalizedAudienceRole);
   const { data, error } = await query;
   if (error) throw error;
 
-  const active = (data || []).find((row) => ACTIVE_SUBSCRIPTION_STATUSES.has(normalizeLower(row.status)));
-  return active || (data || [])[0] || null;
+  return pickCurrentRoleSubscription(data || []);
 };
 
 module.exports = {

@@ -1,7 +1,7 @@
 const { ROLES } = require('../constants');
 const { Database } = require('../db');
 const config = require('../config');
-const { isRoleSubscriptionUsable } = require('../utils/roleSubscriptionAccess');
+const { isRoleSubscriptionUsable, pickCurrentRoleSubscription } = require('../utils/roleSubscriptionAccess');
 
 const PLAN_TIERS = {
   free: 0,
@@ -69,15 +69,16 @@ const getUserActiveSubscription = async (userId, audienceRole) => {
     .select('*, role_plans(*)')
     .eq('user_id', userId)
     .eq('audience_role', audienceRole)
-    .in('status', ['active', 'trialing'])
     .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(25);
 
-  if (error || !data) return null;
-  if (!isLivePaymentModeAllowed(data)) return null;
-  if (!isRoleSubscriptionUsable(data)) return null;
-  return data;
+  if (error || !(data || []).length) return null;
+
+  const current = pickCurrentRoleSubscription(data || []);
+  if (!current) return null;
+  if (!isLivePaymentModeAllowed(current)) return null;
+  if (!isRoleSubscriptionUsable(current)) return null;
+  return current;
 };
 
 const getUserPlanTier = async (userId, role) => {
