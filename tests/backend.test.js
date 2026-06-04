@@ -641,6 +641,13 @@ test('requireAuth resolves legacy token identities before rejecting HR dashboard
       assert.equal(emailBody.user.email, 'email.hr@example.com');
       assert.ok(lookups.some((lookup) => lookup.field === 'id' && lookup.value === 'missing-user-id'));
       assert.ok(lookups.some((lookup) => lookup.field === 'email' && lookup.value === 'email.hr@example.com'));
+
+      const proxyHeaderResp = await fetch(`${baseUrl}/auth-test/probe`, {
+        headers: { 'X-HHH-Auth-Token': subToken }
+      });
+      const proxyHeaderBody = await proxyHeaderResp.json();
+      assert.equal(proxyHeaderResp.status, 200);
+      assert.equal(proxyHeaderBody.user.email, 'legacy.hr@example.com');
     } finally {
       await stopServer(server);
     }

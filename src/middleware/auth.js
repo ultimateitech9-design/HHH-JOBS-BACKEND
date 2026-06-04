@@ -89,6 +89,19 @@ const parseDevUserHeader = (req) => {
   }
 };
 
+const readBearerToken = (req) => {
+  const header = String(req.headers.authorization || '').trim();
+  if (header.startsWith('Bearer ')) {
+    return header.slice(7).trim();
+  }
+
+  return String(
+    req.headers['x-hhh-auth-token']
+    || req.headers['x-auth-token']
+    || ''
+  ).trim();
+};
+
 const requireAuth = asyncHandler(async (req, res, next) => {
   if (!config.jwtSecret) {
     res.status(500).send({ status: false, message: 'JWT_SECRET is required for authentication' });
@@ -118,13 +131,12 @@ const requireAuth = asyncHandler(async (req, res, next) => {
     return;
   }
 
-  const header = req.headers.authorization || '';
-  if (!header.startsWith('Bearer ')) {
+  const token = readBearerToken(req);
+  if (!token) {
     res.status(401).send({ status: false, message: 'Missing or invalid authorization token' });
     return;
   }
 
-  const token = header.slice(7).trim();
   let decoded;
 
   try {
@@ -152,8 +164,8 @@ const requireAuth = asyncHandler(async (req, res, next) => {
 });
 
 const optionalAuth = asyncHandler(async (req, res, next) => {
-  const header = req.headers.authorization || '';
-  if (!header.startsWith('Bearer ')) {
+  const token = readBearerToken(req);
+  if (!token) {
     next();
     return;
   }
@@ -163,7 +175,6 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
     return;
   }
 
-  const token = header.slice(7).trim();
   let decoded;
 
   try {
