@@ -27,6 +27,7 @@ const {
   isJobExpiredByValidity
 } = require('../modules/pricing/engine');
 const { getCurrentRolePlanSubscription, getRolePlanBySlug } = require('./commercial');
+const { isRoleSubscriptionUsable } = require('../utils/roleSubscriptionAccess');
 const { normalizeCompanyKey } = require('./companyDirectory');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
@@ -223,15 +224,7 @@ const ensureUniqueJobSeoSlug = async (rawSlug, { excludeJobId = '' } = {}) => {
   return buildSeoSlug(`${baseSlug}-${Date.now()}`);
 };
 
-const isRoleSubscriptionUsableForPosting = (subscription = null) => {
-  if (!subscription) return false;
-  const status = String(subscription.status || '').toLowerCase();
-  if (!ACTIVE_ROLE_SUBSCRIPTION_STATUSES.has(status)) return false;
-  if (subscription?.meta?.pendingAutopaySetup || subscription?.meta?.pendingPlanChangeSetup) return false;
-  if (!subscription.autopay_enabled && (status === 'trialing' || subscription?.meta?.isTrial)) return false;
-  if (!subscription.ends_at) return true;
-  return new Date(subscription.ends_at).getTime() >= Date.now();
-};
+const isRoleSubscriptionUsableForPosting = (subscription = null) => isRoleSubscriptionUsable(subscription);
 
 const getRolePlanPostingLimit = (rolePlan = {}, jobPlanSlug = '') => {
   const normalizedJobPlanSlug = normalizePlanSlug(jobPlanSlug);

@@ -16,6 +16,7 @@ const {
   verifySuccessfulSubscriptionPayment,
   fetchPaymentDetails
 } = require('./razorpay');
+const { isRoleSubscriptionUsable } = require('../utils/roleSubscriptionAccess');
 
 const SUPPORTED_AUDIENCE_ROLES = new Set([ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.STUDENT]);
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
@@ -487,12 +488,9 @@ const quoteRolePlan = async ({ planSlug, audienceRole = '', quantity = 1, coupon
   const currentPlanSlug = normalizeLower(currentSubscription?.role_plan_slug);
   if (
     currentSubscription
-    && ACTIVE_SUBSCRIPTION_STATUSES.has(currentStatus)
+    && isSubscriptionStillUsable(currentSubscription)
     && currentPlanSlug
     && currentPlanSlug !== plan.slug
-    && !currentSubscription?.meta?.pendingAutopaySetup
-    && !currentSubscription?.meta?.pendingPlanChangeSetup
-    && (currentSubscription.autopay_enabled || (currentStatus !== 'trialing' && !currentSubscription?.meta?.isTrial))
   ) {
     const currentPlan = await getRolePlanBySlug(currentPlanSlug, {
       audienceRole: plan.audienceRole,
@@ -1201,13 +1199,8 @@ const createOrReuseRazorpayPlanForRolePlan = async (plan = {}) => {
 
 const isSubscriptionStillUsable = (subscription = null) => {
   if (!subscription) return false;
-  const status = normalizeLower(subscription.status);
-  if (!ACTIVE_SUBSCRIPTION_STATUSES.has(status)) return false;
   if (!isSubscriptionPaymentModeAllowed(subscription)) return false;
-  if (subscription?.meta?.pendingAutopaySetup || subscription?.meta?.pendingPlanChangeSetup) return false;
-  if (!subscription.autopay_enabled && (status === 'trialing' || subscription?.meta?.isTrial)) return false;
-  if (!subscription.ends_at) return true;
-  return new Date(subscription.ends_at).getTime() >= Date.now();
+  return isRoleSubscriptionUsable(subscription);
 };
 
 const createPendingAutopayTrialSubscription = async ({

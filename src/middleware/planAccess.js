@@ -1,6 +1,7 @@
 const { ROLES } = require('../constants');
 const { Database } = require('../db');
 const config = require('../config');
+const { isRoleSubscriptionUsable } = require('../utils/roleSubscriptionAccess');
 
 const PLAN_TIERS = {
   free: 0,
@@ -74,11 +75,8 @@ const getUserActiveSubscription = async (userId, audienceRole) => {
     .maybeSingle();
 
   if (error || !data) return null;
-  const status = String(data.status || '').toLowerCase();
   if (!isLivePaymentModeAllowed(data)) return null;
-  if (data.meta?.pendingAutopaySetup || data.meta?.pendingPlanChangeSetup) return null;
-  if (!data.autopay_enabled && (status === 'trialing' || data.meta?.isTrial)) return null;
-  if (data.ends_at && new Date(data.ends_at).getTime() < Date.now()) return null;
+  if (!isRoleSubscriptionUsable(data)) return null;
   return data;
 };
 
