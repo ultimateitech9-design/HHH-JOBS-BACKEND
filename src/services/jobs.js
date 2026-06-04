@@ -34,13 +34,21 @@ const MAX_JOB_POSTING_LOCATIONS = 1;
 const MAX_JOB_POSTING_DESCRIPTION_CHARS = 250;
 const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
 
-const buildCanonicalJobSeoSlug = (job = {}) => buildSeoSlug(
-  job.seo_slug || job.seoSlug,
+const pickShortestNonEmptySlug = (...candidates) => {
+  const options = [...new Set(candidates.map((candidate) => String(candidate || '').trim()).filter(Boolean))];
+  if (options.length === 0) return null;
+  return options.sort((left, right) => left.length - right.length)[0];
+};
+
+const buildStructuredJobSeoSlug = (job = {}) => buildSeoSlug(
   job.job_title || job.jobTitle,
   job.company_name || job.companyName,
-  job.city_name || job.cityName,
-  job.district_name || job.districtName,
-  job.job_location || job.jobLocation
+  job.city_name || job.cityName || job.district_name || job.districtName || job.job_location || job.jobLocation || job.location
+);
+
+const buildCanonicalJobSeoSlug = (job = {}) => pickShortestNonEmptySlug(
+  buildStructuredJobSeoSlug(job),
+  buildSeoSlug(job.seo_slug || job.seoSlug)
 );
 
 const buildHrJobApplicantsPath = (job = {}, applicationId = '') => {
@@ -52,10 +60,23 @@ const rankJobSeoSlugCandidates = (jobs = [], seoSlug = '') => (jobs || [])
   .map((job) => ({
     job,
     canonicalSeoSlug: buildCanonicalJobSeoSlug(job),
+    normalizedStoredSlug: buildSeoSlug(job.seo_slug || job.seoSlug),
     exactStoredSlug: String(job.seo_slug || '').trim().toLowerCase()
   }))
-  .filter((entry) => entry.canonicalSeoSlug === seoSlug || entry.exactStoredSlug === seoSlug)
+  .filter((entry) =>
+    entry.canonicalSeoSlug === seoSlug
+    || entry.normalizedStoredSlug === seoSlug
+    || entry.exactStoredSlug === seoSlug
+  )
   .sort((left, right) => {
+    const leftCanonical = Number(left.canonicalSeoSlug === seoSlug);
+    const rightCanonical = Number(right.canonicalSeoSlug === seoSlug);
+    if (rightCanonical !== leftCanonical) return rightCanonical - leftCanonical;
+
+    const leftNormalized = Number(left.normalizedStoredSlug === seoSlug);
+    const rightNormalized = Number(right.normalizedStoredSlug === seoSlug);
+    if (rightNormalized !== leftNormalized) return rightNormalized - leftNormalized;
+
     const leftExact = Number(left.exactStoredSlug === seoSlug);
     const rightExact = Number(right.exactStoredSlug === seoSlug);
     if (rightExact !== leftExact) return rightExact - leftExact;
