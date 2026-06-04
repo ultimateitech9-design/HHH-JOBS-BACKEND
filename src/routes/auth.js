@@ -371,6 +371,12 @@ const normalizeRoleValue = (role) => {
     campusconnect: ROLES.CAMPUS_CONNECT,
     campus: ROLES.CAMPUS_CONNECT,
     data_entry: ROLES.DATAENTRY,
+    recruiter: ROLES.HR,
+    employer: ROLES.HR,
+    company: ROLES.HR,
+    company_hr: ROLES.HR,
+    hr_recruiter: ROLES.HR,
+    hiring_manager: ROLES.HR,
     superadmin: ROLES.SUPER_ADMIN
   };
 

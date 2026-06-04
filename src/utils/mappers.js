@@ -10,6 +10,12 @@ const normalizePublicRole = (role) => {
     campusconnect: 'campus_connect',
     campus: 'campus_connect',
     data_entry: 'dataentry',
+    recruiter: 'hr',
+    employer: 'hr',
+    company: 'hr',
+    company_hr: 'hr',
+    hr_recruiter: 'hr',
+    hiring_manager: 'hr',
     superadmin: 'super_admin'
   };
 
