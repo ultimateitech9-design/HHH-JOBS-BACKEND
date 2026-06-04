@@ -25,7 +25,11 @@ test('supported public roles are allowed in auth signup', () => {
 test('student-like roles redirect to the student dashboard and profile bucket', () => {
   assert.equal(getRoleRedirectPath(ROLES.RETIRED_EMPLOYEE), '/portal/student/companies');
   assert.equal(getRoleRedirectPath(ROLES.STUDENT), '/portal/student/companies');
+  assert.equal(getRoleRedirectPath('candidate'), '/portal/student/companies');
+  assert.equal(getRoleRedirectPath('job-seeker'), '/portal/student/companies');
+  assert.equal(getRoleRedirectPath('retired'), '/portal/student/companies');
   assert.equal(getRoleRedirectPath(ROLES.HR), '/portal/hr/dashboard');
+  assert.equal(getRoleRedirectPath('campus-connect'), '/portal/campus-connect/dashboard');
   assert.equal(getRoleRedirectPath(ROLES.ADMIN), '/portal/admin/dashboard');
   assert.equal(getRoleRedirectPath(ROLES.SUPPORT), '/portal/support/dashboard');
   assert.equal(getRoleRedirectPath(ROLES.SALES), '/portal/sales/overview');
@@ -36,5 +40,6 @@ test('student-like roles redirect to the student dashboard and profile bucket', 
   assert.equal(getRoleRedirectPath(ROLES.AUDIT), '/portal/audit/dashboard');
   assert.equal(getRoleRedirectPath(ROLES.SUPER_ADMIN), '/portal/super-admin/dashboard');
   assert.equal(toStudentProfileRole(ROLES.RETIRED_EMPLOYEE), ROLES.STUDENT);
+  assert.equal(toStudentProfileRole('candidate'), ROLES.STUDENT);
   assert.equal(toStudentProfileRole(ROLES.HR), ROLES.HR);
 });

@@ -1,3 +1,21 @@
+const normalizePublicRole = (role) => {
+  const normalized = String(role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const aliases = {
+    candidate: 'student',
+    jobseeker: 'student',
+    job_seeker: 'student',
+    student_candidate: 'student',
+    retired: 'retired_employee',
+    retired_professional: 'retired_employee',
+    campusconnect: 'campus_connect',
+    campus: 'campus_connect',
+    data_entry: 'dataentry',
+    superadmin: 'super_admin'
+  };
+
+  return aliases[normalized] || normalized;
+};
+
 const mapPublicUser = (row) => ({
   id: row.id,
   name: row.name,
@@ -6,7 +24,7 @@ const mapPublicUser = (row) => ({
   gender: row.gender || null,
   caste: row.caste || null,
   religion: row.religion || null,
-  role: row.role,
+  role: normalizePublicRole(row.role),
   status: row.status,
   isHrApproved: row.is_hr_approved,
   isEmailVerified: row.is_email_verified ?? false,

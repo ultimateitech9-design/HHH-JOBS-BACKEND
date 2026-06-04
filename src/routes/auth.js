@@ -359,7 +359,23 @@ const queueEimagerSyncForUser = ({ user = {}, fallbackProfile = null, reqBody = 
   });
 };
 
-const normalizeRoleValue = (role) => String(role || '').trim().toLowerCase();
+const normalizeRoleValue = (role) => {
+  const normalized = String(role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const aliases = {
+    candidate: ROLES.STUDENT,
+    jobseeker: ROLES.STUDENT,
+    job_seeker: ROLES.STUDENT,
+    student_candidate: ROLES.STUDENT,
+    retired: ROLES.RETIRED_EMPLOYEE,
+    retired_professional: ROLES.RETIRED_EMPLOYEE,
+    campusconnect: ROLES.CAMPUS_CONNECT,
+    campus: ROLES.CAMPUS_CONNECT,
+    data_entry: ROLES.DATAENTRY,
+    superadmin: ROLES.SUPER_ADMIN
+  };
+
+  return aliases[normalized] || normalized;
+};
 const normalizeAllowedLoginRoles = (allowedLoginRoles = []) => (
   Array.isArray(allowedLoginRoles)
     ? allowedLoginRoles.map((role) => normalizeRoleValue(role)).filter(Boolean)
@@ -2118,8 +2134,7 @@ router.get('/me', requireAuth, authSessionReadLimiter, asyncHandler(async (req, 
 }));
 
 router.get('/redirect', requireAuth, (req, res) => {
-  const redirectTo = req.user.role === ROLES.ADMIN ? '/admin' : req.user.role === ROLES.HR ? '/hr' : '/student';
-  res.send({ status: true, redirectTo });
+  res.send({ status: true, redirectTo: getRoleRedirectPath(req.user.role) });
 });
 
 module.exports = router;

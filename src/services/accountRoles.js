@@ -2,8 +2,23 @@ const { ROLES } = require('../constants');
 
 const STUDENT_PORTAL_ROLES = new Set([ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE]);
 const AUTH_ALLOWED_ROLES = new Set([ROLES.STUDENT, ROLES.HR, ROLES.RETIRED_EMPLOYEE, ROLES.CAMPUS_CONNECT]);
+const ROLE_ALIASES = Object.freeze({
+  candidate: ROLES.STUDENT,
+  jobseeker: ROLES.STUDENT,
+  job_seeker: ROLES.STUDENT,
+  student_candidate: ROLES.STUDENT,
+  retired: ROLES.RETIRED_EMPLOYEE,
+  retired_professional: ROLES.RETIRED_EMPLOYEE,
+  campusconnect: ROLES.CAMPUS_CONNECT,
+  campus: ROLES.CAMPUS_CONNECT,
+  data_entry: ROLES.DATAENTRY,
+  superadmin: ROLES.SUPER_ADMIN
+});
 
-const normalizeRole = (role) => String(role || '').trim().toLowerCase();
+const normalizeRole = (role) => {
+  const normalized = String(role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  return ROLE_ALIASES[normalized] || normalized;
+};
 
 const isStudentPortalRole = (role) => STUDENT_PORTAL_ROLES.has(normalizeRole(role));
 

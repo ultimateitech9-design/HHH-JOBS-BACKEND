@@ -250,6 +250,8 @@ test('mappers preserve the API contract shape', () => {
   assert.equal(user.isHrApproved, true);
   assert.equal(user.isEmailVerified, true);
   assert.equal(user.role, ROLES.HR);
+  assert.equal(mapPublicUser({ id: 'candidate-1', role: 'candidate' }).role, ROLES.STUDENT);
+  assert.equal(mapPublicUser({ id: 'campus-1', role: 'campus-connect' }).role, ROLES.CAMPUS_CONNECT);
 
   const job = mapJobFromRow({
     id: 'job-1',
