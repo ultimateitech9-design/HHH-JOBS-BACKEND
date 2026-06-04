@@ -862,6 +862,7 @@ test('login keeps unverified local users in OTP verification flow', async () => 
     assert.equal(verifyResp.status, 200);
     assert.equal(verifyBody.status, true);
     assert.equal(typeof verifyBody.token, 'string');
+    assert.equal(verifyBody.redirectTo, '/portal/student/companies');
   } finally {
     await new Promise((resolve) => server.close(resolve));
     clearModule(authStorePath);
@@ -1045,6 +1046,8 @@ test('signup returns a soft login redirect for already verified emails instead o
     });
 
     assert.equal(verifyResp.status, 200);
+    const verifyBody = await verifyResp.json();
+    assert.equal(verifyBody.redirectTo, '/portal/student/companies');
 
     const retrySignupResp = await fetch(`${baseUrl}/auth/signup`, {
       method: 'POST',
