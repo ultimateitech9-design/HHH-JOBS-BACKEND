@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const config = require('../config');
 const { getPool } = require('../mysqlDatabaseAdapter');
-const { buildSeoSlug, extractSeoPathSegment, extractUuidFromSlug, isValidUuid } = require('../utils/helpers');
+const { buildSeoSlug, extractSeoPathSegment, extractUuidFromSlug, isValidUuid, slugify } = require('../utils/helpers');
 const { createNotification } = require('./notifications');
 const { sendEmailWithFallback } = require('./email');
 
@@ -67,6 +67,12 @@ let seedReadyPromise = null;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 const normalizeText = (value = '') => String(value || '').trim();
+const normalizeLower = (value = '') => normalizeText(value).toLowerCase();
+const pickShortestNonEmptySlug = (...candidates) => {
+  const options = [...new Set(candidates.map((candidate) => normalizeText(candidate)).filter(Boolean))];
+  if (options.length === 0) return null;
+  return options.sort((left, right) => left.length - right.length)[0];
+};
 
 const parseInteger = (value, fallback = 0) => {
   const parsed = parseInt(value, 10);
@@ -222,6 +228,90 @@ const mapGovtJob = (row = {}) => {
     hasApplied: trackerStatus === 'applied',
     reminderEnabled
   };
+};
+
+const buildStructuredGovtJobSeoSlug = (job = {}) => buildSeoSlug(
+  job.title,
+  job.organization,
+  job.state || job.category
+);
+
+const buildCanonicalGovtJobSeoSlug = (job = {}) => pickShortestNonEmptySlug(
+  buildStructuredGovtJobSeoSlug(job),
+  buildSeoSlug(job.seo_slug || job.seoSlug)
+);
+
+const rankGovtJobSeoSlugCandidates = (jobs = [], requestedSlugs = []) => {
+  const normalizedRequestedSlugs = [...new Set((Array.isArray(requestedSlugs) ? requestedSlugs : [requestedSlugs])
+    .map((value) => buildSeoSlug(value) || normalizeLower(value))
+    .filter(Boolean))];
+
+  return (jobs || [])
+    .map((job) => ({
+      job,
+      canonicalSeoSlug: buildCanonicalGovtJobSeoSlug(job),
+      normalizedStoredSlug: buildSeoSlug(job.seo_slug || job.seoSlug),
+      exactStoredSlug: normalizeLower(job.seo_slug || job.seoSlug)
+    }))
+    .filter((entry) => normalizedRequestedSlugs.some((slug) =>
+      entry.canonicalSeoSlug === slug
+      || entry.normalizedStoredSlug === slug
+      || entry.exactStoredSlug === slug
+    ))
+    .sort((left, right) => {
+      const leftCanonical = Number(normalizedRequestedSlugs.includes(left.canonicalSeoSlug));
+      const rightCanonical = Number(normalizedRequestedSlugs.includes(right.canonicalSeoSlug));
+      if (rightCanonical !== leftCanonical) return rightCanonical - leftCanonical;
+
+      const leftNormalized = Number(normalizedRequestedSlugs.includes(left.normalizedStoredSlug));
+      const rightNormalized = Number(normalizedRequestedSlugs.includes(right.normalizedStoredSlug));
+      if (rightNormalized !== leftNormalized) return rightNormalized - leftNormalized;
+
+      const leftExact = Number(normalizedRequestedSlugs.includes(left.exactStoredSlug));
+      const rightExact = Number(normalizedRequestedSlugs.includes(right.exactStoredSlug));
+      if (rightExact !== leftExact) return rightExact - leftExact;
+
+      const leftUpdatedAt = new Date(left.job.updated_at || left.job.created_at || 0).getTime();
+      const rightUpdatedAt = new Date(right.job.updated_at || right.job.created_at || 0).getTime();
+      return rightUpdatedAt - leftUpdatedAt;
+    });
+};
+
+const buildGovtJobSeoLookupPrefixes = (seoSlug = '') => {
+  const tokens = normalizeLower(seoSlug).split('-').filter(Boolean);
+  if (tokens.length === 0) return [];
+
+  return [...new Set([
+    tokens.slice(0, Math.min(tokens.length, 7)).join('-'),
+    tokens.slice(0, Math.min(tokens.length, 6)).join('-'),
+    tokens.slice(0, Math.min(tokens.length, 5)).join('-'),
+    tokens.slice(0, Math.min(tokens.length, 4)).join('-'),
+    tokens.slice(0, Math.min(tokens.length, 3)).join('-')
+  ].filter((value) => value && value !== normalizeLower(seoSlug)))];
+};
+
+const selectGovtJobRowsBySlugQuery = async ({ db, userId = '', sqlCondition = '', params = [] } = {}) => {
+  const [rows] = await db.execute(`
+    SELECT
+      g.*,
+      t.id AS tracker_id,
+      t.status AS tracker_status,
+      t.applied_at,
+      t.reminder_enabled,
+      t.reminder_days_before,
+      t.reminder_at,
+      t.reminder_sent_at,
+      t.expiry_notified_at,
+      t.notes AS tracker_notes
+    FROM govt_jobs g
+    LEFT JOIN student_govt_job_trackers t
+      ON t.govt_job_id = g.id AND t.user_id = ?
+    WHERE ${sqlCondition}
+      AND (g.review_status IS NULL OR UPPER(g.review_status) <> 'REJECTED')
+    LIMIT 25
+  `, [userId || '', ...params]);
+
+  return rows || [];
 };
 
 const ensureGovtJobsSchema = async () => {
@@ -1264,18 +1354,12 @@ const getGovtJobById = async ({ userId, jobId } = {}) => {
   const rawIdentifier = normalizeText(jobId);
   const uuidCandidate = extractUuidFromSlug(rawIdentifier);
   const uuid = isValidUuid(uuidCandidate) ? uuidCandidate : '';
-  const seoSlug = uuid ? '' : buildSeoSlug(extractSeoPathSegment(rawIdentifier));
+  const rawSeoSegment = extractSeoPathSegment(rawIdentifier);
+  const seoSlug = uuid ? '' : buildSeoSlug(rawSeoSegment);
+  const rawSeoSlug = uuid ? '' : slugify(rawSeoSegment);
+  const slugCandidates = [...new Set([seoSlug, rawSeoSlug].filter(Boolean))];
 
-  if (!uuid && !seoSlug) return null;
-
-  const slugMatchSql = `
-    (
-      g.seo_slug = ?
-      OR (? LIKE CONCAT(g.seo_slug, '-%') AND g.seo_slug IS NOT NULL AND g.seo_slug <> '')
-    )
-  `;
-  const identifierParams = uuid ? [uuid] : [seoSlug, seoSlug];
-  const orderBy = uuid ? '' : 'ORDER BY CASE WHEN g.seo_slug = ? THEN 0 ELSE 1 END, CHAR_LENGTH(g.seo_slug) DESC';
+  if (!uuid && slugCandidates.length === 0) return null;
 
   const [rows] = await db.execute(`
     SELECT
@@ -1292,13 +1376,48 @@ const getGovtJobById = async ({ userId, jobId } = {}) => {
     FROM govt_jobs g
     LEFT JOIN student_govt_job_trackers t
       ON t.govt_job_id = g.id AND t.user_id = ?
-    WHERE ${uuid ? 'g.id = ?' : slugMatchSql}
+    WHERE ${uuid ? 'g.id = ?' : 'g.id IS NULL'}
       AND (g.review_status IS NULL OR UPPER(g.review_status) <> 'REJECTED')
-    ${orderBy}
     LIMIT 1
-  `, [userId || '', ...identifierParams, ...(uuid ? [] : [seoSlug])]);
+  `, [userId || '', ...(uuid ? [uuid] : [])]);
 
-  return rows?.[0] ? mapGovtJob(rows[0]) : null;
+  if (rows?.[0]) return mapGovtJob(rows[0]);
+
+  if (uuid) return null;
+
+  const exactRows = await selectGovtJobRowsBySlugQuery({
+    db,
+    userId,
+    sqlCondition: `LOWER(g.seo_slug) IN (${slugCandidates.map(() => '?').join(', ')})`,
+    params: slugCandidates.map((slug) => normalizeLower(slug))
+  });
+  const exactCandidates = rankGovtJobSeoSlugCandidates(exactRows, slugCandidates);
+  if (exactCandidates[0]?.job) return mapGovtJob(exactCandidates[0].job);
+
+  for (const slug of slugCandidates) {
+    const prefixRows = await selectGovtJobRowsBySlugQuery({
+      db,
+      userId,
+      sqlCondition: 'LOWER(g.seo_slug) LIKE ?',
+      params: [`${normalizeLower(slug)}%`]
+    });
+    const prefixCandidates = rankGovtJobSeoSlugCandidates(prefixRows, slugCandidates);
+    if (prefixCandidates[0]?.job) return mapGovtJob(prefixCandidates[0].job);
+  }
+
+  const fallbackPrefixes = [...new Set(slugCandidates.flatMap((slug) => buildGovtJobSeoLookupPrefixes(slug)))];
+  for (const prefix of fallbackPrefixes) {
+    const fallbackRows = await selectGovtJobRowsBySlugQuery({
+      db,
+      userId,
+      sqlCondition: 'LOWER(g.seo_slug) LIKE ?',
+      params: [`${normalizeLower(prefix)}%`]
+    });
+    const fallbackCandidates = rankGovtJobSeoSlugCandidates(fallbackRows, slugCandidates);
+    if (fallbackCandidates[0]?.job) return mapGovtJob(fallbackCandidates[0].job);
+  }
+
+  return null;
 };
 
 const updateGovtJobTracker = async ({
@@ -1632,6 +1751,7 @@ module.exports = {
   ensureGovtJobsSchema,
   listGovtJobs,
   getGovtJobById,
+  buildCanonicalGovtJobSeoSlug,
   updateGovtJobTracker,
   getGovtJobTrackingSummary,
   sendDueGovtJobReminders,
