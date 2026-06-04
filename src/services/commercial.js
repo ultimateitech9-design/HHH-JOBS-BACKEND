@@ -77,6 +77,22 @@ const isSubscriptionPaymentModeAllowed = (subscription = {}) => {
   if (!isRazorpayBacked) return true;
   return normalizeLower(subscription?.meta?.razorpayKeyMode) !== 'test';
 };
+const isInstantRolePlanActivationPurchase = (purchase = null) => {
+  if (!purchase) return false;
+  if (normalizeLower(purchase.status) !== PURCHASE_STATUSES.PAID) return false;
+
+  const provider = normalizeLower(purchase.provider);
+  if (['coupon_free_trial', 'zero_amount_checkout', 'system_trial'].includes(provider)) return true;
+
+  const purchaseMeta = purchase.meta && typeof purchase.meta === 'object' ? purchase.meta : {};
+  return Boolean(
+    purchaseMeta.bypassedRazorpay
+    || purchaseMeta.couponFreeCheckout
+    || purchaseMeta.businessRule === 'coupon_free_trial_without_autopay'
+    || purchaseMeta.businessRule === 'zero_amount_checkout_without_autopay'
+    || roundMoney(purchase.total_amount) <= 0
+  );
+};
 const isMissingColumnError = (error = null) => (
   Boolean(error?.code)
   && (
@@ -3007,6 +3023,14 @@ const syncCommercialCustomersFromSubscriptions = async ({ roles = [ROLES.HR, ROL
 
 const listRolePlanSubscriptions = async ({ userId = null, status = '', audienceRole = '' } = {}) => {
   const normalizedAudienceRole = normalizeAudienceRole(audienceRole);
+
+  if (isValidUuid(userId) && normalizedAudienceRole) {
+    await repairInstantRolePlanActivations({
+      userId,
+      audienceRole: normalizedAudienceRole
+    });
+  }
+
   let query = Database
     .from('role_plan_subscriptions')
     .select('*')
@@ -3022,10 +3046,102 @@ const listRolePlanSubscriptions = async ({ userId = null, status = '', audienceR
   return data || [];
 };
 
+const repairInstantRolePlanActivations = async ({ userId, audienceRole = '' } = {}) => {
+  if (!isValidUuid(userId)) return null;
+
+  const normalizedAudienceRole = normalizeAudienceRole(audienceRole);
+  if (!normalizedAudienceRole) return null;
+
+  const { data: subscriptions, error: subscriptionsError } = await Database
+    .from('role_plan_subscriptions')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('audience_role', normalizedAudienceRole)
+    .order('created_at', { ascending: false })
+    .limit(25);
+
+  if (subscriptionsError) throw subscriptionsError;
+
+  const existingCurrent = pickCurrentRoleSubscription(subscriptions || []);
+  if (existingCurrent && isRoleSubscriptionUsable(existingCurrent)) {
+    return existingCurrent;
+  }
+
+  const pendingSubscriptions = (subscriptions || []).filter((subscription) => {
+    const status = normalizeLower(subscription.status);
+    return status === 'pending' || subscription?.meta?.pendingAutopaySetup;
+  });
+
+  if (pendingSubscriptions.length === 0) {
+    return existingCurrent || null;
+  }
+
+  const { data: purchases, error: purchasesError } = await Database
+    .from('role_plan_purchases')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('audience_role', normalizedAudienceRole)
+    .eq('status', PURCHASE_STATUSES.PAID)
+    .order('created_at', { ascending: false })
+    .limit(25);
+
+  if (purchasesError) throw purchasesError;
+
+  const instantPurchases = (purchases || []).filter(isInstantRolePlanActivationPurchase);
+  if (instantPurchases.length === 0) {
+    return existingCurrent || null;
+  }
+
+  const latestInstantPurchaseByPlan = new Map();
+  for (const purchase of instantPurchases) {
+    const planSlug = normalizeLower(purchase.role_plan_slug);
+    if (!planSlug || latestInstantPurchaseByPlan.has(planSlug)) continue;
+    latestInstantPurchaseByPlan.set(planSlug, purchase);
+  }
+
+  let repaired = false;
+  for (const pendingSubscription of pendingSubscriptions) {
+    const configuredPlanSlug = normalizeLower(
+      pendingSubscription?.meta?.renewalRolePlanSlug
+      || pendingSubscription.role_plan_slug
+    );
+    const matchingPurchase = latestInstantPurchaseByPlan.get(configuredPlanSlug);
+    if (!matchingPurchase) continue;
+
+    await activateRolePlanPurchase({ purchaseId: matchingPurchase.id });
+    repaired = true;
+  }
+
+  if (!repaired) {
+    return existingCurrent || null;
+  }
+
+  const { data: repairedSubscriptions, error: repairedSubscriptionsError } = await Database
+    .from('role_plan_subscriptions')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('audience_role', normalizedAudienceRole)
+    .order('created_at', { ascending: false })
+    .limit(25);
+
+  if (repairedSubscriptionsError) throw repairedSubscriptionsError;
+  return pickCurrentRoleSubscription(repairedSubscriptions || []);
+};
+
 const getCurrentRolePlanSubscription = async ({ userId, audienceRole = '' } = {}) => {
   if (!isValidUuid(userId)) return null;
 
   const normalizedAudienceRole = normalizeAudienceRole(audienceRole);
+  if (normalizedAudienceRole) {
+    const repairedCurrent = await repairInstantRolePlanActivations({
+      userId,
+      audienceRole: normalizedAudienceRole
+    });
+    if (repairedCurrent && isRoleSubscriptionUsable(repairedCurrent)) {
+      return repairedCurrent;
+    }
+  }
+
   let query = Database
     .from('role_plan_subscriptions')
     .select('*')
