@@ -7,6 +7,8 @@ const { mapPublicUser, mapJobFromRow, mapApplicationFromRow } = require('../src/
 const { ROLES, JOB_STATUSES, PRICING_PLAN_SLUGS } = require('../src/constants');
 const { normalizePlan, validateJobPayloadAgainstPlan, calculateQuote, calculateEntitlements } = require('../src/modules/pricing/engine');
 
+const configPath = require.resolve('../src/config');
+const databasePath = require.resolve('../src/db');
 const authMiddlewarePath = require.resolve('../src/middleware/auth');
 const rolesMiddlewarePath = require.resolve('../src/middleware/roles');
 
@@ -198,6 +200,41 @@ const startServer = async (router, mountPath) => {
 };
 
 const stopServer = (server) => new Promise((resolve) => server.close(resolve));
+
+const installDatabaseUsersDouble = (users = [], lookups = []) => {
+  require.cache[databasePath] = {
+    id: databasePath,
+    filename: databasePath,
+    loaded: true,
+    exports: {
+      Database: {
+        from(table) {
+          assert.equal(table, 'users');
+          return {
+            select() {
+              return {
+                eq(field, value) {
+                  return {
+                    maybeSingle: async () => {
+                      lookups.push({ field, value });
+                      const user = users.find((item) => String(item[field] || '') === String(value || ''));
+                      return { data: user || null, error: null };
+                    }
+                  };
+                }
+              };
+            }
+          };
+        }
+      },
+      ensureDatabaseConfig: () => true,
+      sendDatabaseError: (res, error, statusCode = 500) => res.status(statusCode).send({
+        status: false,
+        message: error?.message || 'Database error'
+      })
+    }
+  };
+};
 
 test('helper utilities normalize and mask values safely', () => {
   assert.equal(normalizeEmail('  User@Example.com '), 'user@example.com');
@@ -537,6 +574,86 @@ test('requireActiveUser blocks unverified email sessions', () => {
   assert.equal(nextCalled, false);
   assert.equal(res.statusCode, 403);
   assert.equal(res.body?.message, 'Verify your email before accessing dashboard features.');
+});
+
+test('requireAuth resolves legacy token identities before rejecting HR dashboard sessions', async () => {
+  const previousJwtSecret = process.env.JWT_SECRET;
+  process.env.JWT_SECRET = 'session-resolution-secret';
+
+  const users = [
+    {
+      id: 'legacy-sub-user',
+      name: 'Legacy HR',
+      email: 'legacy.hr@example.com',
+      role: ROLES.HR,
+      status: 'active',
+      is_hr_approved: true,
+      is_email_verified: true
+    },
+    {
+      id: 'email-fallback-user',
+      name: 'Email HR',
+      email: 'email.hr@example.com',
+      role: ROLES.HR,
+      status: 'active',
+      is_hr_approved: true,
+      is_email_verified: true
+    }
+  ];
+  const lookups = [];
+
+  try {
+    installDatabaseUsersDouble(users, lookups);
+    delete require.cache[configPath];
+    delete require.cache[authMiddlewarePath];
+    const { requireAuth } = require('../src/middleware/auth');
+    const jwt = require('jsonwebtoken');
+
+    const router = express.Router();
+    router.get('/probe', requireAuth, (req, res) => {
+      res.send({ status: true, user: req.user });
+    });
+    const { server, baseUrl } = await startServer(router, '/auth-test');
+
+    try {
+      const subToken = jwt.sign(
+        { sub: 'legacy-sub-user', email: 'legacy.hr@example.com', role: ROLES.HR },
+        process.env.JWT_SECRET,
+        { expiresIn: '7d' }
+      );
+      const subResp = await fetch(`${baseUrl}/auth-test/probe`, {
+        headers: { Authorization: `Bearer ${subToken}` }
+      });
+      const subBody = await subResp.json();
+      assert.equal(subResp.status, 200);
+      assert.equal(subBody.user.email, 'legacy.hr@example.com');
+
+      const emailFallbackToken = jwt.sign(
+        { id: 'missing-user-id', email: 'email.hr@example.com', role: ROLES.HR },
+        process.env.JWT_SECRET,
+        { expiresIn: '7d' }
+      );
+      const emailResp = await fetch(`${baseUrl}/auth-test/probe`, {
+        headers: { Authorization: `Bearer ${emailFallbackToken}` }
+      });
+      const emailBody = await emailResp.json();
+      assert.equal(emailResp.status, 200);
+      assert.equal(emailBody.user.email, 'email.hr@example.com');
+      assert.ok(lookups.some((lookup) => lookup.field === 'id' && lookup.value === 'missing-user-id'));
+      assert.ok(lookups.some((lookup) => lookup.field === 'email' && lookup.value === 'email.hr@example.com'));
+    } finally {
+      await stopServer(server);
+    }
+  } finally {
+    if (previousJwtSecret === undefined) {
+      delete process.env.JWT_SECRET;
+    } else {
+      process.env.JWT_SECRET = previousJwtSecret;
+    }
+    delete require.cache[authMiddlewarePath];
+    delete require.cache[databasePath];
+    delete require.cache[configPath];
+  }
 });
 
 test('support, sales, data entry, and super admin dashboards serve the portal contracts', async () => {

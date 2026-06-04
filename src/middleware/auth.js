@@ -2,8 +2,62 @@ const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { ensureDatabaseConfig, Database, sendDatabaseError } = require('../db');
 const { mapPublicUser } = require('../utils/mappers');
-const { asyncHandler } = require('../utils/helpers');
+const { asyncHandler, normalizeEmail } = require('../utils/helpers');
 const authStore = require('../mock/authStore');
+
+const getTokenUserId = (decoded = {}) => String(
+  decoded.id
+  || decoded.userId
+  || decoded.user_id
+  || decoded.sub
+  || ''
+).trim();
+
+const getTokenEmail = (decoded = {}) => normalizeEmail(
+  decoded.email
+  || decoded.userEmail
+  || decoded.user_email
+  || ''
+);
+
+const resolveAuthenticatedUser = async (decoded = {}) => {
+  const tokenUserId = getTokenUserId(decoded);
+  const tokenEmail = getTokenEmail(decoded);
+
+  if (!tokenUserId && !tokenEmail) {
+    return { user: null };
+  }
+
+  if (!Database) {
+    const user = (tokenUserId ? authStore.findUserById(tokenUserId) : null)
+      || (tokenEmail ? authStore.findUserByEmail(tokenEmail) : null);
+    return { user };
+  }
+
+  if (tokenUserId) {
+    const { data: user, error } = await Database
+      .from('users')
+      .select('*')
+      .eq('id', tokenUserId)
+      .maybeSingle();
+
+    if (error) return { error };
+    if (user) return { user };
+  }
+
+  if (tokenEmail) {
+    const { data: user, error } = await Database
+      .from('users')
+      .select('*')
+      .eq('email', tokenEmail)
+      .maybeSingle();
+
+    if (error) return { error };
+    if (user) return { user };
+  }
+
+  return { user: null };
+};
 
 const isLocalRequest = (req) => {
   const origin = String(req.headers.origin || '').trim();
@@ -80,24 +134,7 @@ const requireAuth = asyncHandler(async (req, res, next) => {
     return;
   }
 
-  if (!Database) {
-    const user = authStore.findUserById(decoded.id);
-    if (!user) {
-      res.status(401).send({ status: false, message: 'User session is invalid' });
-      return;
-    }
-
-    req.user = mapPublicUser(user);
-    req.tokenPayload = decoded;
-    next();
-    return;
-  }
-
-  const { data: user, error } = await Database
-    .from('users')
-    .select('*')
-    .eq('id', decoded.id)
-    .maybeSingle();
+  const { user, error } = await resolveAuthenticatedUser(decoded);
 
   if (error) {
     sendDatabaseError(res, error);
@@ -121,7 +158,7 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
     return;
   }
 
-  if (!config.jwtSecret || !Database) {
+  if (!config.jwtSecret) {
     next();
     return;
   }
@@ -136,11 +173,7 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
     return;
   }
 
-  const { data: user, error } = await Database
-    .from('users')
-    .select('*')
-    .eq('id', decoded.id)
-    .maybeSingle();
+  const { user, error } = await resolveAuthenticatedUser(decoded);
 
   if (error || !user) {
     next();
