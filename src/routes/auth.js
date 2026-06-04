@@ -360,6 +360,33 @@ const queueEimagerSyncForUser = ({ user = {}, fallbackProfile = null, reqBody = 
 };
 
 const normalizeRoleValue = (role) => String(role || '').trim().toLowerCase();
+const normalizeAllowedLoginRoles = (allowedLoginRoles = []) => (
+  Array.isArray(allowedLoginRoles)
+    ? allowedLoginRoles.map((role) => normalizeRoleValue(role)).filter(Boolean)
+    : []
+);
+const isRoleAllowedOnLoginPage = (role, allowedLoginRoles = []) => {
+  const normalizedRole = normalizeRoleValue(role);
+  if (!normalizedRole) return false;
+  if (!allowedLoginRoles.length) return true;
+  return allowedLoginRoles.includes(normalizedRole);
+};
+const buildPortalRoleErrorMessage = (allowedLoginRoles = []) => {
+  const includesStudentHrCampus =
+    allowedLoginRoles.includes('student')
+    && allowedLoginRoles.includes('hr')
+    && allowedLoginRoles.includes('campus_connect');
+
+  if (includesStudentHrCampus && allowedLoginRoles.length === 3) {
+    return 'This login page only allows Student, HR, and Campus Connect accounts. Use the dedicated management login page for management dashboards.';
+  }
+
+  if (allowedLoginRoles.includes('student') && allowedLoginRoles.includes('hr') && allowedLoginRoles.length === 2) {
+    return 'This login page only allows Student and HR accounts. Use the dedicated management login page for management dashboards.';
+  }
+
+  return 'This account is not allowed on the selected login page.';
+};
 const buildCampusCollegePayload = ({ userId, reqBody = {}, fallbackName = '', fallbackEmail = '', fallbackMobile = '' }) => {
   const basePayload = {
     user_id: userId,
@@ -1834,6 +1861,7 @@ router.post('/login', asyncHandler(async (req, res) => {
 
   const email = normalizeEmail(req.body?.email);
   const password = String(req.body?.password || '');
+  const allowedLoginRoles = normalizeAllowedLoginRoles(req.body?.allowedLoginRoles);
 
   if (!email || !password) {
     res.status(400).send({ status: false, message: 'email and password are required' });
@@ -1879,6 +1907,14 @@ router.post('/login', asyncHandler(async (req, res) => {
     : false;
   if (!isPasswordValid) {
     res.status(401).send({ status: false, message: 'Invalid email or password' });
+    return;
+  }
+
+  if (!isRoleAllowedOnLoginPage(loginTarget.role, allowedLoginRoles)) {
+    res.status(403).send({
+      status: false,
+      message: buildPortalRoleErrorMessage(allowedLoginRoles)
+    });
     return;
   }
 

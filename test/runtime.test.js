@@ -871,6 +871,76 @@ test('login keeps unverified local users in OTP verification flow', async () => 
   }
 });
 
+test('login rejects unverified users from the wrong portal before OTP verification starts', async () => {
+  process.env.JWT_SECRET = 'test-secret';
+  useLocalAuthFallback();
+  process.env.CORS_ORIGINS = 'http://localhost:5173';
+  process.env.CLIENT_URLS = '';
+  process.env.FRONTEND_URL = '';
+  process.env.OAUTH_CLIENT_URL = '';
+  process.env.SMTP_HOST = '';
+  process.env.SMTP_PORT = '';
+  process.env.SMTP_SECURE = '';
+  process.env.SMTP_USER = '';
+  process.env.SMTP_PASS = '';
+  process.env.EMAIL_FROM = '';
+  process.env.GMAIL_EMAIL = '';
+  process.env.GMAIL_APP_PASSWORD = '';
+  process.env.RESEND_API_KEY = '';
+  process.env.SENDGRID_API_KEY = '';
+  process.env.OTP_DELIVERY_WAIT_MS = '';
+
+  clearModule(authStorePath);
+  clearModule(emailPath);
+  clearModule(configPath);
+  clearModule(indexPath);
+  const { app } = require('../index');
+
+  const server = app.listen(0);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const signupResp = await fetch(`${baseUrl}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Retired User',
+        email: 'retired.user@example.com',
+        mobile: '+919876543210',
+        password: 'Password123!',
+        role: 'retired_employee'
+      })
+    });
+    const signupBody = await signupResp.json();
+
+    assert.equal(signupResp.status, 201);
+    assert.equal(signupBody.requiresOtpVerification, true);
+
+    const loginResp = await fetch(`${baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'retired.user@example.com',
+        password: 'Password123!',
+        allowedLoginRoles: ['student']
+      })
+    });
+    const loginBody = await loginResp.json();
+
+    assert.equal(loginResp.status, 403);
+    assert.equal(loginBody.status, false);
+    assert.equal(loginBody.message, 'This account is not allowed on the selected login page.');
+    assert.equal(Boolean(loginBody.requiresOtpVerification), false);
+    assert.equal('otp' in loginBody, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    clearModule(authStorePath);
+    clearModule(indexPath);
+    clearModule(configPath);
+    restoreEnv();
+  }
+});
+
 test('signup reuses existing unverified email instead of blocking with already registered', async () => {
   process.env.JWT_SECRET = 'test-secret';
   useLocalAuthFallback();
