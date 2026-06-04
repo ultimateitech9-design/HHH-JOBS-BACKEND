@@ -20,6 +20,38 @@ const getTokenEmail = (decoded = {}) => normalizeEmail(
   || ''
 );
 
+const TOKEN_BACKED_SESSION_GRACE_SECONDS = Number(process.env.TOKEN_BACKED_SESSION_GRACE_SECONDS) > 0
+  ? Number(process.env.TOKEN_BACKED_SESSION_GRACE_SECONDS)
+  : 15 * 60;
+
+const buildTokenBackedUser = (decoded = {}) => {
+  if (decoded.session !== true) return null;
+
+  const id = getTokenUserId(decoded);
+  const email = getTokenEmail(decoded);
+  const role = String(decoded.role || '').trim().toLowerCase();
+  if (!id || !email || !role) return null;
+
+  if (decoded.iat) {
+    const tokenAgeSeconds = Math.floor(Date.now() / 1000) - Number(decoded.iat);
+    if (Number.isFinite(tokenAgeSeconds) && tokenAgeSeconds > TOKEN_BACKED_SESSION_GRACE_SECONDS) {
+      return null;
+    }
+  }
+
+  return mapPublicUser({
+    id,
+    name: decoded.name || email,
+    email,
+    mobile: decoded.mobile || '',
+    role,
+    status: decoded.status || 'active',
+    is_hr_approved: decoded.is_hr_approved ?? decoded.isHrApproved ?? (role === 'hr' ? false : true),
+    is_email_verified: decoded.is_email_verified ?? decoded.isEmailVerified ?? true,
+    last_login_at: decoded.last_login_at || decoded.lastLoginAt || null
+  });
+};
+
 const resolveAuthenticatedUser = async (decoded = {}) => {
   const tokenUserId = getTokenUserId(decoded);
   const tokenEmail = getTokenEmail(decoded);
@@ -154,6 +186,14 @@ const requireAuth = asyncHandler(async (req, res, next) => {
   }
 
   if (!user) {
+    const tokenBackedUser = buildTokenBackedUser(decoded);
+    if (tokenBackedUser) {
+      req.user = tokenBackedUser;
+      req.tokenPayload = decoded;
+      next();
+      return;
+    }
+
     res.status(401).send({ status: false, message: 'User session is invalid' });
     return;
   }
@@ -186,7 +226,20 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
 
   const { user, error } = await resolveAuthenticatedUser(decoded);
 
-  if (error || !user) {
+  if (error) {
+    next();
+    return;
+  }
+
+  if (!user) {
+    const tokenBackedUser = buildTokenBackedUser(decoded);
+    if (!tokenBackedUser) {
+      next();
+      return;
+    }
+
+    req.user = tokenBackedUser;
+    req.tokenPayload = decoded;
     next();
     return;
   }

@@ -22,23 +22,27 @@ const normalizePublicRole = (role) => {
   return aliases[normalized] || normalized;
 };
 
-const mapPublicUser = (row) => ({
-  id: row.id,
-  name: row.name,
-  email: row.email,
-  mobile: row.mobile,
-  gender: row.gender || null,
-  caste: row.caste || null,
-  religion: row.religion || null,
-  role: normalizePublicRole(row.role),
-  status: row.status,
-  isHrApproved: row.is_hr_approved,
-  isEmailVerified: row.is_email_verified ?? false,
-  avatarUrl: row.avatar_url,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at,
-  lastLoginAt: row.last_login_at
-});
+const mapPublicUser = (row = {}) => {
+  const role = normalizePublicRole(row.role);
+
+  return {
+    id: row.id || row.userId || row.user_id || row.sub,
+    name: row.name,
+    email: row.email,
+    mobile: row.mobile,
+    gender: row.gender || null,
+    caste: row.caste || null,
+    religion: row.religion || null,
+    role,
+    status: row.status,
+    isHrApproved: row.is_hr_approved ?? row.isHrApproved ?? (role === 'hr' ? false : true),
+    isEmailVerified: row.is_email_verified ?? row.isEmailVerified ?? false,
+    avatarUrl: row.avatar_url ?? row.avatarUrl,
+    createdAt: row.created_at ?? row.createdAt,
+    updatedAt: row.updated_at ?? row.updatedAt,
+    lastLoginAt: row.last_login_at ?? row.lastLoginAt ?? null
+  };
+};
 
 const mapJobFromRow = (row) => ({
   _id: row.id,

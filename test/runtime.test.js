@@ -863,6 +863,66 @@ test('login keeps unverified local users in OTP verification flow', async () => 
     assert.equal(verifyBody.status, true);
     assert.equal(typeof verifyBody.token, 'string');
     assert.equal(verifyBody.redirectTo, '/portal/student/companies');
+
+    const meResp = await fetch(`${baseUrl}/auth/me`, {
+      headers: { Authorization: `Bearer ${verifyBody.token}` }
+    });
+    const meBody = await meResp.json();
+
+    assert.equal(meResp.status, 200);
+    assert.equal(meBody.status, true);
+    assert.equal(meBody.user.email, 'pending.user@example.com');
+    assert.equal(meBody.user.isEmailVerified, true);
+    assert.ok(meBody.user.lastLoginAt);
+
+    const hrSignupResp = await fetch(`${baseUrl}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Pending Recruiter',
+        email: 'pending.hr@example.com',
+        mobile: '+919876543211',
+        password: 'Password123!',
+        role: 'hr',
+        companyName: 'Acme Hiring',
+        sectorName: 'IT Services',
+        stateName: 'Delhi',
+        districtName: 'New Delhi',
+        location: 'New Delhi'
+      })
+    });
+    const hrSignupBody = await hrSignupResp.json();
+
+    assert.equal(hrSignupResp.status, 201);
+    assert.equal(hrSignupBody.requiresOtpVerification, true);
+    assert.equal(typeof hrSignupBody.otp, 'string');
+
+    const hrVerifyResp = await fetch(`${baseUrl}/auth/verify-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'pending.hr@example.com',
+        otp: hrSignupBody.otp
+      })
+    });
+    const hrVerifyBody = await hrVerifyResp.json();
+
+    assert.equal(hrVerifyResp.status, 200);
+    assert.equal(hrVerifyBody.status, true);
+    assert.equal(typeof hrVerifyBody.token, 'string');
+    assert.equal(hrVerifyBody.redirectTo, '/portal/hr/dashboard');
+
+    const hrMeResp = await fetch(`${baseUrl}/auth/me`, {
+      headers: { 'X-HHH-Auth-Token': hrVerifyBody.token }
+    });
+    const hrMeBody = await hrMeResp.json();
+
+    assert.equal(hrMeResp.status, 200);
+    assert.equal(hrMeBody.status, true);
+    assert.equal(hrMeBody.user.email, 'pending.hr@example.com');
+    assert.equal(hrMeBody.user.role, 'hr');
+    assert.equal(hrMeBody.user.isEmailVerified, true);
+    assert.ok(hrMeBody.user.lastLoginAt);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     clearModule(authStorePath);

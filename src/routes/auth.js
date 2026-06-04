@@ -79,15 +79,38 @@ const authSessionReadLimiter = config.nodeEnv === 'development'
 
 const createAuthToken = (user) => jwt.sign(
   {
+    session: true,
     id: user.id,
+    name: user.name,
     email: user.email,
+    mobile: user.mobile,
     role: user.role,
     status: user.status,
-    isHrApproved: user.is_hr_approved
+    isHrApproved: user.is_hr_approved,
+    isEmailVerified: user.is_email_verified ?? true,
+    lastLoginAt: user.last_login_at || user.lastLoginAt || null
   },
   config.jwtSecret,
   { expiresIn: '7d' }
 );
+
+const loadSessionUserById = async (userId) => {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) return null;
+
+  if (Database) {
+    const { data, error } = await Database
+      .from('users')
+      .select('*')
+      .eq('id', normalizedUserId)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data || null;
+  }
+
+  return authStore.findUserById(normalizedUserId);
+};
 
 const generateOtp = () => String(Math.floor(100000 + Math.random() * 900000));
 const isOtpStillValid = (user = {}) => {
@@ -785,6 +808,7 @@ const createLocalRoleProfile = (role, userId, reqBody = {}) => {
 const createVerifiedUserFromPendingSignup = async (pendingSignup) => {
   const role = normalizeRoleValue(pendingSignup?.role);
   const reqBody = pendingSignup?.reqBody || {};
+  const loginTimestamp = new Date().toISOString();
   const baseUserPayload = {
     name: pendingSignup?.name || '',
     email: normalizeEmail(pendingSignup?.email),
@@ -798,7 +822,8 @@ const createVerifiedUserFromPendingSignup = async (pendingSignup) => {
     is_hr_approved: role === ROLES.HR ? false : true,
     is_email_verified: true,
     otp_code: null,
-    otp_expires_at: null
+    otp_expires_at: null,
+    last_login_at: loginTimestamp
   };
 
   if (Database) {
@@ -1611,10 +1636,18 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
     queueCommercialLeadSyncForUser(userRow);
     queueRolePlanTrialProvisionForUser(userRow);
 
-    const token = createAuthToken(userRow);
+    let sessionUser = userRow;
+    try {
+      sessionUser = (await loadSessionUserById(userRow.id)) || userRow;
+    } catch (sessionLookupError) {
+      sendDatabaseError(res, sessionLookupError);
+      return;
+    }
+
+    const token = createAuthToken(sessionUser);
     const publicUser = isStudentPortalRole(userRow.role) && pendingSignup?.reqBody?.dateOfBirth
-      ? { ...userRow, date_of_birth: pendingSignup.reqBody.dateOfBirth }
-      : userRow;
+      ? { ...sessionUser, date_of_birth: pendingSignup.reqBody.dateOfBirth }
+      : sessionUser;
 
     res.send({
       status: true,
@@ -1652,13 +1685,17 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
     return;
   }
 
+  const loginTimestamp = new Date().toISOString();
+  let sessionUser = null;
+
   if (Database) {
     const { error: updateError } = await Database
       .from('users')
       .update({
         is_email_verified: true,
         otp_code: null,
-        otp_expires_at: null
+        otp_expires_at: null,
+        last_login_at: loginTimestamp
       })
       .eq('id', user.id);
 
@@ -1675,6 +1712,19 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
       return;
     }
 
+    try {
+      sessionUser = (await loadSessionUserById(user.id)) || {
+        ...user,
+        is_email_verified: true,
+        otp_code: null,
+        otp_expires_at: null,
+        last_login_at: loginTimestamp
+      };
+    } catch (sessionLookupError) {
+      sendDatabaseError(res, sessionLookupError);
+      return;
+    }
+
     runAsyncSideEffect('campus-drive-activation-backfill', async () => {
       try {
         await backfillCampusDriveNotificationsForStudent({ userId: user.id, email });
@@ -1683,10 +1733,11 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
       }
     });
   } else {
-    authStore.updateUserById(user.id, {
+    sessionUser = authStore.updateUserById(user.id, {
       is_email_verified: true,
       otp_code: null,
-      otp_expires_at: null
+      otp_expires_at: null,
+      last_login_at: loginTimestamp
     });
   }
 
@@ -1698,25 +1749,33 @@ router.post('/verify-otp', asyncHandler(async (req, res) => {
     details: { email },
     ipAddress: getClientIp(req)
   });
-  queueEimagerSyncForUser({ user, source: 'signup-verified' });
-  queueWelcomeEmailForUser(user);
-  queueCommercialLeadSyncForUser(user);
-  queueRolePlanTrialProvisionForUser(user);
+  const verifiedUser = sessionUser || {
+    ...user,
+    is_email_verified: true,
+    otp_code: null,
+    otp_expires_at: null,
+    last_login_at: loginTimestamp
+  };
 
-  const token = createAuthToken(user);
-  let publicUser = user;
-  if (isStudentPortalRole(user.role) && !publicUser.date_of_birth) {
+  queueEimagerSyncForUser({ user: verifiedUser, source: 'signup-verified' });
+  queueWelcomeEmailForUser(verifiedUser);
+  queueCommercialLeadSyncForUser(verifiedUser);
+  queueRolePlanTrialProvisionForUser(verifiedUser);
+
+  const token = createAuthToken(verifiedUser);
+  let publicUser = verifiedUser;
+  if (isStudentPortalRole(verifiedUser.role) && !publicUser.date_of_birth) {
     if (Database) {
       const { data: studentProfile } = await Database
         .from('student_profiles')
         .select('date_of_birth')
-        .eq('user_id', user.id)
+        .eq('user_id', verifiedUser.id)
         .maybeSingle();
       if (studentProfile?.date_of_birth) {
         publicUser = { ...publicUser, date_of_birth: studentProfile.date_of_birth };
       }
     } else {
-      const studentProfile = authStore.getProfileByRole(ROLES.STUDENT, user.id);
+      const studentProfile = authStore.getProfileByRole(ROLES.STUDENT, verifiedUser.id);
       if (studentProfile?.date_of_birth) {
         publicUser = { ...publicUser, date_of_birth: studentProfile.date_of_birth };
       }
