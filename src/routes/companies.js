@@ -156,14 +156,9 @@ const applyVisiblePortalJobFilters = (query) =>
     .eq('status', JOB_STATUSES.OPEN)
     .or(`approval_status.is.null,approval_status.neq.${JOB_APPROVAL_STATUSES.REJECTED}`);
 
-const isPortalJobCurrentlyVisible = (job = {}) => {
-  const validTill = job?.valid_till || job?.validTill;
-  if (!validTill) return true;
-
-  const expiresAt = new Date(validTill).getTime();
-  if (!Number.isFinite(expiresAt)) return true;
-  return expiresAt >= Date.now();
-};
+const isPortalJobCurrentlyVisible = (job = {}) =>
+  String(job?.status || '').toLowerCase() === JOB_STATUSES.OPEN
+  && String(job?.approval_status || '').toLowerCase() !== JOB_APPROVAL_STATUSES.REJECTED;
 
 const fetchCompanyProfiles = async () => {
   const response = await Database

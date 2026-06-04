@@ -612,6 +612,7 @@ router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHead
     sectorName: String(req.query.sectorName || req.query.sector_name || '').trim(),
     category: String(req.query.category || '').trim(),
     status: String(req.query.status || JOB_STATUSES.OPEN).trim().toLowerCase(),
+    includeExpiredOpen: String(req.query.includeExpiredOpen || req.query.include_expired_open || '').trim().toLowerCase() === 'true',
     includeUnapproved: String(req.query.includeUnapproved || '').trim().toLowerCase() === 'true'
   };
 
@@ -699,7 +700,8 @@ router.get('/all', automationProtection, publicJobsReadLimiter, setCatalogCacheH
     salaryType: String(req.query.salaryType || '').trim(),
     sector: String(req.query.sector || '').trim(),
     sectorName: String(req.query.sectorName || req.query.sector_name || '').trim(),
-    category: String(req.query.category || '').trim()
+    category: String(req.query.category || '').trim(),
+    includeExpiredOpen: String(req.query.includeExpiredOpen || req.query.include_expired_open || '').trim().toLowerCase() === 'true'
   });
 
   const [{ data, error }, sponsorsResp, profilesResp] = await Promise.all([

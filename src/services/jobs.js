@@ -567,6 +567,7 @@ const applyJobFilters = (query, filters = {}) => {
     sector,
     sectorName,
     category,
+    includeExpiredOpen = false,
     includeUnapproved = false
   } = filters;
 
@@ -597,7 +598,7 @@ const applyJobFilters = (query, filters = {}) => {
   if (sector || sectorName) query = applyIlikeAny(query, ['sector_name', 'category'], sectorName || sector);
   if (category) query = applyIlikeAny(query, ['category', 'sector_name'], category);
   if (status) query = query.eq('status', status);
-  if (status === JOB_STATUSES.OPEN) {
+  if (status === JOB_STATUSES.OPEN && !includeExpiredOpen) {
     query = query.or(`valid_till.is.null,valid_till.gte.${new Date().toISOString()}`);
   }
   if (!includeUnapproved) {
