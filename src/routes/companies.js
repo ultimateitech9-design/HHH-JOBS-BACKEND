@@ -156,6 +156,15 @@ const applyVisiblePortalJobFilters = (query) =>
     .eq('status', JOB_STATUSES.OPEN)
     .or(`approval_status.is.null,approval_status.neq.${JOB_APPROVAL_STATUSES.REJECTED}`);
 
+const isPortalJobCurrentlyVisible = (job = {}) => {
+  const validTill = job?.valid_till || job?.validTill;
+  if (!validTill) return true;
+
+  const expiresAt = new Date(validTill).getTime();
+  if (!Number.isFinite(expiresAt)) return true;
+  return expiresAt >= Date.now();
+};
+
 const fetchCompanyProfiles = async () => {
   const response = await Database
     .from('companies')
@@ -288,7 +297,7 @@ const buildVisibleHrProfiles = (profilesResp) => (profilesResp.data || []).filte
 
 const buildVisiblePortalJobs = ({ companyProfilesResp, profilesResp, portalJobsResp }) =>
   enrichPortalJobsWithHrProfiles({
-    portalJobs: portalJobsResp.data || [],
+    portalJobs: (portalJobsResp.data || []).filter(isPortalJobCurrentlyVisible),
     hrProfiles: buildVisibleHrProfiles(profilesResp),
     companyProfiles: companyProfilesResp.data || []
   });
@@ -296,7 +305,7 @@ const buildVisiblePortalJobs = ({ companyProfilesResp, profilesResp, portalJobsR
 const buildDirectoryFromSourceData = ({ companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp }) => {
   const hrProfiles = buildVisibleHrProfiles(profilesResp);
   const portalJobs = enrichPortalJobsWithHrProfiles({
-    portalJobs: portalJobsResp.data || [],
+    portalJobs: (portalJobsResp.data || []).filter(isPortalJobCurrentlyVisible),
     hrProfiles,
     companyProfiles: companyProfilesResp.data || []
   });

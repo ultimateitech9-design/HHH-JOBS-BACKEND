@@ -7,6 +7,7 @@ const { PURCHASE_STATUSES } = require('../modules/pricing/constants');
 const {
   getPublicConfig: getRazorpayPublicConfig,
   isRazorpayConfigured,
+  isRazorpayReadyForCheckout,
   createRazorpayPlan,
   createRazorpaySubscription,
   fetchPlanDetails: fetchRazorpayPlanDetails,
@@ -1884,6 +1885,22 @@ const createRolePlanAutopaySession = async ({
       quantity,
       couponCode,
       fallbackReason: 'Razorpay auto-pay is not configured on the backend yet.'
+    });
+  }
+
+  if (!isRazorpayReadyForCheckout()) {
+    const razorpayConfig = getRazorpayPublicConfig();
+    const fallbackReason = razorpayConfig.requireLive && razorpayConfig.keyMode !== 'live'
+      ? 'Live Razorpay auto-pay is not ready on this server yet. A manual plan request was created instead.'
+      : 'Razorpay auto-pay is not ready on the backend yet.';
+
+    return createManualRolePlanCheckoutFallback({
+      user,
+      audienceRole: normalizedAudienceRole,
+      planSlug,
+      quantity,
+      couponCode,
+      fallbackReason
     });
   }
 
