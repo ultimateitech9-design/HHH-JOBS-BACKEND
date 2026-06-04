@@ -3,7 +3,7 @@ require('dotenv').config({ path: require('path').resolve(__dirname, '..', '.env'
 const fs = require('fs');
 const path = require('path');
 const mysql = require('mysql2/promise');
-const XLSX = require('xlsx');
+const readXlsxFile = require('read-excel-file/node');
 const config = require('../src/config');
 const { ROLES, USER_STATUSES } = require('../src/constants');
 
@@ -28,15 +28,12 @@ const getConnectionOptions = () => {
 const cleanText = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
 const normalizeKey = (value) => cleanText(value).toLowerCase();
 
-const readSectorNames = (xlsxPath) => {
+const readSectorNames = async (xlsxPath) => {
   if (!fs.existsSync(xlsxPath)) {
     throw new Error(`Market sector Excel file not found: ${xlsxPath}`);
   }
 
-  const workbook = XLSX.readFile(xlsxPath);
-  const sheetName = workbook.SheetNames[0];
-  const sheet = workbook.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false });
+  const rows = await readXlsxFile(xlsxPath);
   const names = [];
 
   for (const row of rows) {
@@ -146,7 +143,7 @@ const notifyRoleUsers = async (db, sectorNames) => {
 
 const main = async () => {
   const xlsxPath = path.resolve(process.argv[2] || process.env.MARKET_SECTORS_XLSX || DEFAULT_XLSX_PATH);
-  const sectorNames = readSectorNames(xlsxPath);
+  const sectorNames = await readSectorNames(xlsxPath);
   if (sectorNames.length === 0) throw new Error('No sector names were found in the Excel file.');
 
   const db = await mysql.createConnection(getConnectionOptions());

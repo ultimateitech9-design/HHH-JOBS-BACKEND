@@ -1995,6 +1995,7 @@ const createRolePlanAutopaySession = async ({
       paymentSession: {
         type: 'razorpay_subscription',
         keyId: getRazorpayPublicConfig().keyId,
+        requireLive: getRazorpayPublicConfig().requireLive,
         subscriptionId: subscriptionSetup.id,
         localSubscriptionId: pendingPlanChangeSubscription.id,
         planSlug: plan.slug,
@@ -2047,6 +2048,7 @@ const createRolePlanAutopaySession = async ({
     paymentSession: {
       type: 'razorpay_subscription',
       keyId: getRazorpayPublicConfig().keyId,
+      requireLive: getRazorpayPublicConfig().requireLive,
       subscriptionId: subscriptionSetup.id,
       localSubscriptionId: updatedSubscription.id,
       planSlug: plan.slug,
