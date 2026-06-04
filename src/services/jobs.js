@@ -48,6 +48,35 @@ const buildHrJobApplicantsPath = (job = {}, applicationId = '') => {
   return applicationId ? `${basePath}?applicationId=${applicationId}` : basePath;
 };
 
+const rankJobSeoSlugCandidates = (jobs = [], seoSlug = '') => (jobs || [])
+  .map((job) => ({
+    job,
+    canonicalSeoSlug: buildCanonicalJobSeoSlug(job),
+    exactStoredSlug: String(job.seo_slug || '').trim().toLowerCase()
+  }))
+  .filter((entry) => entry.canonicalSeoSlug === seoSlug || entry.exactStoredSlug === seoSlug)
+  .sort((left, right) => {
+    const leftExact = Number(left.exactStoredSlug === seoSlug);
+    const rightExact = Number(right.exactStoredSlug === seoSlug);
+    if (rightExact !== leftExact) return rightExact - leftExact;
+
+    const leftCreatedAt = new Date(left.job.created_at || 0).getTime();
+    const rightCreatedAt = new Date(right.job.created_at || 0).getTime();
+    return rightCreatedAt - leftCreatedAt;
+  });
+
+const buildJobSeoLookupPrefixes = (seoSlug = '') => {
+  const tokens = String(seoSlug || '').split('-').filter(Boolean);
+  if (tokens.length === 0) return [];
+
+  return [...new Set([
+    tokens.slice(0, Math.min(tokens.length, 6)).join('-'),
+    tokens.slice(0, Math.min(tokens.length, 5)).join('-'),
+    tokens.slice(0, Math.min(tokens.length, 4)).join('-'),
+    tokens.slice(0, Math.min(tokens.length, 3)).join('-')
+  ].filter((value) => value && value !== seoSlug))];
+};
+
 const findJobBySeoSlug = async (rawIdentifier, { includeDeleted = false } = {}) => {
   const seoSlug = buildSeoSlug(extractSeoPathSegment(rawIdentifier));
   if (!seoSlug) return { data: null, error: null };
@@ -84,24 +113,33 @@ const findJobBySeoSlug = async (rawIdentifier, { includeDeleted = false } = {}) 
   const { data, error } = await prefixQuery;
   if (error) return { data: null, error };
 
-  const candidates = (data || [])
-    .map((job) => ({
-      job,
-      canonicalSeoSlug: buildCanonicalJobSeoSlug(job),
-      exactStoredSlug: String(job.seo_slug || '').trim().toLowerCase()
-    }))
-    .filter((entry) => entry.canonicalSeoSlug === seoSlug || entry.exactStoredSlug === seoSlug)
-    .sort((left, right) => {
-      const leftExact = Number(left.exactStoredSlug === seoSlug);
-      const rightExact = Number(right.exactStoredSlug === seoSlug);
-      if (rightExact !== leftExact) return rightExact - leftExact;
+  const candidates = rankJobSeoSlugCandidates(data, seoSlug);
+  if (candidates[0]?.job) {
+    return { data: candidates[0].job, error: null };
+  }
 
-      const leftCreatedAt = new Date(left.job.created_at || 0).getTime();
-      const rightCreatedAt = new Date(right.job.created_at || 0).getTime();
-      return rightCreatedAt - leftCreatedAt;
-    });
+  const fallbackPrefixes = buildJobSeoLookupPrefixes(seoSlug);
+  for (const prefix of fallbackPrefixes) {
+    let fallbackQuery = Database
+      .from('jobs')
+      .select('*')
+      .ilike('seo_slug', `${prefix}%`)
+      .limit(25);
 
-  return { data: candidates[0]?.job || null, error: null };
+    if (!includeDeleted) {
+      fallbackQuery = fallbackQuery.neq('status', JOB_STATUSES.DELETED);
+    }
+
+    const fallbackResponse = await fallbackQuery;
+    if (fallbackResponse.error) return { data: null, error: fallbackResponse.error };
+
+    const fallbackCandidates = rankJobSeoSlugCandidates(fallbackResponse.data, seoSlug);
+    if (fallbackCandidates[0]?.job) {
+      return { data: fallbackCandidates[0].job, error: null };
+    }
+  }
+
+  return { data: null, error: null };
 };
 
 const resolveJobIdentifier = async (rawIdentifier, { includeDeleted = false } = {}) => {
