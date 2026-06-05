@@ -41,7 +41,7 @@ const {
 } = require('../services/interviews');
 const { attachPlanAccess, requirePlanFeature } = require('../middleware/planAccess');
 const { syncHrCompanyProfileToCampus } = require('../services/campusDrives');
-const { buildProfileSeedFromUser, ensureRoleProfile } = require('../services/profileTables');
+const { buildProfileSeedFromUser, ensureRoleProfile, upsertRoleProfile } = require('../services/profileTables');
 
 const router = express.Router();
 
@@ -122,6 +122,26 @@ const buildExternalInterviewMeetingLink = ({ title = 'interview', scheduledAt = 
   return `${baseUrl.replace(/\/+$/, '')}/${roomSlug}`;
 };
 
+const hasProfileText = (value) => String(value ?? '').trim().length > 0;
+const shouldBackfillHrProfile = (profile = {}) => !(
+  hasProfileText(profile.company_name)
+  && hasProfileText(profile.location)
+  && (hasProfileText(profile.sector_name) || hasProfileText(profile.industry_type))
+);
+
+const readHrProfileSeedUser = async ({ targetUserId, currentUser }) => {
+  if (targetUserId === currentUser?.id) return currentUser;
+
+  const { data, error } = await Database
+    .from('users')
+    .select('*')
+    .eq('id', targetUserId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || currentUser;
+};
+
 router.get('/profile', asyncHandler(async (req, res) => {
   const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query.userId)
     ? req.query.userId
@@ -140,11 +160,12 @@ router.get('/profile', asyncHandler(async (req, res) => {
 
   if (!data) {
     try {
+      const seedUser = await readHrProfileSeedUser({ targetUserId, currentUser: req.user });
       await ensureRoleProfile({
         Database,
         role: ROLES.HR,
         userId: targetUserId,
-        reqBody: buildProfileSeedFromUser(req.user)
+        reqBody: buildProfileSeedFromUser(seedUser)
       });
     } catch (profileError) {
       sendDatabaseError(res, profileError);
@@ -179,6 +200,44 @@ router.get('/profile', asyncHandler(async (req, res) => {
     }
 
     data = inserted.data;
+  }
+
+  if (data && shouldBackfillHrProfile(data)) {
+    try {
+      const seedUser = await readHrProfileSeedUser({ targetUserId, currentUser: req.user });
+      const seedPayload = buildProfileSeedFromUser(seedUser);
+      if (
+        hasProfileText(seedPayload.companyName)
+        || hasProfileText(seedPayload.location)
+        || hasProfileText(seedPayload.sectorName)
+        || hasProfileText(seedPayload.industryType)
+      ) {
+        await upsertRoleProfile({
+          Database,
+          role: ROLES.HR,
+          userId: targetUserId,
+          reqBody: {
+            ...data,
+            ...Object.fromEntries(Object.entries(seedPayload).filter(([, value]) => value !== null && value !== undefined && value !== ''))
+          }
+        });
+
+        const refreshed = await Database
+          .from('hr_profiles')
+          .select('*')
+          .eq('user_id', targetUserId)
+          .maybeSingle();
+
+        if (refreshed.error) {
+          sendDatabaseError(res, refreshed.error);
+          return;
+        }
+        if (refreshed.data) data = refreshed.data;
+      }
+    } catch (profileError) {
+      sendDatabaseError(res, profileError);
+      return;
+    }
   }
 
   res.send({ status: true, profile: data });

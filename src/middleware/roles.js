@@ -23,11 +23,8 @@ const requireRole = (...roles) => (req, res, next) => {
   next();
 };
 
-const requireApprovedHr = (req, res, next) => {
-  if (req.user.role === ROLES.HR && !req.user.isHrApproved) {
-    res.status(403).send({ status: false, message: 'HR account is pending admin approval' });
-    return;
-  }
+const requireApprovedHr = (_req, _res, next) => {
+  // HR verification is a trust badge now; plan/quota middleware gates paid features.
   next();
 };
 

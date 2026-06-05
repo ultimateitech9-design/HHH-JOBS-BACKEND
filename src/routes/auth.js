@@ -2172,7 +2172,7 @@ router.get('/me', requireAuth, authSessionReadLimiter, asyncHandler(async (req, 
 
   if (!Database) {
     profile = authStore.getProfileByRole(profileRoleKey, req.user.id);
-    res.send({ status: true, user: req.user, profile });
+    res.send({ status: true, user: profile ? mapPublicUser({ ...profile, ...req.user }) : req.user, profile });
     return;
   }
 
@@ -2224,7 +2224,7 @@ router.get('/me', requireAuth, authSessionReadLimiter, asyncHandler(async (req, 
     };
   }
 
-  res.send({ status: true, user: req.user, profile });
+  res.send({ status: true, user: profile ? mapPublicUser({ ...profile, ...req.user }) : req.user, profile });
 }));
 
 router.get('/redirect', requireAuth, (req, res) => {

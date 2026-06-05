@@ -110,13 +110,60 @@ const getProfileRoleKey = (role) => (
 const getProfileTableForRole = (role) => PROFILE_TABLE_BY_ROLE[normalizeRole(role)] || null;
 const isEmployeeProfileRole = (role) => EMPLOYEE_PROFILE_ROLES.has(normalizeRole(role));
 
-const buildProfileSeedFromUser = (user = {}) => ({
-  name: toOptionalText(user?.name),
-  email: toOptionalText(user?.email),
-  mobile: toOptionalText(user?.mobile),
-  workEmail: toOptionalText(user?.work_email ?? user?.workEmail ?? user?.email),
-  dateOfBirth: toOptionalText(user?.date_of_birth ?? user?.dateOfBirth)
-});
+const buildProfileSeedFromUser = (user = {}) => {
+  const baseSeed = {
+    name: toOptionalText(user?.name),
+    email: toOptionalText(user?.email),
+    mobile: toOptionalText(user?.mobile),
+    workEmail: toOptionalText(user?.work_email ?? user?.workEmail ?? user?.email),
+    dateOfBirth: toOptionalText(user?.date_of_birth ?? user?.dateOfBirth)
+  };
+
+  const shouldIncludeCompanySeed = normalizeRole(user?.role) === ROLES.HR || hasAnyKey(user, [
+    'company_name',
+    'companyName',
+    'company',
+    'company_website',
+    'companyWebsite',
+    'company_size',
+    'companySize',
+    'industry_type',
+    'industryType',
+    'sector_id',
+    'sectorId',
+    'sector_name',
+    'sectorName',
+    'company_location',
+    'companyLocation',
+    'company_type',
+    'companyType',
+    'company_about',
+    'companyAbout',
+    'company_logo',
+    'companyLogo'
+  ]);
+
+  if (!shouldIncludeCompanySeed) return baseSeed;
+
+  return {
+    ...baseSeed,
+    companyName: toOptionalText(user?.company_name ?? user?.companyName ?? user?.company),
+    companyWebsite: toOptionalText(user?.company_website ?? user?.companyWebsite ?? user?.website),
+    companySize: toOptionalText(user?.company_size ?? user?.companySize),
+    industryType: toOptionalText(user?.industry_type ?? user?.industryType ?? user?.sector_name ?? user?.sectorName),
+    sectorId: toOptionalText(user?.sector_id ?? user?.sectorId),
+    sectorName: toOptionalText(user?.sector_name ?? user?.sectorName ?? user?.industry_type ?? user?.industryType),
+    foundedYear: toOptionalText(user?.founded_year ?? user?.foundedYear),
+    companyType: toOptionalText(user?.company_type ?? user?.companyType),
+    location: toOptionalText(user?.location ?? user?.company_location ?? user?.companyLocation ?? user?.office_location ?? user?.officeLocation),
+    stateId: toOptionalText(user?.state_id ?? user?.stateId),
+    stateName: toOptionalText(user?.state_name ?? user?.stateName ?? user?.state),
+    districtId: toOptionalText(user?.district_id ?? user?.districtId),
+    districtName: toOptionalText(user?.district_name ?? user?.districtName ?? user?.city ?? user?.district),
+    about: toOptionalText(user?.about ?? user?.company_about ?? user?.companyAbout),
+    logoUrl: toOptionalText(user?.logo_url ?? user?.logoUrl ?? user?.company_logo ?? user?.companyLogo)
+  };
+};
 
 const chunk = (items = [], size = 500) => {
   const list = Array.isArray(items) ? items : [];

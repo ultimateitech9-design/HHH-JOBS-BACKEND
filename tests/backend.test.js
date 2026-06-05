@@ -249,6 +249,62 @@ test('helper utilities normalize and mask values safely', () => {
   assert.equal(maskMobile('+91 98765 43210'), '********3210');
 });
 
+test('HR approval middleware treats verification as badge-only', () => {
+  const { requireApprovedHr } = require('../src/middleware/roles');
+  let nextCalled = false;
+  const res = {
+    status() {
+      throw new Error('HR approval should not block requests');
+    }
+  };
+
+  requireApprovedHr(
+    { user: { role: ROLES.HR, isHrApproved: false } },
+    res,
+    () => {
+      nextCalled = true;
+    }
+  );
+
+  assert.equal(nextCalled, true);
+});
+
+test('HR profile seed carries company registration fields', () => {
+  const { buildProfileSeedFromUser } = require('../src/services/profileTables');
+
+  assert.deepEqual(buildProfileSeedFromUser({
+    name: 'Recruiter',
+    email: 'hr@example.com',
+    company_name: 'Acme Hiring',
+    company_website: 'https://acme.example',
+    sector_name: 'Engineering',
+    state_name: 'Delhi',
+    district_name: 'New Delhi',
+    location: 'Connaught Place'
+  }), {
+    name: 'Recruiter',
+    email: 'hr@example.com',
+    mobile: null,
+    workEmail: 'hr@example.com',
+    dateOfBirth: null,
+    companyName: 'Acme Hiring',
+    companyWebsite: 'https://acme.example',
+    companySize: null,
+    industryType: 'Engineering',
+    sectorId: null,
+    sectorName: 'Engineering',
+    foundedYear: null,
+    companyType: null,
+    location: 'Connaught Place',
+    stateId: null,
+    stateName: 'Delhi',
+    districtId: null,
+    districtName: 'New Delhi',
+    about: null,
+    logoUrl: null
+  });
+});
+
 test('buildSeoSlug dedupes repeated SEO words and trims very long slugs', () => {
   assert.equal(
     buildSeoSlug(
