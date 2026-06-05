@@ -101,6 +101,15 @@ const upload = multer({
   }
 });
 
+const logoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+    cb(allowedTypes.has(file.mimetype) ? null : new Error('Only JPG, PNG, WebP, and GIF logo images are allowed'), allowedTypes.has(file.mimetype));
+  }
+});
+
 router.use(requireAuth, requireActiveUser, requireRole(ROLES.CAMPUS_CONNECT, ROLES.ADMIN, ROLES.SUPER_ADMIN));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1030,6 +1039,60 @@ router.get('/profile', asyncHandler(async (req, res) => {
   if (error) { sendDatabaseError(res, error); return; }
 
   res.send({ status: true, profile: data });
+}));
+
+router.post('/profile/logo', logoUpload.single('logo'), asyncHandler(async (req, res) => {
+  if (!ensureDatabaseConfig(res)) return;
+
+  const userId = req.user.id;
+
+  if (!req.file) {
+    res.status(400).send({ status: false, message: 'No logo uploaded. Field name must be "logo".' });
+    return;
+  }
+
+  const extByType = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif'
+  };
+  const extension = extByType[req.file.mimetype] || 'jpg';
+  const storagePath = `logos/${userId}/campus_logo_${Date.now()}.${extension}`;
+  const { error: uploadError } = await Database.storage
+    .from('company-logos')
+    .upload(storagePath, req.file.buffer, {
+      contentType: req.file.mimetype,
+      upsert: true
+    });
+
+  if (uploadError) {
+    sendDatabaseError(res, uploadError);
+    return;
+  }
+
+  const { data: urlData } = Database.storage.from('company-logos').getPublicUrl(storagePath);
+  const logoUrl = urlData?.publicUrl || null;
+
+  const existingProfile = await ensureCollegeProfile(userId, req.user);
+  if (existingProfile.error) {
+    sendDatabaseError(res, existingProfile.error);
+    return;
+  }
+
+  const saveResp = await Database
+    .from('colleges')
+    .update({ logo_url: logoUrl })
+    .eq('user_id', userId)
+    .select('*')
+    .single();
+
+  if (saveResp.error) {
+    sendDatabaseError(res, saveResp.error);
+    return;
+  }
+
+  res.send({ status: true, logoUrl, profile: saveResp.data });
 }));
 
 router.put('/profile', asyncHandler(async (req, res) => {
