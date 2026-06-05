@@ -52,6 +52,69 @@ const buildCanonicalJobSeoSlug = (job = {}) => pickShortestNonEmptySlug(
   buildSeoSlug(job.seo_slug || job.seoSlug)
 );
 
+const uniqueSlugValues = (values = []) =>
+  [...new Set(values.map((value) => buildSeoSlug(value)).filter(Boolean))];
+
+const getJobSeoSlugVariants = (job = {}) => {
+  const title = job.job_title || job.jobTitle;
+  const company = job.company_name || job.companyName;
+  const locationCandidates = uniqueSlugValues([
+    job.city_name || job.cityName,
+    job.district_name || job.districtName,
+    job.job_location || job.jobLocation || job.location,
+    [job.city_name || job.cityName || job.district_name || job.districtName, job.state_name || job.stateName]
+      .filter(Boolean)
+      .join(' ')
+  ]);
+
+  return uniqueSlugValues([
+    buildCanonicalJobSeoSlug(job),
+    job.seo_slug || job.seoSlug,
+    buildSeoSlug(title, company),
+    buildSeoSlug(title, job.job_location || job.jobLocation || job.location),
+    ...locationCandidates.map((location) => buildSeoSlug(title, company, location)),
+    ...locationCandidates.map((location) => buildSeoSlug(title, location))
+  ]);
+};
+
+const getSlugTokens = (value = '') =>
+  buildSeoSlug(value)
+    .split('-')
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+const getSlugTokenOverlap = (left = '', right = '') => {
+  const leftTokens = getSlugTokens(left);
+  const rightTokens = new Set(getSlugTokens(right));
+  if (leftTokens.length === 0 || rightTokens.size === 0) return 0;
+  return leftTokens.filter((token) => rightTokens.has(token)).length;
+};
+
+const scoreJobSeoSlugCandidate = (job = {}, seoSlug = '') => {
+  const variants = getJobSeoSlugVariants(job);
+  let bestScore = 0;
+
+  variants.forEach((variant) => {
+    if (variant === seoSlug) {
+      bestScore = Math.max(bestScore, 1000);
+      return;
+    }
+
+    if (variant.startsWith(`${seoSlug}-`) || seoSlug.startsWith(`${variant}-`)) {
+      bestScore = Math.max(bestScore, 720 + getSlugTokenOverlap(seoSlug, variant));
+      return;
+    }
+
+    const overlap = getSlugTokenOverlap(seoSlug, variant);
+    const queryTokenCount = getSlugTokens(seoSlug).length;
+    if (queryTokenCount > 0 && overlap >= Math.min(4, queryTokenCount)) {
+      bestScore = Math.max(bestScore, 420 + overlap);
+    }
+  });
+
+  return bestScore;
+};
+
 const buildHrJobApplicantsPath = (job = {}, applicationId = '') => {
   const basePath = `${buildSeoPath('/portal/hr/jobs', buildCanonicalJobSeoSlug(job))}/applicants`;
   return applicationId ? `${basePath}?applicationId=${applicationId}` : basePath;
@@ -62,12 +125,14 @@ const rankJobSeoSlugCandidates = (jobs = [], seoSlug = '') => (jobs || [])
     job,
     canonicalSeoSlug: buildCanonicalJobSeoSlug(job),
     normalizedStoredSlug: buildSeoSlug(job.seo_slug || job.seoSlug),
-    exactStoredSlug: String(job.seo_slug || '').trim().toLowerCase()
+    exactStoredSlug: String(job.seo_slug || '').trim().toLowerCase(),
+    generatedScore: scoreJobSeoSlugCandidate(job, seoSlug)
   }))
   .filter((entry) =>
     entry.canonicalSeoSlug === seoSlug
     || entry.normalizedStoredSlug === seoSlug
     || entry.exactStoredSlug === seoSlug
+    || entry.generatedScore >= 720
   )
   .sort((left, right) => {
     const leftCanonical = Number(left.canonicalSeoSlug === seoSlug);
@@ -81,6 +146,8 @@ const rankJobSeoSlugCandidates = (jobs = [], seoSlug = '') => (jobs || [])
     const leftExact = Number(left.exactStoredSlug === seoSlug);
     const rightExact = Number(right.exactStoredSlug === seoSlug);
     if (rightExact !== leftExact) return rightExact - leftExact;
+
+    if (right.generatedScore !== left.generatedScore) return right.generatedScore - left.generatedScore;
 
     const leftCreatedAt = new Date(left.job.created_at || 0).getTime();
     const rightCreatedAt = new Date(right.job.created_at || 0).getTime();
@@ -97,6 +164,59 @@ const buildJobSeoLookupPrefixes = (seoSlug = '') => {
     tokens.slice(0, Math.min(tokens.length, 4)).join('-'),
     tokens.slice(0, Math.min(tokens.length, 3)).join('-')
   ].filter((value) => value && value !== seoSlug))];
+};
+
+const findJobByGeneratedSeoSlug = async (seoSlug = '', { includeDeleted = false } = {}) => {
+  const tokens = getSlugTokens(seoSlug)
+    .filter((token) => token.length >= 3 && !/^\d+$/.test(token))
+    .slice(0, 6);
+
+  if (tokens.length === 0) return { data: null, error: null };
+
+  const candidateRows = [];
+  const seenIds = new Set();
+
+  for (const token of tokens) {
+    let query = Database
+      .from('jobs')
+      .select('*')
+      .or([
+        `seo_slug.ilike.%${token}%`,
+        `job_title.ilike.%${token}%`,
+        `company_name.ilike.%${token}%`,
+        `job_location.ilike.%${token}%`,
+        `city_name.ilike.%${token}%`,
+        `district_name.ilike.%${token}%`
+      ].join(','))
+      .limit(100);
+
+    if (!includeDeleted) {
+      query = query.neq('status', JOB_STATUSES.DELETED);
+    }
+
+    const { data, error } = await query;
+    if (error) return { data: null, error };
+
+    (data || []).forEach((job) => {
+      const id = String(job.id || '').trim();
+      if (!id || seenIds.has(id)) return;
+      seenIds.add(id);
+      candidateRows.push(job);
+    });
+  }
+
+  const ranked = candidateRows
+    .map((job) => ({
+      job,
+      score: scoreJobSeoSlugCandidate(job, seoSlug)
+    }))
+    .filter((entry) => entry.score >= 420)
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return new Date(right.job.created_at || 0).getTime() - new Date(left.job.created_at || 0).getTime();
+    });
+
+  return { data: ranked[0]?.job || null, error: null };
 };
 
 const findJobBySeoSlug = async (rawIdentifier, { includeDeleted = false } = {}) => {
@@ -160,6 +280,10 @@ const findJobBySeoSlug = async (rawIdentifier, { includeDeleted = false } = {}) 
       return { data: fallbackCandidates[0].job, error: null };
     }
   }
+
+  const generatedResult = await findJobByGeneratedSeoSlug(seoSlug, { includeDeleted });
+  if (generatedResult.error) return { data: null, error: generatedResult.error };
+  if (generatedResult.data) return generatedResult;
 
   return { data: null, error: null };
 };

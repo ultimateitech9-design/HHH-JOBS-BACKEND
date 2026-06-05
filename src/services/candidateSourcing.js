@@ -23,11 +23,21 @@ const DEFAULT_TEMPLATES = [
 
 const STUDENT_DB_VIEW_FEATURE_KEY = 'hr.student_database_view';
 const STUDENT_DB_VIEW_SUBJECT_TYPE = 'student_profile';
-const STUDENT_DB_USAGE_CONSUMERS = new Set(['candidate_search', 'resume_view', 'candidate_interest', 'candidate_bulk_interest']);
+const STUDENT_DB_USAGE_CONSUMERS = new Set(['profile_view', 'resume_view', 'candidate_interest', 'candidate_bulk_interest']);
 const DEFAULT_TRIAL_STUDENT_DB_VIEW_LIMIT = 25;
 const STUDENT_PROFILE_FETCH_BATCH_SIZE = 1000;
 const STUDENT_PROFILE_FETCH_MAX_ROWS = 100000;
 const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
+const CANDIDATE_PROFILE_FIELDS = [
+  'user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies',
+  'experience', 'location', 'resume_url', 'resume_text', 'about', 'profile_summary',
+  'is_discoverable', 'available_to_hire', 'expected_salary', 'preferred_salary_max',
+  'availability_to_join', 'education', 'graduation_details', 'education_score',
+  'linkedin_url', 'github_url', 'portfolio_url', 'eimager_id', 'verification_status',
+  'verification_source', 'verification_badge', 'identity_verified', 'address_verified',
+  'experience_verified', 'verified_experience_count', 'verification_verified_at',
+  'verification_synced_at'
+];
 
 const normalizeText = (value = '') => String(value || '').trim();
 const normalizeLowerText = (value = '') => normalizeText(value).toLowerCase();
@@ -881,6 +891,15 @@ const applyStudentDbViewQuota = async ({ hrUser, access, candidates = [], consum
     .filter(isCountedStudentDbUsage)
     .map((row) => row.subject_id)
     .filter(Boolean));
+
+  if (!consume) {
+    return {
+      access,
+      unlockedIds: alreadyUnlockedIds,
+      lockedIds: new Set(candidateIds.filter((candidateId) => !alreadyUnlockedIds.has(candidateId)))
+    };
+  }
+
   let remainingForNewProfiles = Math.max(0, Number(access.studentDbViewsRemaining || 0));
   const newlyUnlockedIds = [];
   const lockedIds = new Set();
@@ -962,6 +981,53 @@ const ensureHrStudentDbCandidateUnlocked = async ({ hrUser, studentId, consumedB
   };
 };
 
+const viewHrCandidateProfile = async ({ hrUser, studentId } = {}) => {
+  const unlock = await ensureHrStudentDbCandidateUnlocked({ hrUser, studentId, consumedBy: 'profile_view' });
+  if (!unlock.allowed) {
+    return {
+      allowed: false,
+      code: 'STUDENT_DB_LIMIT_REACHED',
+      access: unlock.access,
+      reason: unlock.reason
+    };
+  }
+
+  const profileResp = await selectStudentProfilesSafe({
+    fields: CANDIDATE_PROFILE_FIELDS,
+    userIds: [studentId]
+  });
+
+  if (profileResp.error) throw profileResp.error;
+
+  const { candidates } = await buildCandidateRowsForProfiles({
+    profiles: profileResp.data || [],
+    hrUser
+  });
+  const candidate = candidates[0] || null;
+
+  if (!candidate) {
+    return {
+      allowed: false,
+      code: 'CANDIDATE_NOT_FOUND',
+      access: unlock.access,
+      reason: 'Candidate not found.'
+    };
+  }
+
+  return {
+    allowed: true,
+    access: unlock.access,
+    candidate: buildCandidatePresentation({
+      candidate,
+      access: {
+        ...unlock.access,
+        candidateProfileUnlocked: true
+      },
+      exposeResume: false
+    })
+  };
+};
+
 const viewHrCandidateResume = async ({ hrUser, studentId } = {}) => {
   const unlock = await ensureHrStudentDbCandidateUnlocked({ hrUser, studentId, consumedBy: 'resume_view' });
   if (!unlock.allowed) return { allowed: false, code: 'STUDENT_DB_LIMIT_REACHED', access: unlock.access, reason: unlock.reason };
@@ -1005,16 +1071,7 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
   const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
   const pageSize = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 24));
   const hasActiveFilters = hasCandidateSearchFilters(filters);
-  const profileFields = [
-    'user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies',
-    'experience', 'location', 'resume_url', 'resume_text', 'about', 'profile_summary',
-    'is_discoverable', 'available_to_hire', 'expected_salary', 'preferred_salary_max',
-    'availability_to_join', 'education', 'graduation_details', 'education_score',
-    'linkedin_url', 'github_url', 'portfolio_url', 'eimager_id', 'verification_status',
-    'verification_source', 'verification_badge', 'identity_verified', 'address_verified',
-    'experience_verified', 'verified_experience_count', 'verification_verified_at',
-    'verification_synced_at'
-  ];
+  const profileFields = CANDIDATE_PROFILE_FIELDS;
 
   if (!hasActiveFilters) {
     const from = (currentPage - 1) * pageSize;
@@ -1049,8 +1106,7 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
       hrUser,
       access,
       candidates: rawCandidates,
-      consume: true,
-      consumedBy: 'candidate_search'
+      consume: false
     });
     const pagedCandidates = rawCandidates.map((candidate) => buildCandidatePresentation({
       candidate,
@@ -1116,8 +1172,7 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
     hrUser,
     access,
     candidates: pagedRawCandidates,
-    consume: true,
-    consumedBy: 'candidate_search'
+    consume: false
   });
   const pagedCandidates = pagedRawCandidates.map((candidate) => buildCandidatePresentation({
     candidate,
@@ -1531,6 +1586,7 @@ module.exports = {
   buildSystemTemplateMessage,
   buildCandidatePresentation,
   getHrSourcingAccess,
+  viewHrCandidateProfile,
   viewHrCandidateResume,
   listHrMessageTemplates,
   upsertHrMessageTemplate,

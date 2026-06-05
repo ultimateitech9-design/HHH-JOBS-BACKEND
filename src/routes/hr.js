@@ -28,6 +28,7 @@ const {
   resolveTemplateForInterest,
   searchDiscoverableCandidates,
   upsertHrMessageTemplate,
+  viewHrCandidateProfile,
   viewHrCandidateResume
 } = require('../services/candidateSourcing');
 const {
@@ -1224,6 +1225,28 @@ router.post('/candidates/:studentId/resume-view', requireApprovedHr, requirePlan
     status: true,
     access: result.access,
     resume: result.resume
+  });
+}));
+
+router.post('/candidates/:studentId/profile-view', requireApprovedHr, requirePlanFeature('hr.candidate_search'), asyncHandler(async (req, res) => {
+  const { studentId } = req.params;
+  if (!isValidUuid(studentId)) return res.status(400).send({ status: false, message: 'Invalid studentId' });
+
+  const result = await viewHrCandidateProfile({ hrUser: req.user, studentId });
+  if (!result.allowed) {
+    const statusCode = result.code === 'STUDENT_DB_LIMIT_REACHED' ? 402 : 404;
+    return res.status(statusCode).send({
+      status: false,
+      code: result.code || 'CANDIDATE_NOT_FOUND',
+      message: result.reason || 'Unable to open candidate profile.',
+      access: result.access
+    });
+  }
+
+  res.send({
+    status: true,
+    access: result.access,
+    candidate: result.candidate
   });
 }));
 

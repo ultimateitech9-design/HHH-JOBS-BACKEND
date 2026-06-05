@@ -16,7 +16,8 @@ const createJobsQueryBuilder = (rows = []) => {
   const state = {
     equals: {},
     excludedStatus: '',
-    ilikePrefix: ''
+    ilikePrefix: '',
+    orFilters: []
   };
 
   const run = () => rows.filter((row) => {
@@ -26,6 +27,12 @@ const createJobsQueryBuilder = (rows = []) => {
     if (state.ilikePrefix) {
       const prefix = state.ilikePrefix.replace(/%$/g, '').toLowerCase();
       if (!String(row.seo_slug || '').toLowerCase().startsWith(prefix)) return false;
+    }
+    if (state.orFilters.length > 0) {
+      const matchesAny = state.orFilters.some(({ field, term }) =>
+        String(row[field] || '').toLowerCase().includes(term)
+      );
+      if (!matchesAny) return false;
     }
     return true;
   });
@@ -46,6 +53,16 @@ const createJobsQueryBuilder = (rows = []) => {
       if (field === 'seo_slug') state.ilikePrefix = String(value || '');
       return builder;
     },
+    or(value) {
+      state.orFilters = String(value || '')
+        .split(',')
+        .map((part) => {
+          const match = part.match(/^([a-z_]+)\.ilike\.%(.*)%$/i);
+          return match ? { field: match[1], term: match[2].toLowerCase() } : null;
+        })
+        .filter(Boolean);
+      return builder;
+    },
     limit() {
       return builder;
     },
@@ -61,17 +78,7 @@ const createJobsQueryBuilder = (rows = []) => {
   return builder;
 };
 
-test('resolveJobIdentifier accepts clean canonical slug for noisy stored seo slugs', async () => {
-  const noisyJob = {
-    id: 'ec845fc0-ca1c-4bb0-b706-4647000821ed',
-    job_title: 'Data Processing Clerk',
-    company_name: 'Ultimate Itech',
-    job_location: 'Ghitorni, New Delhi',
-    seo_slug: 'data-processing-clerk-ultimate-itech-ghitorni-ghitorni-ghitorni-new-delhi',
-    status: 'open',
-    created_at: '2026-06-04T00:00:00.000Z'
-  };
-
+const withMockedJobsDatabase = async (jobs, callback) => {
   const originalDbModule = require.cache[dbModulePath];
   const originalJobsModule = require.cache[jobsModulePath];
 
@@ -83,7 +90,7 @@ test('resolveJobIdentifier accepts clean canonical slug for noisy stored seo slu
       Database: {
         from(table) {
           assert.equal(table, 'jobs');
-          return createJobsQueryBuilder([noisyJob]);
+          return createJobsQueryBuilder(jobs);
         }
       },
       sendDatabaseError: () => {}
@@ -93,7 +100,25 @@ test('resolveJobIdentifier accepts clean canonical slug for noisy stored seo slu
   delete require.cache[jobsModulePath];
 
   try {
-    const { buildCanonicalJobSeoSlug, resolveJobIdentifier } = require('../src/services/jobs');
+    return await callback(require('../src/services/jobs'));
+  } finally {
+    restoreModule(dbModulePath, originalDbModule);
+    restoreModule(jobsModulePath, originalJobsModule);
+  }
+};
+
+test('resolveJobIdentifier accepts clean canonical slug for noisy stored seo slugs', async () => {
+  const noisyJob = {
+    id: 'ec845fc0-ca1c-4bb0-b706-4647000821ed',
+    job_title: 'Data Processing Clerk',
+    company_name: 'Ultimate Itech',
+    job_location: 'Ghitorni, New Delhi',
+    seo_slug: 'data-processing-clerk-ultimate-itech-ghitorni-ghitorni-ghitorni-new-delhi',
+    status: 'open',
+    created_at: '2026-06-04T00:00:00.000Z'
+  };
+
+  await withMockedJobsDatabase([noisyJob], async ({ buildCanonicalJobSeoSlug, resolveJobIdentifier }) => {
     const canonicalSlug = buildCanonicalJobSeoSlug(noisyJob);
 
     assert.equal(canonicalSlug, 'data-processing-clerk-ultimate-itech-ghitorni-new-delhi');
@@ -102,8 +127,27 @@ test('resolveJobIdentifier accepts clean canonical slug for noisy stored seo slu
     assert.equal(result.error, null);
     assert.equal(result.statusCode, 200);
     assert.equal(result.data?.id, noisyJob.id);
-  } finally {
-    restoreModule(dbModulePath, originalDbModule);
-    restoreModule(jobsModulePath, originalJobsModule);
-  }
+  });
+});
+
+test('resolveJobIdentifier falls back to generated slug when stored seo slug is missing', async () => {
+  const jobWithoutStoredSlug = {
+    id: 'da8d2945-40f9-4a56-a690-963332f9d28c',
+    job_title: 'Telecaller',
+    company_name: 'Indian Properties',
+    job_location: 'GF 672 White House Behind MCD School MG Road',
+    city_name: '',
+    district_name: '',
+    seo_slug: '',
+    status: 'open',
+    created_at: '2026-06-04T00:00:00.000Z'
+  };
+
+  await withMockedJobsDatabase([jobWithoutStoredSlug], async ({ resolveJobIdentifier }) => {
+    const result = await resolveJobIdentifier('telecaller-indian-properties-gf-672-white-house-behind-mcd-school-mg-road');
+
+    assert.equal(result.error, null);
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.data?.id, jobWithoutStoredSlug.id);
+  });
 });
