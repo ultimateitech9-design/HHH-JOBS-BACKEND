@@ -25,7 +25,6 @@ const DEFAULT_ROLE_TRIAL_PLAN_SLUGS = {
   [ROLES.STUDENT]: 'student_basic',
   [ROLES.CAMPUS_CONNECT]: 'campus_basic'
 };
-const ROLE_PLAN_AUTOPAY_SETUP_AMOUNT = 1;
 const AUTOPAY_STATUSES = {
   NOT_CONFIGURED: 'not_configured',
   CREATED: 'created',
@@ -1170,11 +1169,8 @@ const ensureRolePlanTrialSubscription = async ({ userId, audienceRole = '', user
   return subscription;
 };
 
-const createOrReuseRazorpayPlanForRolePlan = async (plan = {}, options = {}) => {
-  const purpose = normalizeLower(options.purpose || 'recurring');
-  const isAutopaySetup = purpose === 'autopay_setup';
-  const metaPlanIdKey = isAutopaySetup ? 'razorpayAutopaySetupPlanId' : 'razorpayPlanId';
-  const existingPlanId = normalizeText(plan?.meta?.[metaPlanIdKey]);
+const createOrReuseRazorpayPlanForRolePlan = async (plan = {}) => {
+  const existingPlanId = normalizeText(plan?.meta?.razorpayPlanId);
   if (existingPlanId) {
     try {
       const existingPlan = await fetchRazorpayPlanDetails(existingPlanId);
@@ -1186,34 +1182,26 @@ const createOrReuseRazorpayPlanForRolePlan = async (plan = {}, options = {}) => 
   }
 
   const billingProfile = resolveRolePlanBillingProfile(plan);
-  const planAmount = isAutopaySetup ? ROLE_PLAN_AUTOPAY_SETUP_AMOUNT : plan.price;
   const razorpayPlan = await createRazorpayPlan({
     period: billingProfile.period,
     interval: billingProfile.interval,
-    amount: planAmount,
+    amount: plan.price,
     currency: plan.currency,
-    name: isAutopaySetup ? `${plan.name} Auto-pay Setup` : plan.name,
-    description: isAutopaySetup ? 'HHH Jobs auto-pay authorization setup' : plan.description,
+    name: plan.name,
+    description: plan.description,
     notes: {
       rolePlanSlug: plan.slug,
-      audienceRole: plan.audienceRole,
-      purpose: isAutopaySetup ? 'autopay_setup' : 'recurring',
-      setupAmount: isAutopaySetup ? String(ROLE_PLAN_AUTOPAY_SETUP_AMOUNT) : '',
-      renewalAmount: String(plan.price || '')
+      audienceRole: plan.audienceRole
     }
   });
 
   const nextMeta = mergeMeta(plan.meta, {
-    [metaPlanIdKey]: razorpayPlan.id,
+    razorpayPlanId: razorpayPlan.id,
     razorpayPeriod: billingProfile.period,
     razorpayInterval: billingProfile.interval,
-    razorpayPlanRecreatedAt: !isAutopaySetup && existingPlanId ? new Date().toISOString() : plan.meta?.razorpayPlanRecreatedAt || null,
-    previousRazorpayPlanId: !isAutopaySetup ? existingPlanId || null : plan.meta?.previousRazorpayPlanId || null,
-    razorpayAutopaySetupAmount: isAutopaySetup ? ROLE_PLAN_AUTOPAY_SETUP_AMOUNT : plan.meta?.razorpayAutopaySetupAmount || null,
-    razorpayAutopaySetupPlanRecreatedAt: isAutopaySetup && existingPlanId ? new Date().toISOString() : plan.meta?.razorpayAutopaySetupPlanRecreatedAt || null,
-    previousRazorpayAutopaySetupPlanId: isAutopaySetup ? existingPlanId || null : plan.meta?.previousRazorpayAutopaySetupPlanId || null,
-    razorpayKeyMode: getRazorpayPublicConfig().keyMode,
-    razorpayAutopaySetupKeyMode: isAutopaySetup ? getRazorpayPublicConfig().keyMode : plan.meta?.razorpayAutopaySetupKeyMode || null
+    razorpayPlanRecreatedAt: existingPlanId ? new Date().toISOString() : null,
+    previousRazorpayPlanId: existingPlanId || null,
+    razorpayKeyMode: getRazorpayPublicConfig().keyMode
   });
 
   await Database
@@ -1969,7 +1957,7 @@ const createRolePlanAutopaySession = async ({
     }
   }
 
-  const razorpayPlanId = await createOrReuseRazorpayPlanForRolePlan(plan, { purpose: 'autopay_setup' });
+  const razorpayPlanId = await createOrReuseRazorpayPlanForRolePlan(plan);
   const billingProfile = resolveRolePlanBillingProfile(plan);
   const renewalStartAt = isExistingActivePlanChange
     ? addMinutes(new Date().toISOString(), 10)
@@ -1981,7 +1969,7 @@ const createRolePlanAutopaySession = async ({
   const subscriptionSetup = await createRazorpaySubscription({
     planId: razorpayPlanId,
     totalCount: billingProfile.totalCount,
-    quantity: 1,
+    quantity: quote.quantity,
     customerNotify: true,
     startAt: startAtUnix,
     expireBy: expireByUnix,
@@ -1990,10 +1978,7 @@ const createRolePlanAutopaySession = async ({
       rolePlanSlug: plan.slug,
       audienceRole: normalizedAudienceRole,
       userId: user.id,
-      quantity: '1',
-      renewalQuantity: String(quote.quantity),
-      setupAmount: String(ROLE_PLAN_AUTOPAY_SETUP_AMOUNT),
-      renewalAmount: String(quote.totalAmount)
+      quantity: String(quote.quantity)
     }
   });
 
@@ -2022,8 +2007,7 @@ const createRolePlanAutopaySession = async ({
         subscriptionId: subscriptionSetup.id,
         localSubscriptionId: pendingPlanChangeSubscription.id,
         planSlug: plan.slug,
-        amount: ROLE_PLAN_AUTOPAY_SETUP_AMOUNT,
-        renewalAmount: quote.totalAmount,
+        amount: quote.totalAmount,
         currency: quote.currency,
         trialEndsAt: null,
         prefill: {
@@ -2042,7 +2026,6 @@ const createRolePlanAutopaySession = async ({
     renewalQuantity: quote.quantity,
     renewalCouponCode: quote.coupon?.code || '',
     razorpayPlanId,
-    razorpayAutopaySetupAmount: ROLE_PLAN_AUTOPAY_SETUP_AMOUNT,
     razorpaySubscriptionStatus: subscriptionSetup.status,
     renewalStartsAt: renewalStartAt
   });
