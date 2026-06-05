@@ -41,6 +41,7 @@ const {
 } = require('../services/interviews');
 const { attachPlanAccess, requirePlanFeature } = require('../middleware/planAccess');
 const { syncHrCompanyProfileToCampus } = require('../services/campusDrives');
+const { buildProfileSeedFromUser, ensureRoleProfile } = require('../services/profileTables');
 
 const router = express.Router();
 
@@ -138,6 +139,34 @@ router.get('/profile', asyncHandler(async (req, res) => {
   }
 
   if (!data) {
+    try {
+      await ensureRoleProfile({
+        Database,
+        role: ROLES.HR,
+        userId: targetUserId,
+        reqBody: buildProfileSeedFromUser(req.user)
+      });
+    } catch (profileError) {
+      sendDatabaseError(res, profileError);
+      return;
+    }
+
+    const seeded = await Database
+      .from('hr_profiles')
+      .select('*')
+      .eq('user_id', targetUserId)
+      .maybeSingle();
+
+    if (seeded.error) {
+      sendDatabaseError(res, seeded.error);
+      return;
+    }
+
+    if (seeded.data) {
+      res.send({ status: true, profile: seeded.data });
+      return;
+    }
+
     const inserted = await Database
       .from('hr_profiles')
       .insert({ user_id: targetUserId })

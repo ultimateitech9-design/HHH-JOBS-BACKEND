@@ -436,8 +436,14 @@ const buildCampusCollegePayload = ({ userId, reqBody = {}, fallbackName = '', fa
   const basePayload = {
     user_id: userId,
     name: toOptionalText(reqBody?.name ?? fallbackName),
-    city: toOptionalText(reqBody?.city),
-    state: toOptionalText(reqBody?.state),
+    city: toOptionalText(reqBody?.city ?? reqBody?.districtName ?? reqBody?.district_name),
+    state: toOptionalText(reqBody?.state ?? reqBody?.stateName ?? reqBody?.state_name),
+    state_id: toOptionalText(reqBody?.stateId ?? reqBody?.state_id),
+    district_id: toOptionalText(reqBody?.districtId ?? reqBody?.district_id),
+    state_name: toOptionalText(reqBody?.stateName ?? reqBody?.state_name ?? reqBody?.state),
+    district_name: toOptionalText(reqBody?.districtName ?? reqBody?.district_name ?? reqBody?.city),
+    sector_id: toOptionalText(reqBody?.sectorId ?? reqBody?.sector_id),
+    sector_name: toOptionalText(reqBody?.sectorName ?? reqBody?.sector_name),
     affiliation: toOptionalText(reqBody?.affiliation),
     established_year: reqBody?.establishedYear ? Number.parseInt(reqBody.establishedYear, 10) : null,
     website: toOptionalText(reqBody?.website),
@@ -449,7 +455,7 @@ const buildCampusCollegePayload = ({ userId, reqBody = {}, fallbackName = '', fa
   };
 
   return Object.fromEntries(
-    Object.entries(basePayload).filter(([, value]) => value !== undefined)
+    Object.entries(basePayload).filter(([, value]) => value !== undefined && value !== null)
   );
 };
 
@@ -1298,11 +1304,16 @@ router.post('/signup', asyncHandler(async (req, res) => {
     }
   }
 
-  const pendingSignup = getPendingSignupByEmail(email);
+  let pendingSignup = getPendingSignupByEmail(email);
 
   const existingUser = Database
     ? (await Database.from('users').select('*').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
+
+  if (Database && pendingSignup) {
+    clearPendingSignup(email);
+    pendingSignup = null;
+  }
 
   if (existingUser) {
     if (existingUser.is_email_verified) {
@@ -1345,7 +1356,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
 
   let userRow;
   let pendingDraft = null;
-  if (!existingUser && !pendingSignup) {
+  if (!Database && !existingUser && !pendingSignup) {
     pendingDraft = upsertPendingSignup({
       name,
       email,
@@ -1361,7 +1372,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
       otp_expires_at: otpExpiresAt,
       reqBody: sanitizeSignupDraft(req.body || {})
     });
-  } else if (!existingUser && pendingSignup) {
+  } else if (!Database && !existingUser && pendingSignup) {
     pendingDraft = upsertPendingSignup({
       ...pendingSignup,
       name,
@@ -1458,6 +1469,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
   }
 
   const syncWarning = '';
+  if (userRow?.id) clearPendingSignup(email);
 
   const emailResult = await deliverEmailWithSoftTimeout({
     label: 'signup-otp-email',
@@ -1504,7 +1516,7 @@ router.post('/send-otp', asyncHandler(async (req, res) => {
     return;
   }
 
-  const pendingSignup = getPendingSignupByEmail(email);
+  const pendingSignup = Database ? null : getPendingSignupByEmail(email);
   const user = Database
     ? (await Database.from('users').select('id, email, is_email_verified, otp_code, otp_expires_at').eq('email', email).maybeSingle()).data
     : authStore.findUserByEmail(email);
@@ -1949,7 +1961,24 @@ router.post('/login', asyncHandler(async (req, res) => {
     return;
   }
 
-  const pendingSignup = getPendingSignupByEmail(email);
+  let pendingSignup = getPendingSignupByEmail(email);
+  if (pendingSignup && Database) {
+    const { data: dbPendingUser, error: dbPendingLookupError } = await Database
+      .from('users')
+      .select('id, email, is_email_verified')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (dbPendingLookupError) {
+      sendDatabaseError(res, dbPendingLookupError);
+      return;
+    }
+
+    if (dbPendingUser?.id) {
+      pendingSignup = null;
+      clearPendingSignup(email);
+    }
+  }
   let userRow = null;
   if (Database) {
     let userLookupResp;

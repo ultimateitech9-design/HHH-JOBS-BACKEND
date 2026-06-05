@@ -54,7 +54,7 @@ const getCollegeId = async (userId) => {
   return data?.id || null;
 };
 
-const ensureCollegeProfile = async (userId) => {
+const ensureCollegeProfile = async (userId, user = {}) => {
   let { data, error } = await Database
     .from('colleges')
     .select('*')
@@ -64,9 +64,40 @@ const ensureCollegeProfile = async (userId) => {
   if (error) return { data: null, error };
 
   if (!data) {
+    try {
+      await ensureRoleProfile({
+        Database,
+        role: ROLES.CAMPUS_CONNECT,
+        userId,
+        reqBody: {
+          name: user.name,
+          email: user.email,
+          mobile: user.mobile,
+          contactEmail: user.email,
+          contactPhone: user.mobile
+        }
+      });
+    } catch (profileError) {
+      return { data: null, error: profileError };
+    }
+
+    const seeded = await Database
+      .from('colleges')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (seeded.error) return { data: null, error: seeded.error };
+    if (seeded.data) return { data: seeded.data, error: null };
+
     const inserted = await Database
       .from('colleges')
-      .insert({ user_id: userId })
+      .insert(stripUndefined({
+        user_id: userId,
+        name: user.name || undefined,
+        contact_email: user.email || undefined,
+        contact_phone: user.mobile || undefined
+      }))
       .select('*')
       .single();
     return inserted;
@@ -911,7 +942,7 @@ router.get('/profile', asyncHandler(async (req, res) => {
   if (!ensureDatabaseConfig(res)) return;
 
   const userId = req.user.id;
-  const { data, error } = await ensureCollegeProfile(userId);
+  const { data, error } = await ensureCollegeProfile(userId, req.user);
 
   if (error) { sendDatabaseError(res, error); return; }
 
