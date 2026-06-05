@@ -342,6 +342,55 @@ const ensureJobFacetSchema = async (db) => {
   );
 };
 
+const dedupeHrProfilesByUser = async (db) => {
+  if (!(await tableExists(db, 'hr_profiles'))) return;
+  if (!(await columnExists(db, 'hr_profiles', 'id')) || !(await columnExists(db, 'hr_profiles', 'user_id'))) return;
+
+  await db.execute(`
+    UPDATE hr_profiles keeper
+    JOIN (
+      SELECT user_id, MIN(id) AS keep_id
+      FROM hr_profiles
+      WHERE user_id IS NOT NULL AND user_id <> ''
+      GROUP BY user_id
+      HAVING COUNT(*) > 1
+    ) grouped ON grouped.keep_id = keeper.id
+    JOIN hr_profiles duplicate
+      ON duplicate.user_id = grouped.user_id
+     AND duplicate.id <> grouped.keep_id
+    SET
+      keeper.company_name = COALESCE(NULLIF(keeper.company_name, ''), NULLIF(duplicate.company_name, '')),
+      keeper.company_website = COALESCE(NULLIF(keeper.company_website, ''), NULLIF(duplicate.company_website, '')),
+      keeper.company_size = COALESCE(NULLIF(keeper.company_size, ''), NULLIF(duplicate.company_size, '')),
+      keeper.industry_type = COALESCE(NULLIF(keeper.industry_type, ''), NULLIF(duplicate.industry_type, '')),
+      keeper.founded_year = COALESCE(NULLIF(keeper.founded_year, ''), NULLIF(duplicate.founded_year, '')),
+      keeper.company_type = COALESCE(NULLIF(keeper.company_type, ''), NULLIF(duplicate.company_type, '')),
+      keeper.location = COALESCE(NULLIF(keeper.location, ''), NULLIF(duplicate.location, '')),
+      keeper.state_id = COALESCE(NULLIF(keeper.state_id, ''), NULLIF(duplicate.state_id, '')),
+      keeper.district_id = COALESCE(NULLIF(keeper.district_id, ''), NULLIF(duplicate.district_id, '')),
+      keeper.state_name = COALESCE(NULLIF(keeper.state_name, ''), NULLIF(duplicate.state_name, '')),
+      keeper.district_name = COALESCE(NULLIF(keeper.district_name, ''), NULLIF(duplicate.district_name, '')),
+      keeper.sector_id = COALESCE(NULLIF(keeper.sector_id, ''), NULLIF(duplicate.sector_id, '')),
+      keeper.sector_name = COALESCE(NULLIF(keeper.sector_name, ''), NULLIF(duplicate.sector_name, '')),
+      keeper.about = COALESCE(NULLIF(keeper.about, ''), NULLIF(duplicate.about, '')),
+      keeper.logo_url = COALESCE(NULLIF(keeper.logo_url, ''), NULLIF(duplicate.logo_url, ''))
+  `);
+
+  await db.execute(`
+    DELETE duplicate
+    FROM hr_profiles duplicate
+    JOIN (
+      SELECT user_id, MIN(id) AS keep_id
+      FROM hr_profiles
+      WHERE user_id IS NOT NULL AND user_id <> ''
+      GROUP BY user_id
+      HAVING COUNT(*) > 1
+    ) grouped
+      ON grouped.user_id = duplicate.user_id
+     AND duplicate.id <> grouped.keep_id
+  `);
+};
+
 const ensureHrProfilePrefillSchema = async (db) => {
   if (await tableExists(db, 'users')) {
     await addColumnIfMissing(db, 'users', 'req_body', 'JSON NULL');
@@ -363,7 +412,6 @@ const ensureHrProfilePrefillSchema = async (db) => {
   await addColumnIfMissing(db, 'hr_profiles', 'sector_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'about', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'logo_url', 'LONGTEXT NULL');
-  await addUniqueIndexIfMissing(db, 'hr_profiles', 'hr_profiles_user_uidx', '(`user_id`)');
 
   await db.execute(`
     UPDATE hr_profiles hp
@@ -393,6 +441,9 @@ const ensureHrProfilePrefillSchema = async (db) => {
         OR COALESCE(hp.district_name, '') = ''
       )
   `);
+
+  await dedupeHrProfilesByUser(db);
+  await addUniqueIndexIfMissing(db, 'hr_profiles', 'hr_profiles_user_uidx', '(`user_id`)');
 };
 
 const backfillSeoSlug = async (db, table, expression) => {
