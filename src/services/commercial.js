@@ -3067,14 +3067,16 @@ const repairInstantRolePlanActivations = async ({ userId, audienceRole = '' } = 
     return existingCurrent;
   }
 
+  const subscriptionPurchaseIds = new Set(
+    (subscriptions || [])
+      .map((subscription) => String(subscription.source_purchase_id || '').trim())
+      .filter(Boolean)
+  );
+
   const pendingSubscriptions = (subscriptions || []).filter((subscription) => {
     const status = normalizeLower(subscription.status);
     return status === 'pending' || subscription?.meta?.pendingAutopaySetup;
   });
-
-  if (pendingSubscriptions.length === 0) {
-    return existingCurrent || null;
-  }
 
   const { data: purchases, error: purchasesError } = await Database
     .from('role_plan_purchases')
@@ -3110,6 +3112,17 @@ const repairInstantRolePlanActivations = async ({ userId, audienceRole = '' } = 
 
     await activateRolePlanPurchase({ purchaseId: matchingPurchase.id });
     repaired = true;
+  }
+
+  if (!repaired) {
+    const unlinkedInstantPurchase = instantPurchases.find((purchase) => (
+      purchase?.id && !subscriptionPurchaseIds.has(String(purchase.id))
+    ));
+
+    if (unlinkedInstantPurchase) {
+      await activateRolePlanPurchase({ purchaseId: unlinkedInstantPurchase.id });
+      repaired = true;
+    }
   }
 
   if (!repaired) {
