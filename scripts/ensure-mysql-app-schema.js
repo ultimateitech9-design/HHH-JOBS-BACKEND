@@ -442,6 +442,52 @@ const ensureHrProfilePrefillSchema = async (db) => {
       )
   `);
 
+  if (await tableExists(db, 'colleges')) {
+    await addColumnIfMissing(db, 'colleges', 'state_id', 'CHAR(36) NULL');
+    await addColumnIfMissing(db, 'colleges', 'district_id', 'CHAR(36) NULL');
+    await addColumnIfMissing(db, 'colleges', 'state_name', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'district_name', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'affiliation', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'established_year', 'INT NULL');
+    await addColumnIfMissing(db, 'colleges', 'website', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'logo_url', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'contact_email', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'contact_phone', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'about', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'placement_officer_name', 'LONGTEXT NULL');
+
+    await db.execute(`
+      UPDATE colleges c
+      JOIN users u ON u.id = c.user_id
+      SET
+        c.name = COALESCE(NULLIF(c.name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.name')), 'null'), NULLIF(u.name, '')),
+        c.city = COALESCE(NULLIF(c.city, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.city')), 'null'), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtName')), 'null')),
+        c.state = COALESCE(NULLIF(c.state, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.state')), 'null'), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateName')), 'null')),
+        c.state_id = COALESCE(NULLIF(c.state_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateId')), 'null')),
+        c.district_id = COALESCE(NULLIF(c.district_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtId')), 'null')),
+        c.state_name = COALESCE(NULLIF(c.state_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateName')), 'null'), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.state')), 'null')),
+        c.district_name = COALESCE(NULLIF(c.district_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtName')), 'null'), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.city')), 'null')),
+        c.affiliation = COALESCE(NULLIF(c.affiliation, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.affiliation')), 'null')),
+        c.established_year = COALESCE(
+          c.established_year,
+          CASE
+            WHEN JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.establishedYear')) REGEXP '^[0-9]{4}$'
+            THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.establishedYear')) AS UNSIGNED)
+            ELSE NULL
+          END
+        ),
+        c.website = COALESCE(NULLIF(c.website, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.website')), 'null')),
+        c.logo_url = COALESCE(NULLIF(c.logo_url, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.logoUrl')), 'null')),
+        c.contact_email = COALESCE(NULLIF(c.contact_email, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.contactEmail')), 'null'), NULLIF(u.email, '')),
+        c.contact_phone = COALESCE(NULLIF(c.contact_phone, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.contactPhone')), 'null'), NULLIF(u.mobile, '')),
+        c.about = COALESCE(NULLIF(c.about, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.about')), 'null')),
+        c.placement_officer_name = COALESCE(NULLIF(c.placement_officer_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.placementOfficerName')), 'null'))
+      WHERE u.role = 'campus_connect'
+        AND u.req_body IS NOT NULL
+        AND JSON_VALID(u.req_body)
+    `);
+  }
+
   await dedupeHrProfilesByUser(db);
 
   if (await tableExists(db, 'employee_profiles')) {

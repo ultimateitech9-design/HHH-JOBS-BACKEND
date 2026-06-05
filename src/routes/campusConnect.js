@@ -29,6 +29,66 @@ const CONNECTION_SOURCE = {
   COLLEGE: 'college'
 };
 
+const toOptionalText = (value) => {
+  const text = String(value ?? '').trim();
+  return text || undefined;
+};
+
+const parseJsonObject = (value) => {
+  if (!value) return {};
+  if (typeof value === 'object' && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const buildCollegeProfileSeedPayload = ({ userId, reqBody = {}, user = {} }) => stripUndefined({
+  user_id: userId,
+  name: toOptionalText(reqBody.name || user.name),
+  city: toOptionalText(reqBody.city || reqBody.districtName || reqBody.district_name),
+  state: toOptionalText(reqBody.state || reqBody.stateName || reqBody.state_name),
+  state_id: toOptionalText(reqBody.stateId || reqBody.state_id),
+  district_id: toOptionalText(reqBody.districtId || reqBody.district_id),
+  state_name: toOptionalText(reqBody.stateName || reqBody.state_name || reqBody.state),
+  district_name: toOptionalText(reqBody.districtName || reqBody.district_name || reqBody.city),
+  affiliation: toOptionalText(reqBody.affiliation),
+  established_year: reqBody.establishedYear ? parseInt(reqBody.establishedYear, 10) : undefined,
+  website: toOptionalText(reqBody.website),
+  logo_url: toOptionalText(reqBody.logoUrl || reqBody.logo_url),
+  contact_email: toOptionalText(reqBody.contactEmail || reqBody.contact_email || user.email),
+  contact_phone: toOptionalText(reqBody.contactPhone || reqBody.contact_phone || user.mobile),
+  about: toOptionalText(reqBody.about),
+  placement_officer_name: toOptionalText(reqBody.placementOfficerName || reqBody.placement_officer_name)
+});
+
+const loadCampusUserSeedPayload = async (userId, fallbackUser = {}) => {
+  const { data, error } = await Database
+    .from('users')
+    .select('name, email, mobile, req_body')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error) return buildCollegeProfileSeedPayload({ userId, user: fallbackUser });
+
+  return buildCollegeProfileSeedPayload({
+    userId,
+    reqBody: parseJsonObject(data?.req_body),
+    user: {
+      name: data?.name || fallbackUser.name,
+      email: data?.email || fallbackUser.email,
+      mobile: data?.mobile || fallbackUser.mobile
+    }
+  });
+};
+
+const buildMissingCollegePayload = (existing = {}, seedPayload = {}) => Object.fromEntries(
+  Object.entries(seedPayload)
+    .filter(([key, value]) => key !== 'user_id' && value !== undefined && value !== null && !String(existing?.[key] ?? '').trim())
+);
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -63,6 +123,8 @@ const ensureCollegeProfile = async (userId, user = {}) => {
 
   if (error) return { data: null, error };
 
+  const seedPayload = await loadCampusUserSeedPayload(userId, user);
+
   if (!data) {
     try {
       await ensureRoleProfile({
@@ -88,19 +150,40 @@ const ensureCollegeProfile = async (userId, user = {}) => {
       .maybeSingle();
 
     if (seeded.error) return { data: null, error: seeded.error };
-    if (seeded.data) return { data: seeded.data, error: null };
+    if (seeded.data) {
+      const seededMissingPayload = buildMissingCollegePayload(seeded.data, seedPayload);
+      if (Object.keys(seededMissingPayload).length > 0) {
+        const updatedSeeded = await Database
+          .from('colleges')
+          .update(seededMissingPayload)
+          .eq('user_id', userId)
+          .select('*')
+          .single();
+        if (updatedSeeded.error) return { data: null, error: updatedSeeded.error };
+        return { data: updatedSeeded.data, error: null };
+      }
+      return { data: seeded.data, error: null };
+    }
 
     const inserted = await Database
       .from('colleges')
-      .insert(stripUndefined({
-        user_id: userId,
-        name: user.name || undefined,
-        contact_email: user.email || undefined,
-        contact_phone: user.mobile || undefined
-      }))
+      .insert(seedPayload)
       .select('*')
       .single();
     return inserted;
+  }
+
+  const missingPayload = buildMissingCollegePayload(data, seedPayload);
+
+  if (Object.keys(missingPayload).length > 0) {
+    const updated = await Database
+      .from('colleges')
+      .update(missingPayload)
+      .eq('user_id', userId)
+      .select('*')
+      .single();
+    if (updated.error) return { data: null, error: updated.error };
+    return { data: updated.data, error: null };
   }
 
   return { data, error: null };
@@ -959,6 +1042,10 @@ router.put('/profile', asyncHandler(async (req, res) => {
     name: req.body?.name || undefined,
     city: req.body?.city || undefined,
     state: req.body?.state || undefined,
+    state_id: req.body?.stateId || req.body?.state_id || undefined,
+    district_id: req.body?.districtId || req.body?.district_id || undefined,
+    state_name: req.body?.stateName || req.body?.state_name || req.body?.state || undefined,
+    district_name: req.body?.districtName || req.body?.district_name || req.body?.city || undefined,
     affiliation: req.body?.affiliation || undefined,
     established_year: req.body?.establishedYear ? parseInt(req.body.establishedYear, 10) : undefined,
     website: req.body?.website || undefined,
