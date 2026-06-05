@@ -1,5 +1,6 @@
 const express = require('express');
 const crypto = require('node:crypto');
+const multer = require('multer');
 const config = require('../config');
 const { ROLES, USER_STATUSES, JOB_STATUSES, APPLICATION_STATUSES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
@@ -44,6 +45,15 @@ const { syncHrCompanyProfileToCampus } = require('../services/campusDrives');
 const { buildProfileSeedFromUser, ensureRoleProfile, upsertRoleProfile } = require('../services/profileTables');
 
 const router = express.Router();
+
+const logoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+    cb(allowedTypes.has(file.mimetype) ? null : new Error('Only JPG, PNG, WebP, and GIF logo images are allowed'), allowedTypes.has(file.mimetype));
+  }
+});
 
 router.use(requireAuth, requireActiveUser, requireRole(ROLES.HR, ROLES.ADMIN, ROLES.SUPER_ADMIN));
 
@@ -152,8 +162,27 @@ const shouldBackfillHrProfile = (profile = {}, seedPayload = {}) => (
   ))
 );
 
+const parseUserSignupDraft = (value) => {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try {
+    const parsed = JSON.parse(String(value || '{}'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+};
+
+const buildHrProfileSeedPayload = (user = {}) => {
+  const signupDraft = parseUserSignupDraft(user?.req_body ?? user?.reqBody);
+  return compactProfileSeed({
+    ...buildProfileSeedFromUser({ ...user, ...(signupDraft || {}) }),
+    ...(signupDraft || {})
+  });
+};
+
 const readHrProfileSeedUser = async ({ targetUserId, currentUser }) => {
-  if (targetUserId === currentUser?.id) return currentUser;
+  if (!Database) return currentUser;
 
   const { data, error } = await Database
     .from('users')
@@ -162,7 +191,7 @@ const readHrProfileSeedUser = async ({ targetUserId, currentUser }) => {
     .maybeSingle();
 
   if (error) throw error;
-  return data || currentUser;
+  return data ? { ...currentUser, ...data } : currentUser;
 };
 
 router.get('/profile', asyncHandler(async (req, res) => {
@@ -188,7 +217,7 @@ router.get('/profile', asyncHandler(async (req, res) => {
         Database,
         role: ROLES.HR,
         userId: targetUserId,
-        reqBody: buildProfileSeedFromUser(seedUser)
+        reqBody: buildHrProfileSeedPayload(seedUser)
       });
     } catch (profileError) {
       sendDatabaseError(res, profileError);
@@ -228,7 +257,7 @@ router.get('/profile', asyncHandler(async (req, res) => {
   if (data) {
     try {
       const seedUser = await readHrProfileSeedUser({ targetUserId, currentUser: req.user });
-      const seedPayload = compactProfileSeed(buildProfileSeedFromUser(seedUser));
+      const seedPayload = buildHrProfileSeedPayload(seedUser);
       if (shouldBackfillHrProfile(data, seedPayload)) {
         await upsertRoleProfile({
           Database,
@@ -259,6 +288,70 @@ router.get('/profile', asyncHandler(async (req, res) => {
   }
 
   res.send({ status: true, profile: data });
+}));
+
+router.post('/profile/logo', logoUpload.single('logo'), asyncHandler(async (req, res) => {
+  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.body?.userId)
+    ? req.body.userId
+    : req.user.id;
+
+  if (!req.file) {
+    res.status(400).send({ status: false, message: 'No logo uploaded. Field name must be "logo".' });
+    return;
+  }
+
+  const extByType = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif'
+  };
+  const extension = extByType[req.file.mimetype] || 'jpg';
+  const storagePath = `logos/${targetUserId}/logo_${Date.now()}.${extension}`;
+  const { error: uploadError } = await Database.storage
+    .from('company-logos')
+    .upload(storagePath, req.file.buffer, {
+      contentType: req.file.mimetype,
+      upsert: true
+    });
+
+  if (uploadError) {
+    sendDatabaseError(res, uploadError);
+    return;
+  }
+
+  const { data: urlData } = Database.storage.from('company-logos').getPublicUrl(storagePath);
+  const logoUrl = urlData?.publicUrl || null;
+  const existingProfileResp = await Database
+    .from('hr_profiles')
+    .select('id')
+    .eq('user_id', targetUserId)
+    .maybeSingle();
+
+  if (existingProfileResp.error) {
+    sendDatabaseError(res, existingProfileResp.error);
+    return;
+  }
+
+  const saveQuery = existingProfileResp.data?.id
+    ? Database
+      .from('hr_profiles')
+      .update({ logo_url: logoUrl })
+      .eq('id', existingProfileResp.data.id)
+    : Database
+      .from('hr_profiles')
+      .insert({ user_id: targetUserId, logo_url: logoUrl });
+
+  const saveResp = await saveQuery.select('*').single();
+  const data = saveResp.data;
+  const error = saveResp.error;
+
+  if (error) {
+    sendDatabaseError(res, error);
+    return;
+  }
+
+  res.send({ status: true, logoUrl, profile: data });
 }));
 
 router.put('/profile', asyncHandler(async (req, res) => {

@@ -129,6 +129,7 @@ const sanitizeSignupDraft = (reqBody = {}) => {
   delete draft.password;
   return draft;
 };
+const buildSignupDraftColumn = (reqBody = {}) => sanitizeSignupDraft(reqBody || {});
 const getPendingSignupByEmail = (email) => clonePendingSignup(
   pendingSignupStore.get(normalizeEmail(email)) || null
 );
@@ -829,6 +830,7 @@ const createVerifiedUserFromPendingSignup = async (pendingSignup) => {
     is_email_verified: true,
     otp_code: null,
     otp_expires_at: null,
+    req_body: buildSignupDraftColumn(reqBody),
     last_login_at: loginTimestamp
   };
 
@@ -1389,7 +1391,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
       reqBody: sanitizeSignupDraft(req.body || {})
     });
   } else if (Database) {
-    const userPayload = {
+      const userPayload = {
         name,
         email,
         mobile,
@@ -1402,7 +1404,8 @@ router.post('/signup', asyncHandler(async (req, res) => {
         is_hr_approved: role === ROLES.HR ? false : true,
         is_email_verified: false,
         otp_code: otpCode,
-        otp_expires_at: otpExpiresAt
+        otp_expires_at: otpExpiresAt,
+        req_body: buildSignupDraftColumn(req.body || {})
       };
 
     if (existingUser) {
@@ -1460,6 +1463,7 @@ router.post('/signup', asyncHandler(async (req, res) => {
       is_email_verified: false,
       otp_code: otpCode,
       otp_expires_at: otpExpiresAt,
+      req_body: buildSignupDraftColumn(req.body || {}),
       date_of_birth: isStudentPortalRole(role) ? req.body?.dateOfBirth || null : null
     };
     userRow = existingUser
@@ -2172,7 +2176,7 @@ router.get('/me', requireAuth, authSessionReadLimiter, asyncHandler(async (req, 
 
   if (!Database) {
     profile = authStore.getProfileByRole(profileRoleKey, req.user.id);
-    res.send({ status: true, user: profile ? mapPublicUser({ ...profile, ...req.user }) : req.user, profile });
+    res.send({ status: true, user: profile ? mapPublicUser({ ...req.user, ...profile }) : req.user, profile });
     return;
   }
 
@@ -2224,7 +2228,7 @@ router.get('/me', requireAuth, authSessionReadLimiter, asyncHandler(async (req, 
     };
   }
 
-  res.send({ status: true, user: profile ? mapPublicUser({ ...profile, ...req.user }) : req.user, profile });
+  res.send({ status: true, user: profile ? mapPublicUser({ ...req.user, ...profile }) : req.user, profile });
 }));
 
 router.get('/redirect', requireAuth, (req, res) => {

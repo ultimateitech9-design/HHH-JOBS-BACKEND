@@ -342,6 +342,59 @@ const ensureJobFacetSchema = async (db) => {
   );
 };
 
+const ensureHrProfilePrefillSchema = async (db) => {
+  if (await tableExists(db, 'users')) {
+    await addColumnIfMissing(db, 'users', 'req_body', 'JSON NULL');
+  }
+
+  if (!(await tableExists(db, 'hr_profiles'))) return;
+
+  await addColumnIfMissing(db, 'hr_profiles', 'company_website', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'company_size', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'industry_type', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'founded_year', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'company_type', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'location', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'state_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'district_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'state_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'district_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'sector_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'sector_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'about', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'logo_url', 'LONGTEXT NULL');
+  await addUniqueIndexIfMissing(db, 'hr_profiles', 'hr_profiles_user_uidx', '(`user_id`)');
+
+  await db.execute(`
+    UPDATE hr_profiles hp
+    JOIN users u ON u.id = hp.user_id
+    SET
+      hp.company_name = COALESCE(NULLIF(hp.company_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.companyName')), 'null')),
+      hp.company_website = COALESCE(NULLIF(hp.company_website, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.companyWebsite')), 'null')),
+      hp.company_type = COALESCE(NULLIF(hp.company_type, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.companyType')), 'null')),
+      hp.company_size = COALESCE(NULLIF(hp.company_size, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.companySize')), 'null')),
+      hp.sector_id = COALESCE(NULLIF(hp.sector_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.sectorId')), 'null')),
+      hp.sector_name = COALESCE(NULLIF(hp.sector_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.sectorName')), 'null')),
+      hp.location = COALESCE(NULLIF(hp.location, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.location')), 'null')),
+      hp.state_id = COALESCE(NULLIF(hp.state_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateId')), 'null')),
+      hp.state_name = COALESCE(NULLIF(hp.state_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateName')), 'null')),
+      hp.district_id = COALESCE(NULLIF(hp.district_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtId')), 'null')),
+      hp.district_name = COALESCE(NULLIF(hp.district_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtName')), 'null'))
+    WHERE u.req_body IS NOT NULL
+      AND JSON_VALID(u.req_body)
+      AND (
+        COALESCE(hp.company_name, '') = ''
+        OR COALESCE(hp.company_website, '') = ''
+        OR COALESCE(hp.company_type, '') = ''
+        OR COALESCE(hp.company_size, '') = ''
+        OR COALESCE(hp.sector_name, '') = ''
+        OR COALESCE(hp.location, '') = ''
+        OR COALESCE(hp.state_name, '') = ''
+        OR COALESCE(hp.district_name, '') = ''
+      )
+  `);
+};
+
 const backfillSeoSlug = async (db, table, expression) => {
   try {
     await db.execute(`
@@ -597,6 +650,7 @@ const ensureMySqlAppSchema = async () => {
   try {
     await ensureMissingFeatureTables(db);
     await ensureJobFacetSchema(db);
+    await ensureHrProfilePrefillSchema(db);
     await ensureSeoSlugSchema(db);
     await ensureSupportChatSchema(db);
     await ensureIndexesForExistingTables(db);
