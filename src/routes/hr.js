@@ -123,10 +123,33 @@ const buildExternalInterviewMeetingLink = ({ title = 'interview', scheduledAt = 
 };
 
 const hasProfileText = (value) => String(value ?? '').trim().length > 0;
-const shouldBackfillHrProfile = (profile = {}) => !(
-  hasProfileText(profile.company_name)
-  && hasProfileText(profile.location)
-  && (hasProfileText(profile.sector_name) || hasProfileText(profile.industry_type))
+const HR_PROFILE_SEED_FIELD_PAIRS = [
+  ['companyName', 'company_name'],
+  ['companyWebsite', 'company_website'],
+  ['companySize', 'company_size'],
+  ['industryType', 'industry_type'],
+  ['sectorId', 'sector_id'],
+  ['sectorName', 'sector_name'],
+  ['foundedYear', 'founded_year'],
+  ['companyType', 'company_type'],
+  ['location', 'location'],
+  ['stateId', 'state_id'],
+  ['stateName', 'state_name'],
+  ['districtId', 'district_id'],
+  ['districtName', 'district_name'],
+  ['about', 'about'],
+  ['logoUrl', 'logo_url']
+];
+
+const compactProfileSeed = (seedPayload = {}) => Object.fromEntries(
+  Object.entries(seedPayload || {}).filter(([, value]) => hasProfileText(value))
+);
+
+const shouldBackfillHrProfile = (profile = {}, seedPayload = {}) => (
+  HR_PROFILE_SEED_FIELD_PAIRS.some(([camelKey, snakeKey]) => (
+    hasProfileText(seedPayload[camelKey] ?? seedPayload[snakeKey])
+    && !hasProfileText(profile[snakeKey] ?? profile[camelKey])
+  ))
 );
 
 const readHrProfileSeedUser = async ({ targetUserId, currentUser }) => {
@@ -202,23 +225,18 @@ router.get('/profile', asyncHandler(async (req, res) => {
     data = inserted.data;
   }
 
-  if (data && shouldBackfillHrProfile(data)) {
+  if (data) {
     try {
       const seedUser = await readHrProfileSeedUser({ targetUserId, currentUser: req.user });
-      const seedPayload = buildProfileSeedFromUser(seedUser);
-      if (
-        hasProfileText(seedPayload.companyName)
-        || hasProfileText(seedPayload.location)
-        || hasProfileText(seedPayload.sectorName)
-        || hasProfileText(seedPayload.industryType)
-      ) {
+      const seedPayload = compactProfileSeed(buildProfileSeedFromUser(seedUser));
+      if (shouldBackfillHrProfile(data, seedPayload)) {
         await upsertRoleProfile({
           Database,
           role: ROLES.HR,
           userId: targetUserId,
           reqBody: {
             ...data,
-            ...Object.fromEntries(Object.entries(seedPayload).filter(([, value]) => value !== null && value !== undefined && value !== ''))
+            ...seedPayload
           }
         });
 
