@@ -22,8 +22,73 @@ const normalizePublicRole = (role) => {
   return aliases[normalized] || normalized;
 };
 
+const isUuid = (value) => (
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim())
+);
+
+const createAlphaToken = (value = '', length = 3) => {
+  const token = String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z]/g, '')
+    .slice(0, length);
+  return (token || 'HHH').padEnd(length, 'X');
+};
+
+const createMobileToken = (value = '', length = 3) => (
+  String(value || '')
+    .replace(/\D/g, '')
+    .slice(-length)
+    .padStart(length, '0')
+);
+
+const createStableNumberToken = (value = '', length = 4) => {
+  const text = String(value || '');
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash * 31) + text.charCodeAt(index)) % 10000;
+  }
+  return String(hash || 1).padStart(length, '0');
+};
+
+const parseSignupDraft = (value) => {
+  if (!value) return {};
+  if (typeof value === 'object' && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const normalizeHrEmployerId = (row = {}) => {
+  const directValue = row.hr_employer_id
+    ?? row.hrEmployerId
+    ?? row.employee_code
+    ?? row.employeeCode
+    ?? row.company_id
+    ?? row.companyId;
+
+  if (directValue && !isUuid(directValue)) {
+    return String(directValue).trim().toUpperCase();
+  }
+
+  const signupDraft = parseSignupDraft(row.req_body ?? row.reqBody);
+  const companyName = row.company_name
+    ?? row.companyName
+    ?? signupDraft.companyName
+    ?? row.company
+    ?? row.name
+    ?? '';
+  const mobile = row.mobile ?? signupDraft.mobile ?? '';
+  const stableSource = row.id || row.user_id || row.userId || row.email || `${companyName}-${mobile}`;
+
+  return `HHHJ-${createAlphaToken(companyName)}-${createMobileToken(mobile)}-${createStableNumberToken(stableSource)}`;
+};
+
 const mapPublicUser = (row = {}) => {
   const role = normalizePublicRole(row.role);
+  const hrEmployerId = role === 'hr' ? normalizeHrEmployerId(row) : undefined;
 
   return {
     id: row.id || row.userId || row.user_id || row.sub,
@@ -49,6 +114,10 @@ const mapPublicUser = (row = {}) => {
     stateName: row.state_name ?? row.stateName ?? row.state,
     districtId: row.district_id ?? row.districtId,
     districtName: row.district_name ?? row.districtName ?? row.city,
+    ...(role === 'hr' ? {
+      hrEmployerId,
+      employeeCode: row.employee_code ?? row.employeeCode ?? hrEmployerId
+    } : {}),
     createdAt: row.created_at ?? row.createdAt,
     updatedAt: row.updated_at ?? row.updatedAt,
     lastLoginAt: row.last_login_at ?? row.lastLoginAt ?? null

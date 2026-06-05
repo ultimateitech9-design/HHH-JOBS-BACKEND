@@ -443,6 +443,41 @@ const ensureHrProfilePrefillSchema = async (db) => {
   `);
 
   await dedupeHrProfilesByUser(db);
+
+  if (await tableExists(db, 'employee_profiles')) {
+    await addColumnIfMissing(db, 'employee_profiles', 'employee_code', 'LONGTEXT NULL');
+    await db.execute(`
+      UPDATE employee_profiles ep
+      JOIN users u ON u.id = ep.user_id
+      LEFT JOIN hr_profiles hp ON hp.user_id = u.id
+      SET ep.employee_code = CONCAT(
+        'HHHJ-',
+        RPAD(
+          LEFT(
+            REGEXP_REPLACE(
+              UPPER(COALESCE(NULLIF(hp.company_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.companyName')), 'null'), u.name, 'HHH')),
+              '[^A-Z]',
+              ''
+            ),
+            3
+          ),
+          3,
+          'X'
+        ),
+        '-',
+        LPAD(RIGHT(REGEXP_REPLACE(COALESCE(u.mobile, ''), '[^0-9]', ''), 3), 3, '0'),
+        '-',
+        LPAD(CONV(SUBSTRING(REPLACE(u.id, '-', ''), 1, 6), 16, 10) % 10000, 4, '0')
+      )
+      WHERE u.role = 'hr'
+        AND (
+          ep.employee_code IS NULL
+          OR ep.employee_code = ''
+          OR ep.employee_code REGEXP '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+        )
+    `);
+  }
+
   await addUniqueIndexIfMissing(db, 'hr_profiles', 'hr_profiles_user_uidx', '(`user_id`)');
 };
 

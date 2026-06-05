@@ -61,6 +61,39 @@ const toOptionalUuid = (value) => {
     : null;
 };
 
+const createAlphaToken = (value = '', length = 3) => {
+  const token = String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z]/g, '')
+    .slice(0, length);
+  return (token || 'HHH').padEnd(length, 'X');
+};
+
+const createMobileToken = (value = '', length = 3) => (
+  String(value || '')
+    .replace(/\D/g, '')
+    .slice(-length)
+    .padStart(length, '0')
+);
+
+const createStableNumberToken = (value = '', length = 4) => {
+  const text = String(value || '');
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash * 31) + text.charCodeAt(index)) % 10000;
+  }
+  return String(hash || 1).padStart(length, '0');
+};
+
+const buildHrEmployerCode = ({ userId = '', reqBody = {} } = {}) => {
+  const explicitCode = toOptionalText(reqBody?.hrEmployerId ?? reqBody?.hr_employer_id ?? reqBody?.employeeCode ?? reqBody?.employee_code);
+  if (explicitCode) return explicitCode.toUpperCase();
+
+  const companyName = toOptionalText(reqBody?.companyName ?? reqBody?.company_name ?? reqBody?.company ?? reqBody?.name) || 'HHH';
+  const mobile = toOptionalText(reqBody?.mobile);
+  return `HHHJ-${createAlphaToken(companyName)}-${createMobileToken(mobile)}-${createStableNumberToken(userId || `${companyName}-${mobile}`)}`;
+};
+
 const hasAnyKey = (object = {}, keys = []) => (
   keys.some((key) => Object.prototype.hasOwnProperty.call(object, key))
 );
@@ -207,10 +240,13 @@ const buildEmployeeProfilePayload = ({ role, userId, reqBody = {} }) => {
   const normalizedRole = normalizeRole(role);
   const fallbackDepartment = toOptionalText(reqBody?.department ?? reqBody?.company ?? reqBody?.team);
   const fallbackDesignation = toOptionalText(reqBody?.designation ?? reqBody?.headline);
+  const employeeCode = normalizedRole === ROLES.HR
+    ? buildHrEmployerCode({ userId, reqBody })
+    : toOptionalText(reqBody?.employeeCode ?? reqBody?.employee_code);
 
   return {
     user_id: userId,
-    employee_code: toOptionalText(reqBody?.employeeCode ?? reqBody?.employee_code),
+    employee_code: employeeCode,
     department: fallbackDepartment || normalizedRole.replace(/_/g, ' '),
     designation: fallbackDesignation || normalizedRole.replace(/_/g, ' '),
     work_email: toOptionalText(reqBody?.workEmail ?? reqBody?.work_email),
