@@ -67,6 +67,7 @@ const enrichManagedUsers = async (users = []) => {
 const isLiveCampusDriveStatus = (value = '') => !['completed', 'cancelled', 'closed', 'archived'].includes(String(value || '').toLowerCase());
 
 const SYSTEM_LOG_FETCH_LIMIT = 5000;
+const SYSTEM_LOG_FETCH_LIMIT_SQL = String(Math.max(1, Math.min(10000, Number(SYSTEM_LOG_FETCH_LIMIT) || 5000)));
 
 const ACTIVITY_ROLE_GROUPS = {
   student: new Set([ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, 'professional']),
@@ -285,9 +286,14 @@ const isMissingDatabaseObjectError = (error = {}) => (
     || /doesn't exist|unknown column|does not exist/i.test(error.message || '')
 );
 
+const normalizeSqlParams = (params = []) => (
+  (Array.isArray(params) ? params : [])
+    .map((value) => (typeof value === 'undefined' ? null : value))
+);
+
 const safeQueryRows = async (sql, params = []) => {
   try {
-    return await queryRows(sql, params);
+    return await queryRows(sql, normalizeSqlParams(params));
   } catch (error) {
     if (isMissingDatabaseObjectError(error)) {
       console.warn(`[super-admin] Skipping optional query: ${error.message}`);
@@ -348,14 +354,14 @@ const fetchCombinedSystemLogs = async ({ level = '', module = '' } = {}) => {
       FROM system_logs
       ${systemWhereSql}
       ORDER BY created_at DESC
-      LIMIT ?
-    `, [...systemParams, SYSTEM_LOG_FETCH_LIMIT]),
+      LIMIT ${SYSTEM_LOG_FETCH_LIMIT_SQL}
+    `, systemParams),
     safeQueryRows(`
       SELECT id, user_id, action, entity_type, entity_id, details, ip_address, created_at
       FROM audit_logs
       ORDER BY created_at DESC
-      LIMIT ?
-    `, [SYSTEM_LOG_FETCH_LIMIT])
+      LIMIT ${SYSTEM_LOG_FETCH_LIMIT_SQL}
+    `)
   ]);
 
   const userIds = [...new Set(auditRows.map((row) => row.user_id).filter(Boolean))];
