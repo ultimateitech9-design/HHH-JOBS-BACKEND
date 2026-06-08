@@ -333,6 +333,86 @@ const buildUserLinks = (role = '') => {
   return { dashboard: '/portal/super-admin/dashboard', profile: '/portal/super-admin/dashboard' };
 };
 
+const buildSupportContextLinks = (userId) => ({
+  dashboard: `/portal/super-admin/users/${encodeURIComponent(userId)}/dashboard`,
+  profile: `/portal/super-admin/users/${encodeURIComponent(userId)}/profile`
+});
+
+const getRowValue = (row = {}, keys = []) => {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== null && value !== undefined && value !== '') return value;
+  }
+  return '';
+};
+
+const buildProfileContext = ({ user = {}, hrProfile = null, studentProfile = null, campusProfile = null }) => {
+  const role = normalizeLogText(user.role);
+  if (role === ROLES.HR || role === 'company_admin') {
+    const profile = hrProfile || {};
+    return {
+      type: 'hr',
+      title: getRowValue(profile, ['company_name', 'name']) || 'HR company profile',
+      verified: Boolean(profile.is_verified || user.is_hr_approved || user.is_email_verified),
+      fields: [
+        { label: 'Company Name', value: getRowValue(profile, ['company_name', 'name']) },
+        { label: 'Sector', value: getRowValue(profile, ['sector_name', 'industry_type', 'sector', 'company_sector']) },
+        { label: 'Company Type', value: getRowValue(profile, ['company_type', 'type']) },
+        { label: 'Employee Size', value: getRowValue(profile, ['employee_size', 'company_size']) },
+        { label: 'Website', value: getRowValue(profile, ['website_url', 'website', 'company_website']) },
+        { label: 'Location', value: getRowValue(profile, ['location', 'company_location']) },
+        { label: 'State', value: getRowValue(profile, ['state_name', 'state', 'company_state']) },
+        { label: 'City', value: getRowValue(profile, ['district_name', 'city', 'district', 'company_city']) },
+        { label: 'Pincode', value: getRowValue(profile, ['pincode', 'postal_code']) },
+        { label: 'Contact Person', value: getRowValue(profile, ['contact_person', 'hr_name', 'admin_name']) },
+        { label: 'Contact Email', value: getRowValue(profile, ['contact_email', 'hr_email', 'email']) },
+        { label: 'Contact Phone', value: getRowValue(profile, ['contact_phone', 'phone', 'mobile']) }
+      ]
+    };
+  }
+
+  if (role === ROLES.CAMPUS_CONNECT) {
+    const profile = campusProfile || {};
+    return {
+      type: 'campus',
+      title: getRowValue(profile, ['name', 'college_name']) || 'Campus profile',
+      verified: Boolean(profile.is_verified || user.is_email_verified),
+      fields: [
+        { label: 'College Name', value: getRowValue(profile, ['name', 'college_name']) },
+        { label: 'City', value: getRowValue(profile, ['city']) },
+        { label: 'State', value: getRowValue(profile, ['state']) },
+        { label: 'Affiliation', value: getRowValue(profile, ['affiliation', 'university']) },
+        { label: 'Established Year', value: getRowValue(profile, ['established_year', 'year_established']) },
+        { label: 'Website', value: getRowValue(profile, ['website', 'college_website']) },
+        { label: 'Placement Officer', value: getRowValue(profile, ['placement_officer_name', 'contact_person']) },
+        { label: 'Contact Email', value: getRowValue(profile, ['contact_email', 'email']) },
+        { label: 'Contact Phone', value: getRowValue(profile, ['contact_phone', 'phone']) },
+        { label: 'Overview', value: getRowValue(profile, ['overview', 'about', 'description']) }
+      ]
+    };
+  }
+
+  const profile = studentProfile || {};
+  return {
+    type: 'student',
+    title: getRowValue(profile, ['headline', 'current_role']) || 'Student profile',
+    verified: Boolean(profile.identity_verified || user.is_email_verified),
+    fields: [
+      { label: 'Headline', value: getRowValue(profile, ['headline', 'current_role']) },
+      { label: 'Location', value: getRowValue(profile, ['location', 'city']) },
+      { label: 'College', value: getRowValue(profile, ['college_name', 'college']) },
+      { label: 'Degree', value: getRowValue(profile, ['degree']) },
+      { label: 'Branch', value: getRowValue(profile, ['branch']) },
+      { label: 'Batch Year', value: getRowValue(profile, ['batch_year']) },
+      { label: 'Experience', value: getRowValue(profile, ['experience', 'experience_level']) },
+      { label: 'Skills', value: getRowValue(profile, ['skills']) },
+      { label: 'Resume URL', value: getRowValue(profile, ['resume_url']) }
+    ]
+  };
+};
+
+const firstRow = (rows = []) => (Array.isArray(rows) && rows.length ? rows[0] : null);
+
 const fetchCombinedSystemLogs = async ({ level = '', module = '' } = {}) => {
   const systemWhere = [];
   const systemParams = [];
@@ -588,11 +668,25 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       OR u.email LIKE ?
       OR u.mobile LIKE ?
       OR hp.company_name LIKE ?
+      OR hp.company_website LIKE ?
+      OR hp.industry_type LIKE ?
+      OR hp.sector_name LIKE ?
+      OR hp.location LIKE ?
+      OR hp.state_name LIKE ?
+      OR hp.district_name LIKE ?
       OR c.name LIKE ?
       OR c.contact_email LIKE ?
+      OR c.contact_phone LIKE ?
+      OR c.city LIKE ?
+      OR c.state LIKE ?
+      OR sp.headline LIKE ?
+      OR sp.location LIKE ?
       OR sp.resume_url LIKE ?
     )`);
-    params.push(like, like, like, like, like, like, like, like);
+    params.push(
+      like, like, like, like, like, like, like, like, like, like, like,
+      like, like, like, like, like, like, like, like
+    );
   }
 
   if (role) {
@@ -621,6 +715,8 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         u.last_login_at,
         hp.company_name,
         hp.location AS hr_location,
+        hp.state_name AS hr_state,
+        hp.district_name AS hr_city,
         hp.is_verified AS hr_verified,
         sp.headline,
         sp.location AS student_location,
@@ -672,9 +768,10 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     params
   );
 
-  const results = rows.map((row) => {
+  const uniqueRows = [...new Map(rows.map((row) => [row.id, row])).values()];
+  const results = uniqueRows.map((row) => {
     const normalizedRole = normalizeLogText(row.role);
-    const links = buildUserLinks(normalizedRole);
+    const links = buildSupportContextLinks(row.id);
     const headline = row.company_name || row.campus_name || row.headline || row.email || '-';
     const location = row.hr_location
       || row.student_location
@@ -707,6 +804,184 @@ router.get('/command-search', asyncHandler(async (req, res) => {
   });
 
   res.send({ status: true, results, total: results.length });
+}));
+
+router.get('/users/:id/support-context', asyncHandler(async (req, res) => {
+  const userId = String(req.params.id || '').trim();
+  if (!userId) return res.status(400).send({ status: false, message: 'User id is required' });
+
+  const user = firstRow(await safeQueryRows(`
+    SELECT id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `, [userId]));
+
+  if (!user) return res.status(404).send({ status: false, message: 'User not found' });
+
+  const role = normalizeLogText(user.role);
+  const [
+    hrProfileRows,
+    studentProfileRows,
+    campusProfileRows,
+    jobCountRows,
+    studentApplicationCountRows,
+    hrApplicationCountRows,
+    auditCountRows,
+    systemCountRows,
+    recentJobs,
+    recentStudentApplications,
+    recentHrApplications,
+    recentRolePurchases,
+    recentJobPlanPurchases,
+    recentJobPayments,
+    recentAuditRows,
+    recentSystemRows
+  ] = await Promise.all([
+    safeQueryRows('SELECT * FROM hr_profiles WHERE user_id = ? LIMIT 1', [userId]),
+    safeQueryRows('SELECT * FROM student_profiles WHERE user_id = ? LIMIT 1', [userId]),
+    safeQueryRows('SELECT * FROM colleges WHERE user_id = ? LIMIT 1', [userId]),
+    safeQueryRows("SELECT COUNT(*) AS total FROM jobs WHERE created_by = ? AND COALESCE(status, '') <> ?", [userId, JOB_STATUSES.DELETED]),
+    safeQueryRows('SELECT COUNT(*) AS total FROM applications WHERE applicant_id = ?', [userId]),
+    safeQueryRows(`
+      SELECT COUNT(*) AS total
+      FROM applications a
+      INNER JOIN jobs j ON j.id = a.job_id
+      WHERE j.created_by = ?
+    `, [userId]),
+    safeQueryRows('SELECT COUNT(*) AS total FROM audit_logs WHERE user_id = ?', [userId]),
+    safeQueryRows('SELECT COUNT(*) AS total FROM system_logs WHERE actor_id = ?', [userId]),
+    safeQueryRows(`
+      SELECT id, title, status, approval_status, created_at
+      FROM jobs
+      WHERE created_by = ?
+      ORDER BY created_at DESC
+      LIMIT 12
+    `, [userId]),
+    safeQueryRows(`
+      SELECT a.id, a.status, a.created_at, j.title AS job_title
+      FROM applications a
+      LEFT JOIN jobs j ON j.id = a.job_id
+      WHERE a.applicant_id = ?
+      ORDER BY a.created_at DESC
+      LIMIT 12
+    `, [userId]),
+    safeQueryRows(`
+      SELECT a.id, a.status, a.created_at, j.title AS job_title
+      FROM applications a
+      INNER JOIN jobs j ON j.id = a.job_id
+      WHERE j.created_by = ?
+      ORDER BY a.created_at DESC
+      LIMIT 12
+    `, [userId]),
+    safeQueryRows('SELECT * FROM role_plan_purchases WHERE user_id = ? ORDER BY created_at DESC LIMIT 8', [userId]),
+    safeQueryRows('SELECT * FROM job_plan_purchases WHERE hr_id = ? ORDER BY created_at DESC LIMIT 8', [userId]),
+    safeQueryRows('SELECT * FROM job_payments WHERE hr_id = ? ORDER BY created_at DESC LIMIT 8', [userId]),
+    safeQueryRows(`
+      SELECT id, action, entity_type, details, created_at
+      FROM audit_logs
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT 20
+    `, [userId]),
+    safeQueryRows(`
+      SELECT id, action, module, level, details, created_at
+      FROM system_logs
+      WHERE actor_id = ?
+      ORDER BY created_at DESC
+      LIMIT 20
+    `, [userId])
+  ]);
+
+  const hrProfile = firstRow(hrProfileRows);
+  const studentProfile = firstRow(studentProfileRows);
+  const campusProfile = firstRow(campusProfileRows);
+  const profile = buildProfileContext({ user, hrProfile, studentProfile, campusProfile });
+  const paymentRows = [
+    ...(recentRolePurchases || []).map((row) => ({ ...row, source: 'role_plan_purchase' })),
+    ...(recentJobPlanPurchases || []).map((row) => ({ ...row, source: 'job_plan_purchase' })),
+    ...(recentJobPayments || []).map((row) => ({ ...row, source: 'job_payment' }))
+  ]
+    .sort((left, right) => new Date(right.created_at || 0) - new Date(left.created_at || 0))
+    .slice(0, 12)
+    .map((row) => ({
+      id: row.id,
+      source: row.source,
+      label: row.plan_name || row.plan || row.job_type || row.source,
+      amount: row.amount || row.total_amount || row.paid_amount || row.price || 0,
+      status: row.status || row.payment_status || 'pending',
+      createdAt: row.created_at || null
+    }));
+
+  const activityRows = [
+    ...(recentAuditRows || []).map((row) => ({
+      id: `audit-${row.id}`,
+      action: row.action || row.entity_type || 'activity',
+      module: row.entity_type || 'audit',
+      level: 'info',
+      details: row.details || '',
+      createdAt: row.created_at || null
+    })),
+    ...(recentSystemRows || []).map((row) => ({
+      id: `system-${row.id}`,
+      action: row.action || 'system_event',
+      module: row.module || 'system',
+      level: row.level || 'info',
+      details: row.details || '',
+      createdAt: row.created_at || null
+    }))
+  ].sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0));
+
+  const applications = [
+    ...(recentStudentApplications || []),
+    ...(recentHrApplications || [])
+  ]
+    .sort((left, right) => new Date(right.created_at || 0) - new Date(left.created_at || 0))
+    .slice(0, 12)
+    .map((row) => ({
+      id: row.id,
+      title: row.job_title || 'Application',
+      status: row.status || '-',
+      createdAt: row.created_at || null
+    }));
+
+  const metrics = {
+    jobs: Number(firstRow(jobCountRows)?.total || 0),
+    applications: Number(firstRow(studentApplicationCountRows)?.total || 0) + Number(firstRow(hrApplicationCountRows)?.total || 0),
+    payments: paymentRows.length,
+    activityEvents: Number(firstRow(auditCountRows)?.total || 0) + Number(firstRow(systemCountRows)?.total || 0)
+  };
+
+  res.send({
+    status: true,
+    context: {
+      user: {
+        id: user.id,
+        name: user.name || '-',
+        email: user.email || '-',
+        phone: user.mobile || '-',
+        role,
+        status: user.status || USER_STATUSES.ACTIVE,
+        createdAt: user.created_at || null,
+        updatedAt: null,
+        lastActiveAt: user.last_login_at || null
+      },
+      profile,
+      metrics,
+      recent: {
+        jobs: (recentJobs || []).map((row) => ({
+          id: row.id,
+          title: row.title || '-',
+          status: row.status || row.approval_status || '-',
+          createdAt: row.created_at || null
+        })),
+        applications,
+        payments: paymentRows,
+        activity: activityRows
+      },
+      links: buildSupportContextLinks(user.id)
+    }
+  });
 }));
 
 router.post('/users', asyncHandler(async (req, res) => {
