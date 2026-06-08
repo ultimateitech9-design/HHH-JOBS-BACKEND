@@ -388,6 +388,14 @@ const getCommandSearchActivityPath = (user = {}) => {
   return `/portal/super-admin/system-logs?search=${search}`;
 };
 
+const getCommandSearchStatusFilter = (value = '') => {
+  const status = normalizeLogText(value);
+  if (!status) return [];
+  if (status === 'restricted') return [USER_STATUSES.BLOCKED, USER_STATUSES.BANNED];
+  if ([USER_STATUSES.ACTIVE, USER_STATUSES.BLOCKED, USER_STATUSES.BANNED].includes(status)) return [status];
+  return [];
+};
+
 const getRowValue = (row = {}, keys = []) => {
   for (const key of keys) {
     const value = row[key];
@@ -705,7 +713,7 @@ router.get('/users', asyncHandler(async (req, res) => {
 router.get('/command-search', asyncHandler(async (req, res) => {
   const search = String(req.query.q || req.query.search || '').trim();
   const roleFilters = getCommandSearchRoleFilter(req.query.role);
-  const accountStatus = normalizeLogText(req.query.status);
+  const statusFilters = getCommandSearchStatusFilter(req.query.status);
   const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '20', 10)));
   const where = [];
   const params = [];
@@ -765,9 +773,9 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     params.push(...roleFilters);
   }
 
-  if (accountStatus) {
-    where.push('LOWER(u.status) = ?');
-    params.push(accountStatus);
+  if (statusFilters.length) {
+    where.push(`LOWER(u.status) IN (${statusFilters.map(() => '?').join(', ')})`);
+    params.push(...statusFilters);
   }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -964,7 +972,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         OR REGEXP_REPLACE(COALESCE(sl.contact_phone, ''), '[^0-9]', '') LIKE ?` : ''}
       )
       ${roleFilters.length ? `AND LOWER(u.role) IN (${roleFilters.map(() => '?').join(', ')})` : ''}
-      ${accountStatus ? 'AND LOWER(u.status) = ?' : ''}
+      ${statusFilters.length ? `AND LOWER(u.status) IN (${statusFilters.map(() => '?').join(', ')})` : ''}
       ORDER BY
         CASE
           WHEN LOWER(COALESCE(sc.email, '')) = ? THEN 0
@@ -983,7 +991,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       ...Array(10).fill(`%${normalizedSearch}%`),
       ...(searchDigits ? [`%${searchDigits}%`, `%${searchDigits}%`] : []),
       ...(roleFilters.length ? roleFilters : []),
-      ...(accountStatus ? [accountStatus] : []),
+      ...(statusFilters.length ? statusFilters : []),
       normalizedSearch,
       normalizedSearch,
       searchDigits,
