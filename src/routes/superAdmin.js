@@ -354,9 +354,10 @@ const buildUserLinks = (role = '') => {
   return { dashboard: '/portal/super-admin/dashboard', profile: '/portal/super-admin/dashboard' };
 };
 
-const buildSupportContextLinks = (userId) => ({
+const buildSupportContextLinks = (userId, role = '') => ({
   dashboard: `/portal/super-admin/users/${encodeURIComponent(userId)}/dashboard`,
-  profile: `/portal/super-admin/users/${encodeURIComponent(userId)}/profile`
+  profile: `/portal/super-admin/users/${encodeURIComponent(userId)}/profile`,
+  live: buildUserLinks(role)
 });
 
 const getCommandSearchRoleFilter = (value = '') => {
@@ -1005,7 +1006,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     const normalizedRole = normalizeLogText(row.role);
     const contextType = getCommandSearchContextType(normalizedRole);
     const isEmployeeRecord = contextType === 'employee_record';
-    const supportLinks = buildSupportContextLinks(row.id);
+    const supportLinks = buildSupportContextLinks(row.id, normalizedRole);
     const links = {
       ...supportLinks,
       activityLog: getCommandSearchActivityPath({ id: row.id, email: row.email, role: normalizedRole }),
@@ -1235,7 +1236,7 @@ router.get('/users/:id/support-context', asyncHandler(async (req, res) => {
         payments: paymentRows,
         activity: activityRows
       },
-      links: buildSupportContextLinks(user.id)
+      links: buildSupportContextLinks(user.id, role)
     }
   });
 }));
