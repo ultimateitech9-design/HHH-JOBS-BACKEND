@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES, USER_STATUSES, JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
-const { Database, countRows, countRowsByColumn, sendDatabaseError, sumRows } = require('../db');
+const { Database, countRows, countRowsByColumn, queryRows, sendDatabaseError, sumRows } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { resetMaintenanceModeCache } = require('../middleware/maintenance');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
@@ -67,6 +67,102 @@ const enrichManagedUsers = async (users = []) => {
 const isLiveCampusDriveStatus = (value = '') => !['completed', 'cancelled', 'closed', 'archived'].includes(String(value || '').toLowerCase());
 
 const SYSTEM_LOG_FETCH_LIMIT = 5000;
+
+const ACTIVITY_ROLE_GROUPS = {
+  student: new Set([ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, 'professional']),
+  hr: new Set([ROLES.HR, 'company_admin']),
+  campus: new Set([ROLES.CAMPUS_CONNECT])
+};
+
+const DEFAULT_ROLE_PERMISSIONS = [
+  {
+    role: ROLES.SUPER_ADMIN,
+    permissions: {
+      '*': { read: true, write: true, delete: true }
+    }
+  },
+  {
+    role: ROLES.ADMIN,
+    permissions: {
+      users: { read: true, write: true },
+      commandSearch: { read: true },
+      companies: { read: true, write: true },
+      campuses: { read: true, write: true },
+      jobs: { read: true, write: true },
+      applications: { read: true },
+      payments: { read: true, write: true },
+      reports: { read: true },
+      activityLogs: { read: true },
+      logs: { read: true },
+      support: { read: true, write: true },
+      roles: { read: true, write: true }
+    }
+  },
+  {
+    role: ROLES.SUPPORT,
+    permissions: {
+      users: { read: true },
+      commandSearch: { read: true },
+      companies: { read: true },
+      campuses: { read: true },
+      jobs: { read: true },
+      applications: { read: true },
+      reports: { read: true },
+      activityLogs: { read: true },
+      logs: { read: true },
+      support: { read: true, write: true }
+    }
+  },
+  {
+    role: ROLES.ACCOUNTS,
+    permissions: {
+      users: { read: true },
+      companies: { read: true },
+      payments: { read: true, write: true },
+      reports: { read: true },
+      logs: { read: true }
+    }
+  },
+  {
+    role: ROLES.SALES,
+    permissions: {
+      users: { read: true },
+      companies: { read: true },
+      campuses: { read: true },
+      payments: { read: true },
+      reports: { read: true }
+    }
+  },
+  {
+    role: ROLES.DATAENTRY,
+    permissions: {
+      jobs: { read: true, write: true },
+      reports: { read: true }
+    }
+  },
+  {
+    role: ROLES.HR,
+    permissions: {
+      jobs: { read: true, write: true },
+      applications: { read: true },
+      payments: { read: true }
+    }
+  },
+  {
+    role: ROLES.CAMPUS_CONNECT,
+    permissions: {
+      campuses: { read: true, write: true },
+      reports: { read: true }
+    }
+  },
+  {
+    role: ROLES.STUDENT,
+    permissions: {
+      jobs: { read: true },
+      applications: { read: true }
+    }
+  }
+];
 
 const getCount = (countMap, key) => Number(countMap.get(String(key || '').toLowerCase()) || 0);
 const sumCountMap = (countMap) => [...countMap.values()].reduce((sum, value) => sum + Number(value || 0), 0);
@@ -153,6 +249,8 @@ const applySystemLogFilters = (logs = [], filters = {}) => {
   const level = normalizeLogText(filters.level);
   const module = normalizeLogText(filters.module);
   const actorRole = normalizeLogText(filters.actorRole);
+  const roleGroup = normalizeLogText(filters.roleGroup);
+  const roleGroupSet = ACTIVITY_ROLE_GROUPS[roleGroup] || null;
 
   return logs.filter((item) => {
     const matchesSearch = !search || [
@@ -170,8 +268,9 @@ const applySystemLogFilters = (logs = [], filters = {}) => {
     const matchesLevel = !level || normalizeLogText(item.level) === level;
     const matchesModule = !module || normalizeLogText(item.module) === module;
     const matchesActorRole = !actorRole || normalizeLogText(item.actorRole) === actorRole;
+    const matchesRoleGroup = !roleGroupSet || roleGroupSet.has(normalizeLogText(item.actorRole));
 
-    return matchesSearch && matchesLevel && matchesModule && matchesActorRole;
+    return matchesSearch && matchesLevel && matchesModule && matchesActorRole && matchesRoleGroup;
   });
 };
 
@@ -180,6 +279,141 @@ const sortLogsByTime = (left, right) => {
   const rightTime = new Date(right.createdAt || 0).getTime();
   return rightTime - leftTime;
 };
+
+const isMissingDatabaseObjectError = (error = {}) => (
+  ['ER_NO_SUCH_TABLE', 'ER_BAD_FIELD_ERROR', 'ER_SP_DOES_NOT_EXIST'].includes(error.code)
+    || /doesn't exist|unknown column|does not exist/i.test(error.message || '')
+);
+
+const safeQueryRows = async (sql, params = []) => {
+  try {
+    return await queryRows(sql, params);
+  } catch (error) {
+    if (isMissingDatabaseObjectError(error)) {
+      console.warn(`[super-admin] Skipping optional query: ${error.message}`);
+      return [];
+    }
+    throw error;
+  }
+};
+
+const normalizePaymentStatus = (value = '') => {
+  const status = normalizeLogText(value);
+  if (['paid', 'captured', 'completed', 'success', 'successful', 'authorized'].includes(status)) return 'paid';
+  if (['fail', 'failed', 'error', 'declined'].includes(status)) return 'failed';
+  if (['refund', 'refunded'].includes(status)) return 'refunded';
+  if (['past_due', 'overdue'].includes(status)) return 'past_due';
+  if (['cancelled', 'canceled'].includes(status)) return 'cancelled';
+  return status || 'pending';
+};
+
+const normalizeAmount = (value) => Number(value || 0);
+
+const buildUserLinks = (role = '') => {
+  const normalizedRole = normalizeLogText(role);
+  if (normalizedRole === ROLES.HR || normalizedRole === 'company_admin') {
+    return { dashboard: '/portal/hr/dashboard', profile: '/portal/hr/profile' };
+  }
+  if (normalizedRole === ROLES.CAMPUS_CONNECT) {
+    return { dashboard: '/portal/campus-connect/dashboard', profile: '/portal/campus-connect/profile' };
+  }
+  if (normalizedRole === ROLES.STUDENT || normalizedRole === ROLES.RETIRED_EMPLOYEE || normalizedRole === 'professional') {
+    return { dashboard: '/portal/student/dashboard', profile: '/portal/student/profile' };
+  }
+  if (normalizedRole === ROLES.SUPPORT) return { dashboard: '/portal/support/dashboard', profile: '/portal/support/profile' };
+  if (normalizedRole === ROLES.ACCOUNTS) return { dashboard: '/portal/accounts/dashboard', profile: '/portal/accounts/profile' };
+  if (normalizedRole === ROLES.SALES) return { dashboard: '/portal/sales/dashboard', profile: '/portal/sales/profile' };
+  if (normalizedRole === ROLES.DATAENTRY) return { dashboard: '/portal/data-entry/dashboard', profile: '/portal/data-entry/profile' };
+  return { dashboard: '/portal/super-admin/dashboard', profile: '/portal/super-admin/dashboard' };
+};
+
+const fetchCombinedSystemLogs = async ({ level = '', module = '' } = {}) => {
+  const systemWhere = [];
+  const systemParams = [];
+
+  if (['info', 'warning', 'error', 'critical'].includes(level)) {
+    systemWhere.push('level = ?');
+    systemParams.push(level);
+  }
+
+  if (module) {
+    systemWhere.push('module = ?');
+    systemParams.push(module);
+  }
+
+  const systemWhereSql = systemWhere.length ? `WHERE ${systemWhere.join(' AND ')}` : '';
+  const [systemRows, auditRows] = await Promise.all([
+    safeQueryRows(`
+      SELECT id, action, module, level, actor_id, actor_name, actor_role, details, created_at
+      FROM system_logs
+      ${systemWhereSql}
+      ORDER BY created_at DESC
+      LIMIT ?
+    `, [...systemParams, SYSTEM_LOG_FETCH_LIMIT]),
+    safeQueryRows(`
+      SELECT id, user_id, action, entity_type, entity_id, details, ip_address, created_at
+      FROM audit_logs
+      ORDER BY created_at DESC
+      LIMIT ?
+    `, [SYSTEM_LOG_FETCH_LIMIT])
+  ]);
+
+  const userIds = [...new Set(auditRows.map((row) => row.user_id).filter(Boolean))];
+
+  let userLookup = new Map();
+  if (userIds.length) {
+    const placeholders = userIds.map(() => '?').join(', ');
+    const users = await safeQueryRows(
+      `SELECT id, name, email, role FROM users WHERE id IN (${placeholders})`,
+      userIds
+    );
+    userLookup = new Map((users || []).map((user) => [user.id, user]));
+  }
+
+  const allLogs = [
+    ...(systemRows || []).map(mapSystemLogRow),
+    ...auditRows.map((row) => mapAuditRowToSystemLog(row, userLookup))
+  ].sort(sortLogsByTime);
+
+  return {
+    allLogs,
+    actorRoles: [...new Set(allLogs.map((item) => normalizeLogText(item.actorRole)).filter(Boolean))].sort(),
+    modules: [...new Set(allLogs.map((item) => normalizeLogText(item.module)).filter(Boolean))].sort()
+  };
+};
+
+const buildSystemLogResponse = ({ allLogs = [], actorRoles = [], modules = [], filters = {}, page = 1, limit = 50 }) => {
+  const filteredLogs = applySystemLogFilters(allLogs, filters);
+  const total = filteredLogs.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const offset = (safePage - 1) * limit;
+  const logs = filteredLogs.slice(offset, offset + limit);
+  const summary = {
+    totalEvents: total,
+    criticalEvents: filteredLogs.filter((item) => normalizeLogText(item.level) === 'critical').length,
+    warningEvents: filteredLogs.filter((item) => normalizeLogText(item.level) === 'warning').length,
+    managementActions: filteredLogs.filter((item) => normalizeLogText(item.actorRole) !== 'system').length
+  };
+
+  return {
+    logs,
+    summary,
+    actorRoles,
+    modules,
+    pagination: {
+      page: safePage,
+      limit,
+      total,
+      totalPages
+    }
+  };
+};
+
+const buildRolePermissionsFallback = () => DEFAULT_ROLE_PERMISSIONS.map((role) => ({
+  ...role,
+  permissions: JSON.parse(JSON.stringify(role.permissions))
+}));
 
 // =============================================
 // Dashboard
@@ -330,6 +564,143 @@ router.get('/users', asyncHandler(async (req, res) => {
 
   const users = await enrichManagedUsers(data || []);
   res.send({ status: true, users, total: count || 0, page, limit });
+}));
+
+router.get('/command-search', asyncHandler(async (req, res) => {
+  const search = String(req.query.q || req.query.search || '').trim();
+  const role = normalizeLogText(req.query.role);
+  const accountStatus = normalizeLogText(req.query.status);
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '20', 10)));
+  const where = [];
+  const params = [];
+
+  if (search) {
+    const like = `%${search}%`;
+    where.push(`(
+      u.id LIKE ?
+      OR u.name LIKE ?
+      OR u.email LIKE ?
+      OR u.mobile LIKE ?
+      OR hp.company_name LIKE ?
+      OR c.name LIKE ?
+      OR c.contact_email LIKE ?
+      OR sp.resume_url LIKE ?
+    )`);
+    params.push(like, like, like, like, like, like, like, like);
+  }
+
+  if (role) {
+    where.push('LOWER(u.role) = ?');
+    params.push(role);
+  }
+
+  if (accountStatus) {
+    where.push('LOWER(u.status) = ?');
+    params.push(accountStatus);
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = await safeQueryRows(
+    `
+      SELECT
+        u.id,
+        u.name,
+        u.email,
+        u.mobile,
+        u.role,
+        u.status,
+        u.is_hr_approved,
+        u.is_email_verified,
+        u.created_at,
+        u.last_login_at,
+        hp.company_name,
+        hp.location AS hr_location,
+        hp.is_verified AS hr_verified,
+        sp.headline,
+        sp.location AS student_location,
+        sp.identity_verified,
+        c.name AS campus_name,
+        c.city AS campus_city,
+        c.state AS campus_state,
+        COALESCE(job_counts.total_jobs, 0) AS total_jobs,
+        COALESCE(application_counts.total_applications, 0) AS total_applications,
+        COALESCE(payment_counts.total_payments, 0) AS total_payments,
+        COALESCE(activity_counts.total_activity, 0) AS total_activity
+      FROM users u
+      LEFT JOIN hr_profiles hp ON hp.user_id = u.id
+      LEFT JOIN student_profiles sp ON sp.user_id = u.id
+      LEFT JOIN colleges c ON c.user_id = u.id
+      LEFT JOIN (
+        SELECT created_by AS user_id, COUNT(*) AS total_jobs
+        FROM jobs
+        WHERE created_by IS NOT NULL
+        GROUP BY created_by
+      ) job_counts ON job_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT applicant_id AS user_id, COUNT(*) AS total_applications
+        FROM applications
+        WHERE applicant_id IS NOT NULL
+        GROUP BY applicant_id
+      ) application_counts ON application_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) AS total_payments
+        FROM (
+          SELECT hr_id AS user_id FROM job_plan_purchases WHERE hr_id IS NOT NULL
+          UNION ALL
+          SELECT user_id FROM role_plan_purchases WHERE user_id IS NOT NULL
+          UNION ALL
+          SELECT hr_id AS user_id FROM job_payments WHERE hr_id IS NOT NULL
+        ) payment_sources
+        GROUP BY user_id
+      ) payment_counts ON payment_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) AS total_activity
+        FROM audit_logs
+        WHERE user_id IS NOT NULL
+        GROUP BY user_id
+      ) activity_counts ON activity_counts.user_id = u.id
+      ${whereSql}
+      ORDER BY u.last_login_at DESC, u.created_at DESC
+      LIMIT ${limit}
+    `,
+    params
+  );
+
+  const results = rows.map((row) => {
+    const normalizedRole = normalizeLogText(row.role);
+    const links = buildUserLinks(normalizedRole);
+    const headline = row.company_name || row.campus_name || row.headline || row.email || '-';
+    const location = row.hr_location
+      || row.student_location
+      || [row.campus_city, row.campus_state].filter(Boolean).join(', ')
+      || '-';
+
+    return {
+      id: row.id,
+      name: row.name || '-',
+      email: row.email || '-',
+      phone: row.mobile || '-',
+      role: normalizedRole || 'user',
+      status: row.status || 'active',
+      company: row.company_name || row.campus_name || '-',
+      createdAt: row.created_at || null,
+      lastActiveAt: row.last_login_at || null,
+      profile: {
+        headline,
+        location,
+        verified: Boolean(row.is_email_verified || row.hr_verified || row.identity_verified || row.is_hr_approved)
+      },
+      metrics: {
+        jobs: Number(row.total_jobs || 0),
+        applications: Number(row.total_applications || 0),
+        payments: Number(row.total_payments || 0),
+        activityEvents: Number(row.total_activity || 0)
+      },
+      links
+    };
+  });
+
+  res.send({ status: true, results, total: results.length });
 }));
 
 router.post('/users', asyncHandler(async (req, res) => {
@@ -818,39 +1189,219 @@ router.get('/applications', asyncHandler(async (req, res) => {
 // Payments
 // =============================================
 router.get('/payments', asyncHandler(async (req, res) => {
+  const search = normalizeLogText(req.query.search);
+  const status = normalizeLogText(req.query.status);
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
-  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
-  const offset = (page - 1) * limit;
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
 
-  const { data, error, count } = await Database
-    .from('job_plan_purchases')
-    .select(`
-      id, plan_slug, quantity, total_amount, currency, status, provider, paid_at, created_at,
-      users!inner(id, name, email)
-    `, { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+  const [jobPlanRows, rolePlanRows, jobPaymentRows, accountTransactionRows] = await Promise.all([
+    safeQueryRows(`
+      SELECT
+        CONCAT('job_plan:', j.id) AS id,
+        'job_plan' AS source,
+        j.id AS source_id,
+        j.plan_slug AS item,
+        j.total_amount AS amount,
+        j.currency,
+        j.status,
+        j.provider AS method,
+        j.reference_id,
+        j.paid_at,
+        j.created_at,
+        u.id AS user_id,
+        u.name AS user_name,
+        u.email AS user_email,
+        u.role AS user_role,
+        hp.company_name AS company_name
+      FROM job_plan_purchases j
+      LEFT JOIN users u ON u.id = j.hr_id
+      LEFT JOIN hr_profiles hp ON hp.user_id = j.hr_id
+    `),
+    safeQueryRows(`
+      SELECT
+        CONCAT('role_plan:', r.id) AS id,
+        'role_plan' AS source,
+        r.id AS source_id,
+        CONCAT(COALESCE(r.audience_role, 'role'), ' / ', COALESCE(r.role_plan_slug, 'plan')) AS item,
+        r.total_amount AS amount,
+        r.currency,
+        r.status,
+        r.provider AS method,
+        r.reference_id,
+        r.paid_at,
+        r.created_at,
+        u.id AS user_id,
+        u.name AS user_name,
+        u.email AS user_email,
+        u.role AS user_role,
+        COALESCE(hp.company_name, c.name) AS company_name
+      FROM role_plan_purchases r
+      LEFT JOIN users u ON u.id = r.user_id
+      LEFT JOIN hr_profiles hp ON hp.user_id = r.user_id
+      LEFT JOIN colleges c ON c.user_id = r.user_id
+    `),
+    safeQueryRows(`
+      SELECT
+        CONCAT('job_payment:', p.id) AS id,
+        'job_payment' AS source,
+        p.id AS source_id,
+        COALESCE(j.title, j.job_title, p.note, 'Job payment') AS item,
+        p.amount,
+        p.currency,
+        p.status,
+        p.provider AS method,
+        p.reference_id,
+        p.paid_at,
+        p.created_at,
+        u.id AS user_id,
+        u.name AS user_name,
+        u.email AS user_email,
+        u.role AS user_role,
+        COALESCE(hp.company_name, j.company_name) AS company_name
+      FROM job_payments p
+      LEFT JOIN users u ON u.id = p.hr_id
+      LEFT JOIN hr_profiles hp ON hp.user_id = p.hr_id
+      LEFT JOIN jobs j ON j.id = p.job_id
+    `),
+    safeQueryRows(`
+      SELECT
+        CONCAT('account_transaction:', t.id) AS id,
+        'account_transaction' AS source,
+        t.id AS source_id,
+        COALESCE(t.description, t.reference, 'Account transaction') AS item,
+        t.amount,
+        t.currency,
+        t.status,
+        t.payment_method AS method,
+        t.reference AS reference_id,
+        NULL AS paid_at,
+        t.created_at,
+        u.id AS user_id,
+        COALESCE(u.name, t.customer_name) AS user_name,
+        COALESCE(u.email, t.customer_email) AS user_email,
+        u.role AS user_role,
+        hp.company_name AS company_name
+      FROM accounts_transactions t
+      LEFT JOIN users u ON u.email = t.customer_email
+      LEFT JOIN hr_profiles hp ON hp.user_id = u.id
+    `)
+  ]);
 
-  if (error) { sendDatabaseError(res, error); return; }
+  const allPayments = [
+    ...jobPlanRows,
+    ...rolePlanRows,
+    ...jobPaymentRows,
+    ...accountTransactionRows
+  ].map((payment) => ({
+    ...payment,
+    status: normalizePaymentStatus(payment.status),
+    amount: normalizeAmount(payment.amount),
+    company: payment.company_name || payment.user_name || payment.user_email || '-'
+  })).filter((payment) => {
+    const matchesStatus = !status || payment.status === status;
+    const matchesSearch = !search || [
+      payment.id,
+      payment.source,
+      payment.source_id,
+      payment.item,
+      payment.company,
+      payment.user_name,
+      payment.user_email,
+      payment.user_role,
+      payment.method,
+      payment.reference_id
+    ].some((value) => normalizeLogText(value).includes(search));
 
-  res.send({ status: true, payments: data || [], total: count || 0, page, limit });
+    return matchesStatus && matchesSearch;
+  }).sort((left, right) => {
+    const leftTime = new Date(left.created_at || left.paid_at || 0).getTime();
+    const rightTime = new Date(right.created_at || right.paid_at || 0).getTime();
+    return rightTime - leftTime;
+  });
+
+  const summary = {
+    totalPayments: allPayments.length,
+    collectedRevenue: allPayments
+      .filter((payment) => payment.status === 'paid')
+      .reduce((sum, payment) => sum + payment.amount, 0),
+    pendingPayments: allPayments.filter((payment) => payment.status === 'pending').length,
+    refundedPayments: allPayments.filter((payment) => payment.status === 'refunded').length,
+    failedPayments: allPayments.filter((payment) => payment.status === 'failed').length
+  };
+
+  const sources = Object.values(allPayments.reduce((acc, payment) => {
+    const key = payment.source || 'unknown';
+    acc[key] = acc[key] || { source: key, total: 0, paid: 0, amount: 0 };
+    acc[key].total += 1;
+    if (payment.status === 'paid') {
+      acc[key].paid += 1;
+      acc[key].amount += payment.amount;
+    }
+    return acc;
+  }, {})).sort((left, right) => right.total - left.total);
+
+  const total = allPayments.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const safePage = Math.min(page, totalPages);
+  const safeOffset = (safePage - 1) * limit;
+  const payments = allPayments.slice(safeOffset, safeOffset + limit);
+
+  res.send({
+    status: true,
+    payments,
+    summary,
+    sources,
+    total,
+    page: safePage,
+    limit,
+    pagination: {
+      page: safePage,
+      limit,
+      total,
+      totalPages
+    }
+  });
 }));
 
 router.patch('/payments/:id/status', asyncHandler(async (req, res) => {
-  const paymentId = req.params.id;
+  const rawPaymentId = req.params.id;
   const newStatus = String(req.body?.status || '').toLowerCase();
+  const [source, sourceId] = rawPaymentId.includes(':')
+    ? rawPaymentId.split(':', 2)
+    : ['job_plan', rawPaymentId];
+
+  const sourceTableMap = {
+    job_plan: 'job_plan_purchases',
+    role_plan: 'role_plan_purchases',
+    job_payment: 'job_payments',
+    account_transaction: 'accounts_transactions'
+  };
+
+  const table = sourceTableMap[source];
+  if (!table) return res.status(400).send({ status: false, message: 'Unsupported payment source' });
+
+  const storedStatus = source === 'account_transaction' && newStatus === 'paid' ? 'completed' : newStatus;
 
   const { data, error } = await Database
-    .from('job_plan_purchases')
-    .update({ status: newStatus, updated_at: new Date().toISOString() })
-    .eq('id', paymentId)
-    .select('id, plan_slug, status, total_amount')
+    .from(table)
+    .update({ status: storedStatus, updated_at: new Date().toISOString() })
+    .eq('id', sourceId)
+    .select('*')
     .maybeSingle();
 
   if (error) { sendDatabaseError(res, error); return; }
   if (!data) return res.status(404).send({ status: false, message: 'Payment not found' });
 
-  res.send({ status: true, payment: data });
+  res.send({
+    status: true,
+    payment: {
+      ...data,
+      id: `${source}:${data.id}`,
+      source,
+      status: normalizePaymentStatus(data.status),
+      amount: normalizeAmount(data.amount || data.total_amount)
+    }
+  });
 }));
 
 // =============================================
@@ -871,7 +1422,27 @@ router.get('/subscriptions', asyncHandler(async (req, res) => {
 // Reports
 // =============================================
 router.get('/reports', asyncHandler(async (req, res) => {
-  const [userCount, jobCount, appCount, ticketCount, openTickets, revenue] = await Promise.all([
+  const now = new Date();
+  const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  const [
+    userCount,
+    jobCount,
+    appCount,
+    ticketCount,
+    openTickets,
+    revenue,
+    activeSubscriptions,
+    companyCount,
+    campusCount,
+    newUsers24h,
+    newUsers7d,
+    dbStatsRows,
+    recentActivityRows,
+    criticalRows,
+    monthlyRevenueRows
+  ] = await Promise.all([
     countRows('users'),
     countRows('jobs', (q) => q.neq('status', JOB_STATUSES.DELETED)),
     countRows('applications'),
@@ -880,8 +1451,85 @@ router.get('/reports', asyncHandler(async (req, res) => {
     sumRows('accounts_transactions', 'amount', [
       { column: 'type', operator: '=', value: 'credit' },
       { column: 'status', operator: '=', value: 'completed' }
-    ])
+    ]),
+    countRows('accounts_subscriptions', (q) => q.eq('status', 'active')),
+    countRows('hr_profiles'),
+    countRows('colleges'),
+    countRows('users', (q) => q.gte('created_at', dayAgo.toISOString())),
+    countRows('users', (q) => q.gte('created_at', weekAgo.toISOString())),
+    safeQueryRows(`
+      SELECT
+        COUNT(*) AS table_count,
+        ROUND(COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0) / 1024 / 1024, 2) AS database_size_mb
+      FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE()
+    `),
+    safeQueryRows(`
+      SELECT
+        COUNT(*) AS total_events,
+        COUNT(DISTINCT user_id) AS active_users
+      FROM audit_logs
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+    `),
+    safeQueryRows(`
+      SELECT
+        level,
+        COUNT(*) AS total
+      FROM system_logs
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+      GROUP BY level
+    `),
+    safeQueryRows(`
+      SELECT created_at, amount
+      FROM accounts_transactions
+      WHERE status = 'completed'
+        AND type = 'credit'
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+      UNION ALL
+      SELECT created_at, total_amount AS amount
+      FROM job_plan_purchases
+      WHERE status IN ('paid', 'completed', 'captured')
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+      UNION ALL
+      SELECT created_at, total_amount AS amount
+      FROM role_plan_purchases
+      WHERE status IN ('paid', 'completed', 'captured')
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+    `)
   ]);
+
+  const activity24h = recentActivityRows[0] || {};
+  const dbStats = dbStatsRows[0] || {};
+  const criticalEvents = criticalRows.reduce((sum, row) => {
+    const level = normalizeLogText(row.level);
+    return level === 'critical' || level === 'error' ? sum + Number(row.total || 0) : sum;
+  }, 0);
+  const warningEvents = criticalRows.reduce((sum, row) => {
+    const level = normalizeLogText(row.level);
+    return level === 'warning' ? sum + Number(row.total || 0) : sum;
+  }, 0);
+
+  const monthBuckets = new Map();
+  for (let index = 5; index >= 0; index -= 1) {
+    const month = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - index, 1));
+    const key = `${month.getUTCFullYear()}-${String(month.getUTCMonth() + 1).padStart(2, '0')}`;
+    monthBuckets.set(key, {
+      period: month.toLocaleString('en-US', { month: 'short' }),
+      revenue: 0
+    });
+  }
+
+  monthlyRevenueRows.forEach((row) => {
+    const date = new Date(row.created_at || row.createdAt || 0);
+    if (Number.isNaN(date.getTime())) return;
+    const key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+    if (!monthBuckets.has(key)) return;
+    monthBuckets.get(key).revenue += Number(row.amount || 0);
+  });
+
+  const trafficEvents = Number(activity24h.total_events || 0);
+  const activeUsers24h = Number(activity24h.active_users || 0);
+  const healthy = criticalEvents === 0 && openTickets < 20;
 
   res.send({
     status: true,
@@ -891,7 +1539,66 @@ router.get('/reports', asyncHandler(async (req, res) => {
       totalApplications: appCount,
       totalTickets: ticketCount,
       openTickets,
-      totalRevenue: revenue
+      totalRevenue: revenue,
+      moduleHealth: [
+        {
+          label: 'Website Health',
+          value: healthy ? 100 : Math.max(55, 100 - (criticalEvents * 12) - (warningEvents * 4)),
+          helper: healthy ? 'No critical runtime pressure in the last 24h' : `${criticalEvents} critical events and ${warningEvents} warnings in 24h`,
+          status: healthy ? 'healthy' : 'warning'
+        },
+        {
+          label: 'Database',
+          value: Number(dbStats.table_count || 0),
+          helper: `${Number(dbStats.database_size_mb || 0)} MB across active MySQL tables`,
+          status: Number(dbStats.table_count || 0) > 0 ? 'healthy' : 'warning'
+        },
+        {
+          label: 'Live Jobs',
+          value: jobCount,
+          helper: `${appCount} total candidate applications`,
+          status: jobCount > 0 ? 'healthy' : 'warning'
+        },
+        {
+          label: 'Support Load',
+          value: openTickets,
+          helper: `${ticketCount} tickets tracked overall`,
+          status: openTickets > 25 ? 'warning' : 'healthy'
+        }
+      ],
+      traffic: [
+        { label: 'Activity Events 24h', value: trafficEvents, helper: 'Audit events generated by users and system actions', status: trafficEvents > 0 ? 'healthy' : 'warning' },
+        { label: 'Active Users 24h', value: activeUsers24h, helper: 'Distinct authenticated users with tracked activity', status: activeUsers24h > 0 ? 'healthy' : 'warning' },
+        { label: 'New Users 24h', value: newUsers24h, helper: 'Fresh registrations today', status: 'healthy' },
+        { label: 'New Users 7d', value: newUsers7d, helper: 'Weekly registration momentum', status: 'healthy' }
+      ],
+      website: {
+        status: healthy ? 'healthy' : 'warning',
+        uptimeLabel: 'Live via backend API and nginx',
+        openSupportTickets: openTickets,
+        criticalEvents,
+        warningEvents
+      },
+      database: {
+        status: Number(dbStats.table_count || 0) > 0 ? 'healthy' : 'warning',
+        tableCount: Number(dbStats.table_count || 0),
+        sizeMb: Number(dbStats.database_size_mb || 0),
+        provider: 'mysql',
+        issueCount: criticalEvents
+      },
+      operations: {
+        activeSubscriptions,
+        companyCount,
+        campusCount,
+        revenue
+      },
+      adoption: [
+        { label: 'Users', value: userCount, helper: 'Across all roles', status: 'healthy' },
+        { label: 'Companies', value: companyCount, helper: 'Employer profile records', status: companyCount > 0 ? 'healthy' : 'warning' },
+        { label: 'Campuses', value: campusCount, helper: 'Campus Connect institutions', status: campusCount > 0 ? 'healthy' : 'warning' },
+        { label: 'Applications', value: appCount, helper: 'Candidate pipeline volume', status: appCount > 0 ? 'healthy' : 'warning' }
+      ],
+      revenueTrend: [...monthBuckets.values()]
     }
   });
 }));
@@ -922,81 +1629,55 @@ router.get('/system-logs', asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
 
-  let systemQuery = Database
-    .from('system_logs')
-    .select('id, action, module, level, actor_id, actor_name, actor_role, details, created_at')
-    .order('created_at', { ascending: false })
-    .limit(SYSTEM_LOG_FETCH_LIMIT);
+  try {
+    const combined = await fetchCombinedSystemLogs({ level, module });
+    res.send({
+      status: true,
+      ...buildSystemLogResponse({
+        ...combined,
+        filters: { search, level, module, actorRole },
+        page,
+        limit
+      })
+    });
+  } catch (error) {
+    sendDatabaseError(res, error);
+  }
+}));
 
-  if (['info', 'warning', 'error', 'critical'].includes(level)) systemQuery = systemQuery.eq('level', level);
-  if (module) systemQuery = systemQuery.eq('module', module);
+router.get('/activity-logs', asyncHandler(async (req, res) => {
+  const roleGroup = normalizeLogText(req.query.roleGroup || 'student');
+  const level = normalizeLogText(req.query.level);
+  const module = normalizeLogText(req.query.module);
+  const search = normalizeLogText(req.query.search);
+  const page = Math.max(1, parseInt(req.query.page || '1', 10));
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
 
-  const [systemLogsResponse, auditLogsResponse] = await Promise.all([
-    systemQuery,
-    Database
-      .from('audit_logs')
-      .select('id, user_id, action, entity_type, entity_id, details, ip_address, created_at')
-      .order('created_at', { ascending: false })
-      .limit(SYSTEM_LOG_FETCH_LIMIT)
-  ]);
-
-  if (systemLogsResponse.error) { sendDatabaseError(res, systemLogsResponse.error); return; }
-  if (auditLogsResponse.error) { sendDatabaseError(res, auditLogsResponse.error); return; }
-
-  const auditRows = auditLogsResponse.data || [];
-  const userIds = [...new Set(auditRows.map((row) => row.user_id).filter(Boolean))];
-
-  let userLookup = new Map();
-  if (userIds.length) {
-    const { data: users, error: usersError } = await Database
-      .from('users')
-      .select('id, name, email, role')
-      .in('id', userIds);
-
-    if (usersError) { sendDatabaseError(res, usersError); return; }
-
-    userLookup = new Map((users || []).map((user) => [user.id, user]));
+  if (!ACTIVITY_ROLE_GROUPS[roleGroup]) {
+    return res.status(400).send({ status: false, message: 'Invalid activity log role group' });
   }
 
-  const allLogs = [
-    ...(systemLogsResponse.data || []).map(mapSystemLogRow),
-    ...auditRows.map((row) => mapAuditRowToSystemLog(row, userLookup))
-  ].sort(sortLogsByTime);
+  try {
+    const combined = await fetchCombinedSystemLogs({ level, module });
+    res.send({
+      status: true,
+      roleGroup,
+      ...buildSystemLogResponse({
+        ...combined,
+        filters: { search, level, module, roleGroup },
+        page,
+        limit
+      })
+    });
+  } catch (error) {
+    sendDatabaseError(res, error);
+  }
+}));
 
-  const filteredLogs = applySystemLogFilters(allLogs, {
-    search,
-    level,
-    module,
-    actorRole
-  });
-
-  const total = filteredLogs.length;
-  const totalPages = Math.max(1, Math.ceil(total / limit));
-  const safePage = Math.min(page, totalPages);
-  const offset = (safePage - 1) * limit;
-  const logs = filteredLogs.slice(offset, offset + limit);
-  const summary = {
-    totalEvents: total,
-    criticalEvents: filteredLogs.filter((item) => normalizeLogText(item.level) === 'critical').length,
-    warningEvents: filteredLogs.filter((item) => normalizeLogText(item.level) === 'warning').length,
-    managementActions: filteredLogs.filter((item) => normalizeLogText(item.actorRole) !== 'system').length
-  };
-
-  const actorRoles = [...new Set(allLogs.map((item) => normalizeLogText(item.actorRole)).filter(Boolean))].sort();
-  const modules = [...new Set(allLogs.map((item) => normalizeLogText(item.module)).filter(Boolean))].sort();
-
+router.get('/roles-permissions/defaults', asyncHandler(async (_req, res) => {
   res.send({
     status: true,
-    logs,
-    summary,
-    actorRoles,
-    modules,
-    pagination: {
-      page: safePage,
-      limit,
-      total,
-      totalPages
-    }
+    roles: buildRolePermissionsFallback()
   });
 }));
 
@@ -1011,7 +1692,8 @@ router.get('/roles-permissions', asyncHandler(async (req, res) => {
 
   if (error) { sendDatabaseError(res, error); return; }
 
-  res.send({ status: true, roles: data || [] });
+  const roles = data && data.length > 0 ? data : buildRolePermissionsFallback();
+  res.send({ status: true, roles });
 }));
 
 router.put('/roles-permissions', asyncHandler(async (req, res) => {

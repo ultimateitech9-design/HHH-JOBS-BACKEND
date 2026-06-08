@@ -78,6 +78,48 @@ const createTable = async (db, sql) => {
   await db.execute(sql);
 };
 
+const defaultRolePermissions = [
+  { role: 'super_admin', permissions: { '*': { read: true, write: true, delete: true } } },
+  {
+    role: 'admin',
+    permissions: {
+      users: { read: true, write: true },
+      commandSearch: { read: true },
+      companies: { read: true, write: true },
+      campuses: { read: true, write: true },
+      jobs: { read: true, write: true },
+      applications: { read: true },
+      payments: { read: true, write: true },
+      reports: { read: true },
+      activityLogs: { read: true },
+      logs: { read: true },
+      support: { read: true, write: true },
+      roles: { read: true, write: true }
+    }
+  },
+  {
+    role: 'support',
+    permissions: {
+      users: { read: true },
+      commandSearch: { read: true },
+      companies: { read: true },
+      campuses: { read: true },
+      jobs: { read: true },
+      applications: { read: true },
+      reports: { read: true },
+      activityLogs: { read: true },
+      logs: { read: true },
+      support: { read: true, write: true }
+    }
+  },
+  { role: 'accounts', permissions: { users: { read: true }, companies: { read: true }, payments: { read: true, write: true }, reports: { read: true }, logs: { read: true } } },
+  { role: 'sales', permissions: { users: { read: true }, companies: { read: true }, campuses: { read: true }, payments: { read: true }, reports: { read: true } } },
+  { role: 'dataentry', permissions: { jobs: { read: true, write: true }, reports: { read: true } } },
+  { role: 'hr', permissions: { jobs: { read: true, write: true }, applications: { read: true }, payments: { read: true } } },
+  { role: 'campus_connect', permissions: { campuses: { read: true, write: true }, reports: { read: true } } },
+  { role: 'student', permissions: { jobs: { read: true }, applications: { read: true } } }
+];
+
 const updateFromLegacyColumn = async (db, target, source) => {
   if (!(await columnExists(db, 'support_chats', source))) return false;
   await db.execute(
@@ -229,6 +271,18 @@ const ensureMissingFeatureTables = async (db) => {
       updated_at DATETIME(3) NULL,
       PRIMARY KEY (id),
       UNIQUE KEY role_profile_sync_summary_role_uidx (role)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await createTable(db, `
+    CREATE TABLE IF NOT EXISTS ${tableName('role_permissions')} (
+      id CHAR(36) NOT NULL DEFAULT (UUID()),
+      role VARCHAR(64) NOT NULL,
+      permissions JSON NULL,
+      updated_by CHAR(36) NULL,
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      UNIQUE KEY role_permissions_role_uidx (role)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
@@ -732,16 +786,59 @@ const ensureSupportChatSchema = async (db) => {
   );
 };
 
+const seedRolePermissions = async (db) => {
+  if (!(await tableExists(db, 'role_permissions'))) return;
+
+  for (const role of defaultRolePermissions) {
+    await db.execute(
+      `
+        INSERT IGNORE INTO ${tableName('role_permissions')} (role, permissions, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP(3))
+      `,
+      [role.role, JSON.stringify(role.permissions)]
+    );
+  }
+};
+
 const ensureIndexesForExistingTables = async (db) => {
+  if (await tableExists(db, 'users')) {
+    await addIndexIfMissing(db, 'users', 'users_role_status_idx', '(`role`(64), `status`(32), `created_at`)');
+    await addIndexIfMissing(db, 'users', 'users_email_idx', '(`email`(191))');
+    await addIndexIfMissing(db, 'users', 'users_mobile_idx', '(`mobile`(64))');
+  }
   if (await tableExists(db, 'platform_settings')) {
     await addUniqueIndexIfMissing(db, 'platform_settings', 'platform_settings_key_uidx', '(`key`(191))');
   }
   if (await tableExists(db, 'role_permissions')) {
     await addUniqueIndexIfMissing(db, 'role_permissions', 'role_permissions_role_uidx', '(`role`(64))');
   }
+  if (await tableExists(db, 'system_logs')) {
+    await addIndexIfMissing(db, 'system_logs', 'system_logs_actor_role_idx', '(`actor_role`(64), `created_at`)');
+    await addIndexIfMissing(db, 'system_logs', 'system_logs_module_level_idx', '(`module`(64), `level`(32), `created_at`)');
+    await addIndexIfMissing(db, 'system_logs', 'system_logs_created_idx', '(`created_at`)');
+  }
+  if (await tableExists(db, 'audit_logs')) {
+    await addIndexIfMissing(db, 'audit_logs', 'audit_logs_user_created_idx', '(`user_id`, `created_at`)');
+    await addIndexIfMissing(db, 'audit_logs', 'audit_logs_entity_created_idx', '(`entity_type`(64), `created_at`)');
+  }
+  if (await tableExists(db, 'job_plan_purchases')) {
+    await addIndexIfMissing(db, 'job_plan_purchases', 'job_plan_purchases_hr_status_idx', '(`hr_id`, `status`(32), `created_at`)');
+  }
+  if (await tableExists(db, 'role_plan_purchases')) {
+    await addIndexIfMissing(db, 'role_plan_purchases', 'role_plan_purchases_user_status_idx', '(`user_id`, `status`(32), `created_at`)');
+  }
+  if (await tableExists(db, 'job_payments')) {
+    await addIndexIfMissing(db, 'job_payments', 'job_payments_hr_status_idx', '(`hr_id`, `status`(32), `created_at`)');
+  }
+  if (await tableExists(db, 'accounts_transactions')) {
+    await addIndexIfMissing(db, 'accounts_transactions', 'accounts_transactions_status_created_idx', '(`status`(32), `created_at`)');
+    await addIndexIfMissing(db, 'accounts_transactions', 'accounts_transactions_customer_email_idx', '(`customer_email`(191))');
+  }
   if (await tableExists(db, 'student_recommendation_preferences')) {
     await addUniqueIndexIfMissing(db, 'student_recommendation_preferences', 'student_recommendation_preferences_user_uidx', '(`user_id`)');
   }
+
+  await seedRolePermissions(db);
 };
 
 const relaxMigratedTextJsonColumns = async (db) => {
