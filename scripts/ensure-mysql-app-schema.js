@@ -550,8 +550,34 @@ const ensureHrProfilePrefillSchema = async (db) => {
 
   await dedupeHrProfilesByUser(db);
 
+  await createTable(db, `
+    CREATE TABLE IF NOT EXISTS ${tableName('employee_profiles')} (
+      id CHAR(36) NOT NULL DEFAULT (UUID()),
+      user_id CHAR(36) NOT NULL,
+      employee_code LONGTEXT NULL,
+      department LONGTEXT NULL,
+      designation LONGTEXT NULL,
+      work_email LONGTEXT NULL,
+      join_date LONGTEXT NULL,
+      employment_type LONGTEXT NULL,
+      office_location LONGTEXT NULL,
+      access_scope LONGTEXT NULL,
+      notes LONGTEXT NULL,
+      meta JSON NULL,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NULL,
+      PRIMARY KEY (id),
+      KEY employee_profiles_user_idx (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
   if (await tableExists(db, 'employee_profiles')) {
     await addColumnIfMissing(db, 'employee_profiles', 'employee_code', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'employee_profiles', 'department', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'employee_profiles', 'designation', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'employee_profiles', 'work_email', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'employee_profiles', 'office_location', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'employee_profiles', 'access_scope', 'LONGTEXT NULL');
     await db.execute(`
       UPDATE employee_profiles ep
       JOIN users u ON u.id = ep.user_id

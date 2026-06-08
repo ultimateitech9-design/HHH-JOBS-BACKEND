@@ -75,6 +75,27 @@ const ACTIVITY_ROLE_GROUPS = {
   campus: new Set([ROLES.CAMPUS_CONNECT])
 };
 
+const COMMAND_SEARCH_SUPPORT_ROLES = new Set([
+  ROLES.HR,
+  'company_admin',
+  ROLES.STUDENT,
+  ROLES.RETIRED_EMPLOYEE,
+  'professional',
+  ROLES.CAMPUS_CONNECT
+]);
+
+const COMMAND_SEARCH_INTERNAL_ROLES = new Set([
+  ROLES.SUPER_ADMIN,
+  ROLES.ADMIN,
+  ROLES.SUPPORT,
+  ROLES.SALES,
+  ROLES.DATAENTRY,
+  ROLES.ACCOUNTS,
+  ROLES.AUDIT,
+  ROLES.PLATFORM,
+  'finance'
+]);
+
 const DEFAULT_ROLE_PERMISSIONS = [
   {
     role: ROLES.SUPER_ADMIN,
@@ -337,6 +358,35 @@ const buildSupportContextLinks = (userId) => ({
   dashboard: `/portal/super-admin/users/${encodeURIComponent(userId)}/dashboard`,
   profile: `/portal/super-admin/users/${encodeURIComponent(userId)}/profile`
 });
+
+const getCommandSearchRoleFilter = (value = '') => {
+  const role = normalizeLogText(value);
+  if (!role) return [];
+  if (role === 'hr_accounts') return [ROLES.HR, 'company_admin'];
+  if (role === 'candidate_accounts' || role === 'candidates') return [ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, 'professional'];
+  if (role === 'campus_accounts') return [ROLES.CAMPUS_CONNECT];
+  if (role === 'public_accounts' || role === 'support_accounts') return [...COMMAND_SEARCH_SUPPORT_ROLES];
+  if (role === 'internal_staff' || role === 'employees') return [...COMMAND_SEARCH_INTERNAL_ROLES];
+  if (role === 'finance') return [ROLES.ACCOUNTS, 'finance'];
+  if (role === 'data_entry') return [ROLES.DATAENTRY];
+  return [role];
+};
+
+const getCommandSearchContextType = (role = '') => {
+  const normalizedRole = normalizeLogText(role);
+  if (COMMAND_SEARCH_SUPPORT_ROLES.has(normalizedRole)) return 'account_support';
+  if (COMMAND_SEARCH_INTERNAL_ROLES.has(normalizedRole)) return 'employee_record';
+  return 'record';
+};
+
+const getCommandSearchActivityPath = (user = {}) => {
+  const role = normalizeLogText(user.role);
+  const search = encodeURIComponent(user.email || user.id || '');
+  if (role === ROLES.HR || role === 'company_admin') return `/portal/super-admin/hr-activity-log?search=${search}`;
+  if (role === ROLES.CAMPUS_CONNECT) return `/portal/super-admin/campus-activity-log?search=${search}`;
+  if (role === ROLES.STUDENT || role === ROLES.RETIRED_EMPLOYEE || role === 'professional') return `/portal/super-admin/student-activity-log?search=${search}`;
+  return `/portal/super-admin/system-logs?search=${search}`;
+};
 
 const getRowValue = (row = {}, keys = []) => {
   for (const key of keys) {
@@ -654,7 +704,7 @@ router.get('/users', asyncHandler(async (req, res) => {
 
 router.get('/command-search', asyncHandler(async (req, res) => {
   const search = String(req.query.q || req.query.search || '').trim();
-  const role = normalizeLogText(req.query.role);
+  const roleFilters = getCommandSearchRoleFilter(req.query.role);
   const accountStatus = normalizeLogText(req.query.status);
   const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '20', 10)));
   const where = [];
@@ -687,7 +737,12 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       'c.district_name',
       'sp.headline',
       'sp.location',
-      'sp.resume_url'
+      'sp.resume_url',
+      'ep.employee_code',
+      'ep.department',
+      'ep.work_email',
+      'ep.office_location',
+      'ep.access_scope'
     ];
     const textPredicates = searchableFields.map((field) => `LOWER(COALESCE(CAST(${field} AS CHAR), '')) LIKE ?`);
     const phonePredicates = searchDigits
@@ -705,9 +760,9 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     }
   }
 
-  if (role) {
-    where.push('LOWER(u.role) = ?');
-    params.push(role);
+  if (roleFilters.length) {
+    where.push(`LOWER(u.role) IN (${roleFilters.map(() => '?').join(', ')})`);
+    params.push(...roleFilters);
   }
 
   if (accountStatus) {
@@ -724,13 +779,14 @@ router.get('/command-search', asyncHandler(async (req, res) => {
           WHEN LOWER(u.email) = ? THEN 0
           WHEN LOWER(hp.contact_email) = ? THEN 1
           WHEN LOWER(c.contact_email) = ? THEN 2
+          WHEN LOWER(ep.work_email) = ? THEN 3
           WHEN ? <> '' AND (
             REGEXP_REPLACE(COALESCE(u.mobile, ''), '[^0-9]', '') = ?
             OR REGEXP_REPLACE(COALESCE(hp.contact_phone, ''), '[^0-9]', '') = ?
             OR REGEXP_REPLACE(COALESCE(c.contact_phone, ''), '[^0-9]', '') = ?
-          ) THEN 3
-          WHEN u.id = ? THEN 3
-          WHEN LOWER(u.name) = ? THEN 5
+          ) THEN 4
+          WHEN u.id = ? THEN 5
+          WHEN LOWER(u.name) = ? THEN 6
           ELSE 9
         END,
         u.last_login_at DESC,
@@ -739,6 +795,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     : 'ORDER BY u.last_login_at DESC, u.created_at DESC';
   const orderParams = search
     ? [
+        normalizedSearch,
         normalizedSearch,
         normalizedSearch,
         normalizedSearch,
@@ -770,6 +827,11 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         hp.state_name AS hr_state,
         hp.district_name AS hr_city,
         hp.is_verified AS hr_verified,
+        ep.employee_code,
+        ep.department AS employee_department,
+        ep.designation AS employee_designation,
+        ep.office_location AS employee_location,
+        ep.access_scope AS employee_access_scope,
         sp.headline,
         sp.location AS student_location,
         sp.identity_verified,
@@ -782,6 +844,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         COALESCE(activity_counts.total_activity, 0) AS total_activity
       FROM users u
       LEFT JOIN hr_profiles hp ON hp.user_id = u.id
+      LEFT JOIN employee_profiles ep ON ep.user_id = u.id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
       LEFT JOIN colleges c ON c.user_id = u.id
       LEFT JOIN (
@@ -900,7 +963,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         OR REGEXP_REPLACE(COALESCE(sc.phone, ''), '[^0-9]', '') LIKE ?
         OR REGEXP_REPLACE(COALESCE(sl.contact_phone, ''), '[^0-9]', '') LIKE ?` : ''}
       )
-      ${role ? 'AND LOWER(u.role) = ?' : ''}
+      ${roleFilters.length ? `AND LOWER(u.role) IN (${roleFilters.map(() => '?').join(', ')})` : ''}
       ${accountStatus ? 'AND LOWER(u.status) = ?' : ''}
       ORDER BY
         CASE
@@ -919,7 +982,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     [
       ...Array(10).fill(`%${normalizedSearch}%`),
       ...(searchDigits ? [`%${searchDigits}%`, `%${searchDigits}%`] : []),
-      ...(role ? [role] : []),
+      ...(roleFilters.length ? roleFilters : []),
       ...(accountStatus ? [accountStatus] : []),
       normalizedSearch,
       normalizedSearch,
@@ -932,9 +995,23 @@ router.get('/command-search', asyncHandler(async (req, res) => {
   const uniqueRows = [...new Map([...rows, ...commercialRows].map((row) => [row.id, row])).values()];
   const results = uniqueRows.map((row) => {
     const normalizedRole = normalizeLogText(row.role);
-    const links = buildSupportContextLinks(row.id);
-    const headline = row.company_name || row.campus_name || row.headline || row.email || '-';
+    const contextType = getCommandSearchContextType(normalizedRole);
+    const isEmployeeRecord = contextType === 'employee_record';
+    const supportLinks = buildSupportContextLinks(row.id);
+    const links = {
+      ...supportLinks,
+      activityLog: getCommandSearchActivityPath({ id: row.id, email: row.email, role: normalizedRole }),
+      record: `/portal/super-admin/users/${encodeURIComponent(row.id)}/profile`
+    };
+    const headline = row.company_name
+      || row.campus_name
+      || row.employee_designation
+      || row.employee_department
+      || row.headline
+      || row.email
+      || '-';
     const location = row.hr_location
+      || row.employee_location
       || row.student_location
       || [row.campus_city, row.campus_state].filter(Boolean).join(', ')
       || '-';
@@ -946,7 +1023,17 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       phone: row.hr_contact_phone || row.mobile || '-',
       role: normalizedRole || 'user',
       status: row.status || 'active',
-      company: row.company_name || row.campus_name || '-',
+      contextType,
+      recordType: isEmployeeRecord ? 'Employee activity record' : 'Account support context',
+      canOpenDashboard: !isEmployeeRecord,
+      canOpenProfile: Boolean(row.id),
+      company: row.company_name || row.campus_name || row.employee_department || '-',
+      employee: isEmployeeRecord ? {
+        code: row.employee_code || '-',
+        department: row.employee_department || '-',
+        designation: row.employee_designation || '-',
+        accessScope: row.employee_access_scope || '-'
+      } : null,
       createdAt: row.created_at || null,
       lastActiveAt: row.last_login_at || null,
       profile: {
