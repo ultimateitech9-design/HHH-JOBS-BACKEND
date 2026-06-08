@@ -134,6 +134,85 @@ const readBearerToken = (req) => {
   ).trim();
 };
 
+const SUPPORT_SHADOW_ROLES = new Set([
+  'super_admin',
+  'admin',
+  'support',
+  'sales',
+  'dataentry',
+  'accounts'
+]);
+
+const CUSTOMER_SHADOW_ROLES = new Set([
+  'hr',
+  'student',
+  'retired_employee',
+  'campus_connect'
+]);
+
+const readSupportSubjectUserId = (req) => String(
+  req.headers['x-hhh-support-subject-user-id']
+  || req.headers['x-support-subject-user-id']
+  || req.query?.supportSubjectUserId
+  || ''
+).trim();
+
+const applySupportSubjectUser = async (req, res) => {
+  const subjectUserId = readSupportSubjectUserId(req);
+  if (!subjectUserId) return true;
+
+  const actorUser = req.user;
+  const actorRole = String(actorUser?.role || '').trim().toLowerCase();
+  if (!SUPPORT_SHADOW_ROLES.has(actorRole)) {
+    res.status(403).send({ status: false, message: 'Forbidden: support context is not allowed for this role' });
+    return false;
+  }
+
+  if (!Database) {
+    const subjectUser = authStore.findUserById(subjectUserId);
+    if (!subjectUser) {
+      res.status(404).send({ status: false, message: 'Support subject user not found' });
+      return false;
+    }
+    const mappedSubject = mapPublicUser(subjectUser);
+    if (!CUSTOMER_SHADOW_ROLES.has(String(mappedSubject.role || '').trim().toLowerCase())) {
+      res.status(403).send({ status: false, message: 'Only HR, student, professional, and campus accounts can be opened in support dashboard context' });
+      return false;
+    }
+    req.actorUser = actorUser;
+    req.supportSubjectUser = mappedSubject;
+    req.user = mappedSubject;
+    return true;
+  }
+
+  const { data: subjectUser, error } = await Database
+    .from('users')
+    .select('*')
+    .eq('id', subjectUserId)
+    .maybeSingle();
+
+  if (error) {
+    sendDatabaseError(res, error);
+    return false;
+  }
+
+  if (!subjectUser) {
+    res.status(404).send({ status: false, message: 'Support subject user not found' });
+    return false;
+  }
+
+  const mappedSubject = mapPublicUser(subjectUser);
+  if (!CUSTOMER_SHADOW_ROLES.has(String(mappedSubject.role || '').trim().toLowerCase())) {
+    res.status(403).send({ status: false, message: 'Only HR, student, professional, and campus accounts can be opened in support dashboard context' });
+    return false;
+  }
+
+  req.actorUser = actorUser;
+  req.supportSubjectUser = mappedSubject;
+  req.user = mappedSubject;
+  return true;
+};
+
 const requireAuth = asyncHandler(async (req, res, next) => {
   if (!config.jwtSecret) {
     res.status(500).send({ status: false, message: 'JWT_SECRET is required for authentication' });
@@ -159,6 +238,7 @@ const requireAuth = asyncHandler(async (req, res, next) => {
       req.user = devUser;
     }
     req.tokenPayload = { id: devUser.id, role: devUser.role, devFallback: true };
+    if (!(await applySupportSubjectUser(req, res))) return;
     next();
     return;
   }
@@ -190,6 +270,7 @@ const requireAuth = asyncHandler(async (req, res, next) => {
     if (tokenBackedUser) {
       req.user = tokenBackedUser;
       req.tokenPayload = decoded;
+      if (!(await applySupportSubjectUser(req, res))) return;
       next();
       return;
     }
@@ -200,6 +281,7 @@ const requireAuth = asyncHandler(async (req, res, next) => {
 
   req.user = mapPublicUser(user);
   req.tokenPayload = decoded;
+  if (!(await applySupportSubjectUser(req, res))) return;
   next();
 });
 

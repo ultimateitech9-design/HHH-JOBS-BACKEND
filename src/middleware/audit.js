@@ -11,19 +11,22 @@ const auditMiddleware = (req, res, next) => {
     const originalSend = res.send;
     res.send = function (body) {
         if (req.user && res.statusCode < 400) {
+            const auditActor = req.actorUser || req.user;
             const pathParts = req.originalUrl.split('/').filter(Boolean);
             const entityType = pathParts[0] || 'unknown';
             const action = `${req.method.toLowerCase()}_${entityType}`;
 
             logAudit({
-                userId: req.user.id,
+                userId: auditActor.id,
                 action,
                 entityType,
                 entityId: req.params?.id || null,
                 details: {
                     method: req.method,
                     path: req.originalUrl,
-                    statusCode: res.statusCode
+                    statusCode: res.statusCode,
+                    supportSubjectUserId: req.supportSubjectUser?.id || null,
+                    supportSubjectRole: req.supportSubjectUser?.role || null
                 },
                 ipAddress: getClientIp(req)
             });
