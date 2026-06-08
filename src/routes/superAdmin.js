@@ -667,6 +667,8 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       OR u.name LIKE ?
       OR u.email LIKE ?
       OR u.mobile LIKE ?
+      OR hp.contact_email LIKE ?
+      OR hp.contact_phone LIKE ?
       OR hp.company_name LIKE ?
       OR hp.company_website LIKE ?
       OR hp.industry_type LIKE ?
@@ -684,7 +686,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       OR sp.resume_url LIKE ?
     )`);
     params.push(
-      like, like, like, like, like, like, like, like, like, like, like,
+      like, like, like, like, like, like, like, like, like, like, like, like, like,
       like, like, like, like, like, like, like, like
     );
   }
@@ -700,6 +702,26 @@ router.get('/command-search', asyncHandler(async (req, res) => {
   }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const exactSearch = search;
+  const normalizedSearch = search.toLowerCase();
+  const orderSql = search
+    ? `
+      ORDER BY
+        CASE
+          WHEN LOWER(u.email) = ? THEN 0
+          WHEN LOWER(hp.contact_email) = ? THEN 1
+          WHEN u.mobile = ? OR hp.contact_phone = ? THEN 2
+          WHEN u.id = ? THEN 3
+          WHEN LOWER(u.name) = ? THEN 4
+          ELSE 9
+        END,
+        u.last_login_at DESC,
+        u.created_at DESC
+    `
+    : 'ORDER BY u.last_login_at DESC, u.created_at DESC';
+  const orderParams = search
+    ? [normalizedSearch, normalizedSearch, exactSearch, exactSearch, exactSearch, normalizedSearch]
+    : [];
   const rows = await safeQueryRows(
     `
       SELECT
@@ -714,6 +736,8 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         u.created_at,
         u.last_login_at,
         hp.company_name,
+        hp.contact_email AS hr_contact_email,
+        hp.contact_phone AS hr_contact_phone,
         hp.location AS hr_location,
         hp.state_name AS hr_state,
         hp.district_name AS hr_city,
@@ -762,10 +786,10 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         GROUP BY user_id
       ) activity_counts ON activity_counts.user_id = u.id
       ${whereSql}
-      ORDER BY u.last_login_at DESC, u.created_at DESC
+      ${orderSql}
       LIMIT ${limit}
     `,
-    params
+    [...params, ...orderParams]
   );
 
   const uniqueRows = [...new Map(rows.map((row) => [row.id, row])).values()];
