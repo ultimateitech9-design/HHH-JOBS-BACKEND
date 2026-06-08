@@ -466,6 +466,8 @@ const ensureHrProfilePrefillSchema = async (db) => {
   await addColumnIfMissing(db, 'hr_profiles', 'sector_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'about', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'logo_url', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'contact_email', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'contact_phone', 'LONGTEXT NULL');
 
   await db.execute(`
     UPDATE hr_profiles hp
@@ -481,7 +483,9 @@ const ensureHrProfilePrefillSchema = async (db) => {
       hp.state_id = COALESCE(NULLIF(hp.state_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateId')), 'null')),
       hp.state_name = COALESCE(NULLIF(hp.state_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateName')), 'null')),
       hp.district_id = COALESCE(NULLIF(hp.district_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtId')), 'null')),
-      hp.district_name = COALESCE(NULLIF(hp.district_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtName')), 'null'))
+      hp.district_name = COALESCE(NULLIF(hp.district_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtName')), 'null')),
+      hp.contact_email = COALESCE(NULLIF(hp.contact_email, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.contactEmail')), 'null'), NULLIF(u.email, '')),
+      hp.contact_phone = COALESCE(NULLIF(hp.contact_phone, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.contactPhone')), 'null'), NULLIF(u.mobile, ''))
     WHERE u.req_body IS NOT NULL
       AND JSON_VALID(u.req_body)
       AND (
@@ -493,6 +497,8 @@ const ensureHrProfilePrefillSchema = async (db) => {
         OR COALESCE(hp.location, '') = ''
         OR COALESCE(hp.state_name, '') = ''
         OR COALESCE(hp.district_name, '') = ''
+        OR COALESCE(hp.contact_email, '') = ''
+        OR COALESCE(hp.contact_phone, '') = ''
       )
   `);
 

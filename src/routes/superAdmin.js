@@ -659,36 +659,50 @@ router.get('/command-search', asyncHandler(async (req, res) => {
   const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '20', 10)));
   const where = [];
   const params = [];
+  const normalizedSearch = search.toLowerCase();
+  const searchDigits = search.replace(/\D/g, '');
 
   if (search) {
-    const like = `%${search}%`;
-    where.push(`(
-      u.id LIKE ?
-      OR u.name LIKE ?
-      OR u.email LIKE ?
-      OR u.mobile LIKE ?
-      OR hp.contact_email LIKE ?
-      OR hp.contact_phone LIKE ?
-      OR hp.company_name LIKE ?
-      OR hp.company_website LIKE ?
-      OR hp.industry_type LIKE ?
-      OR hp.sector_name LIKE ?
-      OR hp.location LIKE ?
-      OR hp.state_name LIKE ?
-      OR hp.district_name LIKE ?
-      OR c.name LIKE ?
-      OR c.contact_email LIKE ?
-      OR c.contact_phone LIKE ?
-      OR c.city LIKE ?
-      OR c.state LIKE ?
-      OR sp.headline LIKE ?
-      OR sp.location LIKE ?
-      OR sp.resume_url LIKE ?
-    )`);
-    params.push(
-      like, like, like, like, like, like, like, like, like, like, like, like, like,
-      like, like, like, like, like, like, like, like
-    );
+    const like = `%${normalizedSearch}%`;
+    const searchableFields = [
+      'u.id',
+      'u.name',
+      'u.email',
+      'u.mobile',
+      'hp.contact_email',
+      'hp.contact_phone',
+      'hp.company_name',
+      'hp.company_website',
+      'hp.industry_type',
+      'hp.sector_name',
+      'hp.location',
+      'hp.state_name',
+      'hp.district_name',
+      'c.name',
+      'c.contact_email',
+      'c.contact_phone',
+      'c.city',
+      'c.state',
+      'c.state_name',
+      'c.district_name',
+      'sp.headline',
+      'sp.location',
+      'sp.resume_url'
+    ];
+    const textPredicates = searchableFields.map((field) => `LOWER(COALESCE(CAST(${field} AS CHAR), '')) LIKE ?`);
+    const phonePredicates = searchDigits
+      ? [
+          "REGEXP_REPLACE(COALESCE(u.mobile, ''), '[^0-9]', '') LIKE ?",
+          "REGEXP_REPLACE(COALESCE(hp.contact_phone, ''), '[^0-9]', '') LIKE ?",
+          "REGEXP_REPLACE(COALESCE(c.contact_phone, ''), '[^0-9]', '') LIKE ?"
+        ]
+      : [];
+
+    where.push(`(${[...textPredicates, ...phonePredicates].join('\n      OR ')})`);
+    params.push(...searchableFields.map(() => like));
+    if (searchDigits) {
+      params.push(...phonePredicates.map(() => `%${searchDigits}%`));
+    }
   }
 
   if (role) {
@@ -703,16 +717,20 @@ router.get('/command-search', asyncHandler(async (req, res) => {
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const exactSearch = search;
-  const normalizedSearch = search.toLowerCase();
   const orderSql = search
     ? `
       ORDER BY
         CASE
           WHEN LOWER(u.email) = ? THEN 0
           WHEN LOWER(hp.contact_email) = ? THEN 1
-          WHEN u.mobile = ? OR hp.contact_phone = ? THEN 2
+          WHEN LOWER(c.contact_email) = ? THEN 2
+          WHEN ? <> '' AND (
+            REGEXP_REPLACE(COALESCE(u.mobile, ''), '[^0-9]', '') = ?
+            OR REGEXP_REPLACE(COALESCE(hp.contact_phone, ''), '[^0-9]', '') = ?
+            OR REGEXP_REPLACE(COALESCE(c.contact_phone, ''), '[^0-9]', '') = ?
+          ) THEN 3
           WHEN u.id = ? THEN 3
-          WHEN LOWER(u.name) = ? THEN 4
+          WHEN LOWER(u.name) = ? THEN 5
           ELSE 9
         END,
         u.last_login_at DESC,
@@ -720,7 +738,17 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     `
     : 'ORDER BY u.last_login_at DESC, u.created_at DESC';
   const orderParams = search
-    ? [normalizedSearch, normalizedSearch, exactSearch, exactSearch, exactSearch, normalizedSearch]
+    ? [
+        normalizedSearch,
+        normalizedSearch,
+        normalizedSearch,
+        searchDigits,
+        searchDigits,
+        searchDigits,
+        searchDigits,
+        exactSearch,
+        normalizedSearch
+      ]
     : [];
   const rows = await safeQueryRows(
     `
@@ -792,7 +820,116 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     [...params, ...orderParams]
   );
 
-  const uniqueRows = [...new Map(rows.map((row) => [row.id, row])).values()];
+  const commercialRows = search ? await safeQueryRows(
+    `
+      SELECT
+        u.id,
+        u.name,
+        u.email,
+        u.mobile,
+        u.role,
+        u.status,
+        u.is_hr_approved,
+        u.is_email_verified,
+        u.created_at,
+        u.last_login_at,
+        COALESCE(sc.company_name, sl.company_name, hp.company_name) AS company_name,
+        COALESCE(sc.email, sl.contact_email, hp.contact_email) AS hr_contact_email,
+        COALESCE(sc.phone, sl.contact_phone, hp.contact_phone) AS hr_contact_phone,
+        COALESCE(sc.location, sl.location, hp.location) AS hr_location,
+        COALESCE(sc.state_name, sl.state_name, hp.state_name) AS hr_state,
+        COALESCE(sc.district_name, sl.district_name, hp.district_name) AS hr_city,
+        hp.is_verified AS hr_verified,
+        sp.headline,
+        sp.location AS student_location,
+        sp.identity_verified,
+        c.name AS campus_name,
+        c.city AS campus_city,
+        c.state AS campus_state,
+        COALESCE(job_counts.total_jobs, 0) AS total_jobs,
+        COALESCE(application_counts.total_applications, 0) AS total_applications,
+        COALESCE(payment_counts.total_payments, 0) AS total_payments,
+        COALESCE(activity_counts.total_activity, 0) AS total_activity
+      FROM users u
+      LEFT JOIN hr_profiles hp ON hp.user_id = u.id
+      LEFT JOIN student_profiles sp ON sp.user_id = u.id
+      LEFT JOIN colleges c ON c.user_id = u.id
+      LEFT JOIN sales_customers sc ON sc.user_id = u.id
+      LEFT JOIN sales_leads sl ON sl.user_id = u.id
+      LEFT JOIN (
+        SELECT created_by AS user_id, COUNT(*) AS total_jobs
+        FROM jobs
+        WHERE created_by IS NOT NULL
+        GROUP BY created_by
+      ) job_counts ON job_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT applicant_id AS user_id, COUNT(*) AS total_applications
+        FROM applications
+        WHERE applicant_id IS NOT NULL
+        GROUP BY applicant_id
+      ) application_counts ON application_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) AS total_payments
+        FROM (
+          SELECT hr_id AS user_id FROM job_plan_purchases WHERE hr_id IS NOT NULL
+          UNION ALL
+          SELECT user_id FROM role_plan_purchases WHERE user_id IS NOT NULL
+          UNION ALL
+          SELECT hr_id AS user_id FROM job_payments WHERE hr_id IS NOT NULL
+        ) payment_sources
+        GROUP BY user_id
+      ) payment_counts ON payment_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) AS total_activity
+        FROM audit_logs
+        WHERE user_id IS NOT NULL
+        GROUP BY user_id
+      ) activity_counts ON activity_counts.user_id = u.id
+      WHERE (
+        LOWER(COALESCE(CAST(sc.company_name AS CHAR), '')) LIKE ?
+        OR LOWER(COALESCE(CAST(sc.contact_name AS CHAR), '')) LIKE ?
+        OR LOWER(COALESCE(CAST(sc.email AS CHAR), '')) LIKE ?
+        OR LOWER(COALESCE(CAST(sc.phone AS CHAR), '')) LIKE ?
+        OR LOWER(COALESCE(CAST(sl.company_name AS CHAR), '')) LIKE ?
+        OR LOWER(COALESCE(CAST(sl.contact_name AS CHAR), '')) LIKE ?
+        OR LOWER(COALESCE(CAST(sl.contact_email AS CHAR), '')) LIKE ?
+        OR LOWER(COALESCE(CAST(sl.contact_phone AS CHAR), '')) LIKE ?
+        OR LOWER(COALESCE(CAST(sc.audience_role AS CHAR), '')) LIKE ?
+        OR LOWER(COALESCE(CAST(sl.target_role AS CHAR), '')) LIKE ?
+        ${searchDigits ? `
+        OR REGEXP_REPLACE(COALESCE(sc.phone, ''), '[^0-9]', '') LIKE ?
+        OR REGEXP_REPLACE(COALESCE(sl.contact_phone, ''), '[^0-9]', '') LIKE ?` : ''}
+      )
+      ${role ? 'AND LOWER(u.role) = ?' : ''}
+      ${accountStatus ? 'AND LOWER(u.status) = ?' : ''}
+      ORDER BY
+        CASE
+          WHEN LOWER(COALESCE(sc.email, '')) = ? THEN 0
+          WHEN LOWER(COALESCE(sl.contact_email, '')) = ? THEN 1
+          WHEN ? <> '' AND (
+            REGEXP_REPLACE(COALESCE(sc.phone, ''), '[^0-9]', '') = ?
+            OR REGEXP_REPLACE(COALESCE(sl.contact_phone, ''), '[^0-9]', '') = ?
+          ) THEN 2
+          ELSE 9
+        END,
+        u.last_login_at DESC,
+        u.created_at DESC
+      LIMIT ${limit}
+    `,
+    [
+      ...Array(10).fill(`%${normalizedSearch}%`),
+      ...(searchDigits ? [`%${searchDigits}%`, `%${searchDigits}%`] : []),
+      ...(role ? [role] : []),
+      ...(accountStatus ? [accountStatus] : []),
+      normalizedSearch,
+      normalizedSearch,
+      searchDigits,
+      searchDigits,
+      searchDigits
+    ]
+  ) : [];
+
+  const uniqueRows = [...new Map([...rows, ...commercialRows].map((row) => [row.id, row])).values()];
   const results = uniqueRows.map((row) => {
     const normalizedRole = normalizeLogText(row.role);
     const links = buildSupportContextLinks(row.id);
@@ -806,7 +943,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       id: row.id,
       name: row.name || '-',
       email: row.email || '-',
-      phone: row.mobile || '-',
+      phone: row.hr_contact_phone || row.mobile || '-',
       role: normalizedRole || 'user',
       status: row.status || 'active',
       company: row.company_name || row.campus_name || '-',
