@@ -152,6 +152,7 @@ const ensureMissingFeatureTables = async (db) => {
       logo_url LONGTEXT NULL,
       website_url LONGTEXT NULL,
       location LONGTEXT NULL,
+      city LONGTEXT NULL,
       state_id CHAR(36) NULL,
       district_id CHAR(36) NULL,
       state_name LONGTEXT NULL,
@@ -490,6 +491,7 @@ const ensureCompanyDirectorySchema = async (db) => {
   await addColumnIfMissing(db, 'companies', 'logo_url', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'companies', 'website_url', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'companies', 'location', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'city', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'companies', 'state_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'companies', 'district_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'companies', 'state_name', 'LONGTEXT NULL');

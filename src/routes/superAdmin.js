@@ -197,6 +197,14 @@ const getCurrentMonthRange = () => {
 
 const normalizeLogText = (value = '') => String(value || '').trim().toLowerCase();
 
+const splitAggregatedList = (value = '') => (
+  String(value || '')
+    .split('||')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item, index, list) => list.findIndex((entry) => entry.toLowerCase() === item.toLowerCase()) === index)
+);
+
 const serializeLogDetails = (details) => {
   if (!details) return '-';
   if (typeof details === 'string') return details;
@@ -754,6 +762,33 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       'ep.access_scope'
     ];
     const textPredicates = searchableFields.map((field) => `LOWER(COALESCE(CAST(${field} AS CHAR), '')) LIKE ?`);
+    const hrCompanyRelationPredicates = [
+      `EXISTS (
+        SELECT 1
+        FROM companies hc
+        WHERE hc.hr_user_id = u.id
+          AND (
+            LOWER(COALESCE(CAST(hc.company_name AS CHAR), '')) LIKE ?
+            OR LOWER(COALESCE(CAST(hc.website_url AS CHAR), '')) LIKE ?
+            OR LOWER(COALESCE(CAST(hc.location AS CHAR), '')) LIKE ?
+            OR LOWER(COALESCE(CAST(hc.state_name AS CHAR), '')) LIKE ?
+            OR LOWER(COALESCE(CAST(hc.district_name AS CHAR), '')) LIKE ?
+            OR LOWER(COALESCE(CAST(hc.city AS CHAR), '')) LIKE ?
+          )
+      )`,
+      `EXISTS (
+        SELECT 1
+        FROM jobs hj
+        WHERE hj.created_by = u.id
+          AND COALESCE(hj.status, '') <> ?
+          AND (
+            LOWER(COALESCE(CAST(hj.company_name AS CHAR), '')) LIKE ?
+            OR LOWER(COALESCE(CAST(hj.company_key AS CHAR), '')) LIKE ?
+            OR LOWER(COALESCE(CAST(hj.company_slug AS CHAR), '')) LIKE ?
+            OR LOWER(COALESCE(CAST(hj.job_title AS CHAR), '')) LIKE ?
+          )
+      )`
+    ];
     const phonePredicates = searchDigits
       ? [
           "REGEXP_REPLACE(COALESCE(u.mobile, ''), '[^0-9]', '') LIKE ?",
@@ -762,8 +797,10 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         ]
       : [];
 
-    where.push(`(${[...textPredicates, ...phonePredicates].join('\n      OR ')})`);
+    where.push(`(${[...textPredicates, ...hrCompanyRelationPredicates, ...phonePredicates].join('\n      OR ')})`);
     params.push(...searchableFields.map(() => like));
+    params.push(...Array(6).fill(like));
+    params.push(JOB_STATUSES.DELETED, ...Array(4).fill(like));
     if (searchDigits) {
       params.push(...phonePredicates.map(() => `%${searchDigits}%`));
     }
@@ -847,6 +884,11 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         c.name AS campus_name,
         c.city AS campus_city,
         c.state AS campus_state,
+        company_counts.managed_companies,
+        company_counts.total_managed_companies,
+        job_company_counts.job_companies,
+        job_company_counts.company_job_titles,
+        job_company_counts.total_company_jobs,
         COALESCE(job_counts.total_jobs, 0) AS total_jobs,
         COALESCE(application_counts.total_applications, 0) AS total_applications,
         COALESCE(payment_counts.total_payments, 0) AS total_payments,
@@ -856,6 +898,26 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       LEFT JOIN employee_profiles ep ON ep.user_id = u.id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
       LEFT JOIN colleges c ON c.user_id = u.id
+      LEFT JOIN (
+        SELECT
+          hr_user_id AS user_id,
+          GROUP_CONCAT(DISTINCT company_name ORDER BY company_name SEPARATOR '||') AS managed_companies,
+          COUNT(DISTINCT company_key) AS total_managed_companies
+        FROM companies
+        WHERE hr_user_id IS NOT NULL
+        GROUP BY hr_user_id
+      ) company_counts ON company_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT
+          created_by AS user_id,
+          GROUP_CONCAT(DISTINCT company_name ORDER BY company_name SEPARATOR '||') AS job_companies,
+          GROUP_CONCAT(DISTINCT job_title SEPARATOR '||') AS company_job_titles,
+          COUNT(*) AS total_company_jobs
+        FROM jobs
+        WHERE created_by IS NOT NULL
+          AND COALESCE(status, '') <> ?
+        GROUP BY created_by
+      ) job_company_counts ON job_company_counts.user_id = u.id
       LEFT JOIN (
         SELECT created_by AS user_id, COUNT(*) AS total_jobs
         FROM jobs
@@ -889,7 +951,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       ${orderSql}
       LIMIT ${limit}
     `,
-    [...params, ...orderParams]
+    [JOB_STATUSES.DELETED, ...params, ...orderParams]
   );
 
   const commercialRows = search ? await safeQueryRows(
@@ -918,6 +980,11 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         c.name AS campus_name,
         c.city AS campus_city,
         c.state AS campus_state,
+        company_counts.managed_companies,
+        company_counts.total_managed_companies,
+        job_company_counts.job_companies,
+        job_company_counts.company_job_titles,
+        job_company_counts.total_company_jobs,
         COALESCE(job_counts.total_jobs, 0) AS total_jobs,
         COALESCE(application_counts.total_applications, 0) AS total_applications,
         COALESCE(payment_counts.total_payments, 0) AS total_payments,
@@ -928,6 +995,26 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       LEFT JOIN colleges c ON c.user_id = u.id
       LEFT JOIN sales_customers sc ON sc.user_id = u.id
       LEFT JOIN sales_leads sl ON sl.user_id = u.id
+      LEFT JOIN (
+        SELECT
+          hr_user_id AS user_id,
+          GROUP_CONCAT(DISTINCT company_name ORDER BY company_name SEPARATOR '||') AS managed_companies,
+          COUNT(DISTINCT company_key) AS total_managed_companies
+        FROM companies
+        WHERE hr_user_id IS NOT NULL
+        GROUP BY hr_user_id
+      ) company_counts ON company_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT
+          created_by AS user_id,
+          GROUP_CONCAT(DISTINCT company_name ORDER BY company_name SEPARATOR '||') AS job_companies,
+          GROUP_CONCAT(DISTINCT job_title SEPARATOR '||') AS company_job_titles,
+          COUNT(*) AS total_company_jobs
+        FROM jobs
+        WHERE created_by IS NOT NULL
+          AND COALESCE(status, '') <> ?
+        GROUP BY created_by
+      ) job_company_counts ON job_company_counts.user_id = u.id
       LEFT JOIN (
         SELECT created_by AS user_id, COUNT(*) AS total_jobs
         FROM jobs
@@ -989,6 +1076,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       LIMIT ${limit}
     `,
     [
+      JOB_STATUSES.DELETED,
       ...Array(10).fill(`%${normalizedSearch}%`),
       ...(searchDigits ? [`%${searchDigits}%`, `%${searchDigits}%`] : []),
       ...(roleFilters.length ? roleFilters : []),
@@ -1006,13 +1094,25 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     const normalizedRole = normalizeLogText(row.role);
     const contextType = getCommandSearchContextType(normalizedRole);
     const isEmployeeRecord = contextType === 'employee_record';
+    const managedCompanies = splitAggregatedList(row.managed_companies);
+    const jobCompanies = splitAggregatedList(row.job_companies);
+    const allRelatedCompanies = [...managedCompanies, ...jobCompanies]
+      .filter((item, index, list) => list.findIndex((entry) => entry.toLowerCase() === item.toLowerCase()) === index);
+    const companyJobTitles = splitAggregatedList(row.company_job_titles).slice(0, 5);
+    const matchedCompany = search
+      ? allRelatedCompanies.find((company) => normalizeLogText(company).includes(normalizedSearch))
+      : '';
+    const hasCompanyRelation = allRelatedCompanies.length > 0 && (normalizedRole === ROLES.HR || normalizedRole === 'company_admin');
     const supportLinks = buildSupportContextLinks(row.id, normalizedRole);
     const links = {
       ...supportLinks,
       activityLog: getCommandSearchActivityPath({ id: row.id, email: row.email, role: normalizedRole }),
       record: `/portal/super-admin/users/${encodeURIComponent(row.id)}/profile`
     };
-    const headline = row.company_name
+    const headline = matchedCompany
+      ? `Company match: ${matchedCompany}`
+      : row.company_name
+      || allRelatedCompanies[0]
       || row.campus_name
       || row.employee_designation
       || row.employee_department
@@ -1033,10 +1133,22 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       role: normalizedRole || 'user',
       status: row.status || 'active',
       contextType,
-      recordType: isEmployeeRecord ? 'Employee activity record' : 'Account support context',
+      recordType: isEmployeeRecord
+        ? 'Employee activity record'
+        : hasCompanyRelation
+          ? 'HR company posting context'
+          : 'Account support context',
       canOpenDashboard: !isEmployeeRecord,
       canOpenProfile: Boolean(row.id),
-      company: row.company_name || row.campus_name || row.employee_department || '-',
+      company: row.company_name || matchedCompany || allRelatedCompanies[0] || row.campus_name || row.employee_department || '-',
+      companyRelations: hasCompanyRelation ? {
+        matchedCompany: matchedCompany || '',
+        companies: allRelatedCompanies.slice(0, 8),
+        managedCompanyCount: Number(row.total_managed_companies || managedCompanies.length || 0),
+        postedCompanyCount: jobCompanies.length,
+        jobCount: Number(row.total_company_jobs || row.total_jobs || 0),
+        recentJobTitles: companyJobTitles
+      } : null,
       employee: isEmployeeRecord ? {
         code: row.employee_code || '-',
         department: row.employee_department || '-',
