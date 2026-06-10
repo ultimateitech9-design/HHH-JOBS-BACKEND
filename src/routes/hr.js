@@ -40,6 +40,7 @@ const {
   buildCalendarEventUrl,
   getInterviewScheduleCapabilities
 } = require('../services/interviews');
+const { normalizeCompanyKey, toCompanySlug } = require('../services/companyDirectory');
 const { attachPlanAccess, requirePlanFeature } = require('../middleware/planAccess');
 const { syncHrCompanyProfileToCampus } = require('../services/campusDrives');
 const { buildProfileSeedFromUser, ensureRoleProfile, upsertRoleProfile } = require('../services/profileTables');
@@ -179,6 +180,135 @@ const buildHrProfileSeedPayload = (user = {}) => {
     ...buildProfileSeedFromUser({ ...user, ...(signupDraft || {}) }),
     ...(signupDraft || {})
   });
+};
+
+const COMPANY_PROFILE_SELECT = [
+  'id',
+  'company_key',
+  'company_slug',
+  'company_name',
+  'hr_user_id',
+  'logo_url',
+  'website_url',
+  'location',
+  'state_id',
+  'district_id',
+  'state_name',
+  'district_name',
+  'sector_id',
+  'sector_name',
+  'industry_type',
+  'company_type',
+  'company_size',
+  'about',
+  'is_verified',
+  'is_active',
+  'source',
+  'created_at',
+  'updated_at'
+].join(', ');
+
+const normalizeCompanyRow = (row = {}, jobs = []) => {
+  const openJobsCount = jobs.filter((job) => String(job.status || '').toLowerCase() === JOB_STATUSES.OPEN).length;
+  const location = String(row.location || [row.district_name, row.state_name].filter(Boolean).join(', ')).trim();
+  return {
+    id: row.id || '',
+    companyKey: row.company_key || normalizeCompanyKey(row.company_name),
+    companySlug: row.company_slug || toCompanySlug(row.company_name),
+    companyName: row.company_name || '',
+    logoUrl: row.logo_url || '',
+    websiteUrl: row.website_url || '',
+    location,
+    stateId: row.state_id || '',
+    districtId: row.district_id || '',
+    stateName: row.state_name || '',
+    districtName: row.district_name || '',
+    sectorId: row.sector_id || '',
+    sectorName: row.sector_name || row.industry_type || '',
+    industryType: row.industry_type || row.sector_name || '',
+    companyType: row.company_type || '',
+    companySize: row.company_size || '',
+    about: row.about || '',
+    isVerified: Boolean(row.is_verified),
+    isActive: row.is_active !== false && row.is_active !== 0,
+    source: row.source || '',
+    jobsCount: jobs.length,
+    openJobsCount,
+    needsProfile: !row.logo_url || !location || !(row.sector_name || row.industry_type)
+  };
+};
+
+const buildCompanyPayloadFromRequest = ({ body = {}, targetUserId, companyKeyParam = '', existing = null }) => {
+  const companyName = String(body.companyName || body.company_name || existing?.company_name || companyKeyParam || '').trim();
+  const companyKey = normalizeCompanyKey(companyKeyParam || companyName);
+  return {
+    company_key: companyKey,
+    company_slug: toCompanySlug(companyName || companyKey),
+    company_name: companyName,
+    hr_user_id: targetUserId,
+    logo_url: body.logoUrl ?? body.logo_url ?? existing?.logo_url ?? null,
+    website_url: body.websiteUrl ?? body.website_url ?? body.companyWebsite ?? existing?.website_url ?? null,
+    location: body.location ?? body.companyLocation ?? existing?.location ?? null,
+    state_id: isValidUuid(body.stateId ?? body.state_id) ? (body.stateId ?? body.state_id) : null,
+    district_id: isValidUuid(body.districtId ?? body.district_id) ? (body.districtId ?? body.district_id) : null,
+    state_name: body.stateName ?? body.state_name ?? existing?.state_name ?? null,
+    district_name: body.districtName ?? body.district_name ?? existing?.district_name ?? null,
+    sector_id: isValidUuid(body.sectorId ?? body.sector_id) ? (body.sectorId ?? body.sector_id) : null,
+    sector_name: body.sectorName ?? body.sector_name ?? body.industryType ?? existing?.sector_name ?? null,
+    industry_type: body.industryType ?? body.industry_type ?? body.sectorName ?? existing?.industry_type ?? null,
+    company_type: body.companyType ?? body.company_type ?? existing?.company_type ?? null,
+    company_size: body.companySize ?? body.company_size ?? existing?.company_size ?? null,
+    about: body.about ?? body.companyAbout ?? existing?.about ?? null,
+    is_active: body.isActive ?? body.is_active ?? existing?.is_active ?? 1,
+    source: existing?.source || 'hr_managed',
+    updated_at: new Date().toISOString()
+  };
+};
+
+const syncHrPrimaryCompanyDirectory = async ({ targetUserId, profile = {} }) => {
+  const companyName = String(profile.company_name || '').trim();
+  const companyKey = normalizeCompanyKey(companyName);
+  if (!Database || !targetUserId || !companyName || !companyKey) return null;
+
+  const { data: existing, error: existingError } = await Database
+    .from('companies')
+    .select(COMPANY_PROFILE_SELECT)
+    .eq('hr_user_id', targetUserId)
+    .eq('company_key', companyKey)
+    .maybeSingle();
+
+  if (existingError) throw existingError;
+
+  const payload = {
+    company_key: companyKey,
+    company_slug: toCompanySlug(companyName),
+    company_name: companyName,
+    hr_user_id: targetUserId,
+    logo_url: profile.logo_url || existing?.logo_url || null,
+    website_url: profile.company_website || existing?.website_url || null,
+    location: profile.location || existing?.location || null,
+    state_id: profile.state_id || existing?.state_id || null,
+    district_id: profile.district_id || existing?.district_id || null,
+    state_name: profile.state_name || existing?.state_name || null,
+    district_name: profile.district_name || existing?.district_name || null,
+    sector_id: profile.sector_id || existing?.sector_id || null,
+    sector_name: profile.sector_name || existing?.sector_name || profile.industry_type || null,
+    industry_type: profile.industry_type || existing?.industry_type || profile.sector_name || null,
+    company_type: profile.company_type || existing?.company_type || null,
+    company_size: profile.company_size || existing?.company_size || null,
+    about: profile.about || existing?.about || null,
+    is_active: 1,
+    source: 'hr_profile',
+    updated_at: new Date().toISOString()
+  };
+
+  const saveQuery = existing?.id
+    ? Database.from('companies').update(payload).eq('id', existing.id)
+    : Database.from('companies').insert({ ...payload, created_at: new Date().toISOString() });
+
+  const { data, error } = await saveQuery.select(COMPANY_PROFILE_SELECT).single();
+  if (error) throw error;
+  return data;
 };
 
 const readHrProfileSeedUser = async ({ targetUserId, currentUser }) => {
@@ -351,6 +481,13 @@ router.post('/profile/logo', logoUpload.single('logo'), asyncHandler(async (req,
     return;
   }
 
+  try {
+    await syncHrPrimaryCompanyDirectory({ targetUserId, profile: data });
+  } catch (syncError) {
+    sendDatabaseError(res, syncError);
+    return;
+  }
+
   res.send({ status: true, logoUrl, profile: data });
 }));
 
@@ -422,8 +559,174 @@ router.put('/profile', asyncHandler(async (req, res) => {
     previousCompanyName: previousProfileResponse.data?.company_name || '',
     nextCompanyName: data.company_name || ''
   });
+  let companyProfile = null;
+  try {
+    companyProfile = await syncHrPrimaryCompanyDirectory({ targetUserId, profile: data });
+  } catch (syncError) {
+    sendDatabaseError(res, syncError);
+    return;
+  }
 
-  res.send({ status: true, profile: data, campusSync });
+  res.send({ status: true, profile: data, companyProfile, campusSync });
+}));
+
+router.get('/companies', asyncHandler(async (req, res) => {
+  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query.userId)
+    ? req.query.userId
+    : req.user.id;
+
+  const [companyResponse, jobsResponse] = await Promise.all([
+    Database
+      .from('companies')
+      .select(COMPANY_PROFILE_SELECT)
+      .eq('hr_user_id', targetUserId)
+      .order('updated_at', { ascending: false }),
+    Database
+      .from('jobs')
+      .select('*')
+      .eq('created_by', targetUserId)
+      .neq('status', JOB_STATUSES.DELETED)
+      .order('created_at', { ascending: false })
+  ]);
+
+  if (companyResponse.error) {
+    sendDatabaseError(res, companyResponse.error);
+    return;
+  }
+  if (jobsResponse.error) {
+    sendDatabaseError(res, jobsResponse.error);
+    return;
+  }
+
+  const jobs = jobsResponse.data || [];
+  const jobsByCompanyKey = new Map();
+  for (const job of jobs) {
+    const key = normalizeCompanyKey(job.company_key || job.company_name);
+    if (!key) continue;
+    jobsByCompanyKey.set(key, [...(jobsByCompanyKey.get(key) || []), job]);
+  }
+
+  const rowsByKey = new Map();
+  for (const row of companyResponse.data || []) {
+    const key = normalizeCompanyKey(row.company_key || row.company_name);
+    if (!key) continue;
+    rowsByKey.set(key, row);
+  }
+
+  for (const [key, companyJobs] of jobsByCompanyKey.entries()) {
+    if (rowsByKey.has(key)) continue;
+    const firstJob = companyJobs[0] || {};
+    rowsByKey.set(key, {
+      company_key: key,
+      company_slug: toCompanySlug(firstJob.company_name),
+      company_name: firstJob.company_name,
+      hr_user_id: targetUserId,
+      logo_url: firstJob.company_logo,
+      location: firstJob.job_location,
+      state_id: firstJob.state_id,
+      district_id: firstJob.district_id,
+      state_name: firstJob.state_name,
+      district_name: firstJob.district_name,
+      sector_id: firstJob.sector_id,
+      sector_name: firstJob.sector_name || firstJob.category,
+      industry_type: firstJob.category,
+      source: 'job_history',
+      is_active: 1
+    });
+  }
+
+  const companies = [...rowsByKey.values()]
+    .map((row) => normalizeCompanyRow(row, jobsByCompanyKey.get(normalizeCompanyKey(row.company_key || row.company_name)) || []))
+    .sort((a, b) => b.jobsCount - a.jobsCount || a.companyName.localeCompare(b.companyName));
+
+  res.send({ status: true, companies });
+}));
+
+router.put('/companies/:companyKey', asyncHandler(async (req, res) => {
+  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.body?.userId)
+    ? req.body.userId
+    : req.user.id;
+  const requestedKey = normalizeCompanyKey(req.params.companyKey);
+  const incomingName = String(req.body?.companyName || req.body?.company_name || '').trim();
+  const lookupKey = requestedKey || normalizeCompanyKey(incomingName);
+
+  if (!lookupKey && !incomingName) {
+    res.status(400).send({ status: false, message: 'Company name is required.' });
+    return;
+  }
+
+  const existingResponse = await Database
+    .from('companies')
+    .select(COMPANY_PROFILE_SELECT)
+    .eq('hr_user_id', targetUserId)
+    .eq('company_key', lookupKey || normalizeCompanyKey(incomingName))
+    .maybeSingle();
+
+  if (existingResponse.error) {
+    sendDatabaseError(res, existingResponse.error);
+    return;
+  }
+
+  const payload = buildCompanyPayloadFromRequest({
+    body: req.body || {},
+    targetUserId,
+    companyKeyParam: lookupKey,
+    existing: existingResponse.data
+  });
+
+  if (!String(payload.company_name || '').trim()) {
+    res.status(400).send({ status: false, message: 'Company name is required.' });
+    return;
+  }
+
+  const saveQuery = existingResponse.data?.id
+    ? Database.from('companies').update(payload).eq('id', existingResponse.data.id)
+    : Database.from('companies').insert({ ...payload, created_at: new Date().toISOString() });
+
+  const { data, error } = await saveQuery.select(COMPANY_PROFILE_SELECT).single();
+  if (error) {
+    sendDatabaseError(res, error);
+    return;
+  }
+
+  await Database
+    .from('jobs')
+    .update({
+      company_id: data.id,
+      company_key: data.company_key,
+      company_slug: data.company_slug,
+      company_name: data.company_name,
+      company_logo: data.logo_url || null
+    })
+    .eq('created_by', targetUserId)
+    .eq('company_key', data.company_key);
+
+  res.send({ status: true, company: normalizeCompanyRow(data) });
+}));
+
+router.get('/companies/:companyKey/jobs', asyncHandler(async (req, res) => {
+  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query.userId)
+    ? req.query.userId
+    : req.user.id;
+  const companyKey = normalizeCompanyKey(req.params.companyKey);
+
+  let query = Database
+    .from('jobs')
+    .select('*')
+    .eq('created_by', targetUserId)
+    .neq('status', JOB_STATUSES.DELETED)
+    .order('created_at', { ascending: false });
+
+  if (companyKey) query = query.eq('company_key', companyKey);
+
+  const { data, error } = await query;
+
+  if (error) {
+    sendDatabaseError(res, error);
+    return;
+  }
+
+  res.send({ status: true, jobs: (data || []).map(mapJobFromRow) });
 }));
 
 router.post('/jobs', requireApprovedHr, asyncHandler(createHrJob));
@@ -491,13 +794,20 @@ router.get('/jobs', asyncHandler(async (req, res) => {
   const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query.userId)
     ? req.query.userId
     : req.user.id;
+  const companyKey = normalizeCompanyKey(req.query.companyKey || req.query.company || '');
 
-  const { data, error } = await Database
+  let query = Database
     .from('jobs')
     .select('*')
     .eq('created_by', targetUserId)
     .neq('status', JOB_STATUSES.DELETED)
     .order('created_at', { ascending: false });
+
+  if (companyKey) {
+    query = query.eq('company_key', companyKey);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     sendDatabaseError(res, error);

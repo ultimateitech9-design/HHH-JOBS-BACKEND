@@ -74,6 +74,17 @@ const addUniqueIndexIfMissing = async (db, table, index, definition) => {
   }
 };
 
+const modifyColumnIfExists = async (db, table, column, definition) => {
+  if (!(await columnExists(db, table, column))) return false;
+  try {
+    await db.execute(`ALTER TABLE ${tableName(table)} MODIFY COLUMN ${columnName(column)} ${definition}`);
+    return true;
+  } catch (error) {
+    console.warn(`[schema] Could not modify column ${table}.${column}: ${error.message}`);
+    return false;
+  }
+};
+
 const createTable = async (db, sql) => {
   await db.execute(sql);
 };
@@ -131,6 +142,44 @@ const updateFromLegacyColumn = async (db, target, source) => {
 };
 
 const ensureMissingFeatureTables = async (db) => {
+  await createTable(db, `
+    CREATE TABLE IF NOT EXISTS ${tableName('companies')} (
+      id CHAR(36) NOT NULL DEFAULT (UUID()),
+      company_key VARCHAR(191) NOT NULL,
+      company_slug VARCHAR(191) NULL,
+      company_name LONGTEXT NOT NULL,
+      hr_user_id CHAR(36) NULL,
+      logo_url LONGTEXT NULL,
+      website_url LONGTEXT NULL,
+      location LONGTEXT NULL,
+      state_id CHAR(36) NULL,
+      district_id CHAR(36) NULL,
+      state_name LONGTEXT NULL,
+      district_name LONGTEXT NULL,
+      sector_id CHAR(36) NULL,
+      sector_name LONGTEXT NULL,
+      industry_type LONGTEXT NULL,
+      company_type LONGTEXT NULL,
+      company_size LONGTEXT NULL,
+      about LONGTEXT NULL,
+      is_verified TINYINT(1) NOT NULL DEFAULT 0,
+      is_sponsored TINYINT(1) NOT NULL DEFAULT 0,
+      sponsor_rating DECIMAL(4,2) NULL,
+      sponsor_reviews_label LONGTEXT NULL,
+      sponsor_tags JSON NULL,
+      sponsor_sort_order INT NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      source VARCHAR(64) NOT NULL DEFAULT 'hr_managed',
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY companies_hr_company_key_uidx (hr_user_id, company_key),
+      KEY companies_company_key_idx (company_key),
+      KEY companies_company_slug_idx (company_slug),
+      KEY companies_hr_user_idx (hr_user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
   await createTable(db, `
     CREATE TABLE IF NOT EXISTS ${tableName('blog_articles')} (
       id CHAR(36) NOT NULL DEFAULT (UUID()),
@@ -368,6 +417,14 @@ const ensureJobFacetSchema = async (db) => {
 
   await addColumnIfMissing(db, 'jobs', 'city_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'jobs', 'pincode', 'VARCHAR(32) NULL');
+  await addColumnIfMissing(db, 'jobs', 'company_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'jobs', 'company_key', 'VARCHAR(191) NULL');
+  await addColumnIfMissing(db, 'jobs', 'company_slug', 'VARCHAR(191) NULL');
+
+  await db.execute(`UPDATE ${tableName('jobs')} SET company_key = LEFT(company_key, 191) WHERE company_key IS NOT NULL`);
+  await db.execute(`UPDATE ${tableName('jobs')} SET company_slug = LEFT(company_slug, 191) WHERE company_slug IS NOT NULL`);
+  await modifyColumnIfExists(db, 'jobs', 'company_key', 'VARCHAR(191) NULL');
+  await modifyColumnIfExists(db, 'jobs', 'company_slug', 'VARCHAR(191) NULL');
 
   await db.execute(`
     UPDATE ${tableName('jobs')}
@@ -394,6 +451,178 @@ const ensureJobFacetSchema = async (db) => {
     'jobs_status_pincode_idx',
     '(`status`(32), `pincode`, `created_at`)'
   );
+  await addIndexIfMissing(
+    db,
+    'jobs',
+    'jobs_created_company_key_idx',
+    '(`created_by`, `company_key`, `created_at`)'
+  );
+  await addIndexIfMissing(
+    db,
+    'jobs',
+    'jobs_company_id_idx',
+    '(`company_id`, `created_at`)'
+  );
+};
+
+const companyKeyExpression = (columnSql) => `
+  TRIM(REGEXP_REPLACE(
+    REGEXP_REPLACE(
+      REGEXP_REPLACE(LOWER(COALESCE(${columnSql}, '')), '&', ' and '),
+      '[^a-z0-9]+',
+      ' '
+    ),
+    '(^| )(pvt|private|ltd|limited|llp|llc|inc|incorporated|corp|corporation|company|co)( |$)',
+    ' '
+  ))
+`;
+
+const companySlugExpression = (columnSql) => `
+  LEFT(TRIM(BOTH '-' FROM REGEXP_REPLACE(${companyKeyExpression(columnSql)}, '[^a-z0-9]+', '-')), 72)
+`;
+
+const ensureCompanyDirectorySchema = async (db) => {
+  if (!(await tableExists(db, 'companies'))) return;
+
+  await addColumnIfMissing(db, 'companies', 'company_key', 'VARCHAR(191) NULL');
+  await addColumnIfMissing(db, 'companies', 'company_slug', 'VARCHAR(191) NULL');
+  await addColumnIfMissing(db, 'companies', 'hr_user_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'companies', 'logo_url', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'website_url', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'location', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'state_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'companies', 'district_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'companies', 'state_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'district_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'sector_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'companies', 'sector_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'industry_type', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'company_type', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'company_size', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'about', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'is_verified', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await addColumnIfMissing(db, 'companies', 'is_sponsored', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await addColumnIfMissing(db, 'companies', 'sponsor_rating', 'DECIMAL(4,2) NULL');
+  await addColumnIfMissing(db, 'companies', 'sponsor_reviews_label', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'sponsor_tags', 'JSON NULL');
+  await addColumnIfMissing(db, 'companies', 'sponsor_sort_order', 'INT NULL');
+  await addColumnIfMissing(db, 'companies', 'is_active', 'TINYINT(1) NOT NULL DEFAULT 1');
+  await addColumnIfMissing(db, 'companies', 'source', "VARCHAR(64) NOT NULL DEFAULT 'hr_managed'");
+
+  await db.execute(`UPDATE ${tableName('companies')} SET company_key = LEFT(company_key, 191) WHERE company_key IS NOT NULL`);
+  await db.execute(`UPDATE ${tableName('companies')} SET company_slug = LEFT(company_slug, 191) WHERE company_slug IS NOT NULL`);
+  await modifyColumnIfExists(db, 'companies', 'company_key', 'VARCHAR(191) NULL');
+  await modifyColumnIfExists(db, 'companies', 'company_slug', 'VARCHAR(191) NULL');
+  await modifyColumnIfExists(db, 'companies', 'hr_user_id', 'CHAR(36) NULL');
+
+  await addUniqueIndexIfMissing(db, 'companies', 'companies_hr_company_key_uidx', '(`hr_user_id`, `company_key`)');
+  await addIndexIfMissing(db, 'companies', 'companies_company_key_idx', '(`company_key`)');
+  await addIndexIfMissing(db, 'companies', 'companies_company_slug_idx', '(`company_slug`)');
+  await addIndexIfMissing(db, 'companies', 'companies_hr_user_idx', '(`hr_user_id`)');
+
+  if (await tableExists(db, 'hr_profiles')) {
+    await db.execute(`
+      INSERT INTO ${tableName('companies')} (
+        company_key, company_slug, company_name, hr_user_id, logo_url, website_url, location,
+        state_id, district_id, state_name, district_name, sector_id, sector_name, industry_type,
+        company_type, company_size, about, is_verified, is_active, source, created_at, updated_at
+      )
+      SELECT
+        ${companyKeyExpression('hp.company_name')} AS company_key,
+        ${companySlugExpression('hp.company_name')} AS company_slug,
+        hp.company_name,
+        hp.user_id,
+        hp.logo_url,
+        hp.company_website,
+        hp.location,
+        hp.state_id,
+        hp.district_id,
+        hp.state_name,
+        hp.district_name,
+        hp.sector_id,
+        hp.sector_name,
+        hp.industry_type,
+        hp.company_type,
+        hp.company_size,
+        hp.about,
+        COALESCE(hp.is_verified, 0),
+        1,
+        'hr_profile',
+        COALESCE(hp.created_at, CURRENT_TIMESTAMP(3)),
+        CURRENT_TIMESTAMP(3)
+      FROM ${tableName('hr_profiles')} hp
+      WHERE hp.company_name IS NOT NULL
+        AND hp.company_name <> ''
+        AND ${companyKeyExpression('hp.company_name')} <> ''
+        AND NOT EXISTS (
+          SELECT 1 FROM ${tableName('companies')} c
+          WHERE c.hr_user_id = hp.user_id
+            AND c.company_key = ${companyKeyExpression('hp.company_name')}
+        )
+    `);
+  }
+
+  if (await tableExists(db, 'jobs')) {
+    await db.execute(`
+      UPDATE ${tableName('jobs')}
+      SET
+        company_key = ${companyKeyExpression('company_name')},
+        company_slug = ${companySlugExpression('company_name')}
+      WHERE (company_key IS NULL OR company_key = '')
+        AND company_name IS NOT NULL
+        AND company_name <> ''
+    `);
+
+    await db.execute(`
+      INSERT INTO ${tableName('companies')} (
+        company_key, company_slug, company_name, hr_user_id, logo_url, location,
+        state_id, district_id, state_name, district_name, sector_id, sector_name, industry_type,
+        is_verified, is_active, source, created_at, updated_at
+      )
+      SELECT
+        j.company_key,
+        MAX(COALESCE(NULLIF(j.company_slug, ''), ${companySlugExpression('j.company_name')})),
+        MAX(j.company_name),
+        j.created_by,
+        MAX(j.company_logo),
+        MAX(j.job_location),
+        MAX(j.state_id),
+        MAX(j.district_id),
+        MAX(j.state_name),
+        MAX(j.district_name),
+        MAX(j.sector_id),
+        MAX(j.sector_name),
+        MAX(j.category),
+        0,
+        1,
+        'job_history',
+        MIN(COALESCE(j.created_at, CURRENT_TIMESTAMP(3))),
+        CURRENT_TIMESTAMP(3)
+      FROM ${tableName('jobs')} j
+      WHERE j.created_by IS NOT NULL
+        AND j.company_key IS NOT NULL
+        AND j.company_key <> ''
+      GROUP BY j.created_by, j.company_key
+      HAVING NOT EXISTS (
+        SELECT 1 FROM ${tableName('companies')} c
+        WHERE c.hr_user_id = j.created_by
+          AND c.company_key = j.company_key
+      )
+    `);
+
+    await db.execute(`
+      UPDATE ${tableName('jobs')} j
+      JOIN ${tableName('companies')} c
+        ON c.hr_user_id = j.created_by
+       AND c.company_key = j.company_key
+      SET
+        j.company_id = COALESCE(j.company_id, c.id),
+        j.company_slug = COALESCE(NULLIF(j.company_slug, ''), c.company_slug),
+        j.company_logo = COALESCE(NULLIF(j.company_logo, ''), NULLIF(c.logo_url, ''))
+      WHERE j.company_key IS NOT NULL
+        AND j.company_key <> ''
+    `);
+  }
 };
 
 const dedupeHrProfilesByUser = async (db) => {
@@ -912,6 +1141,7 @@ const ensureMySqlAppSchema = async () => {
     await ensureMissingFeatureTables(db);
     await ensureJobFacetSchema(db);
     await ensureHrProfilePrefillSchema(db);
+    await ensureCompanyDirectorySchema(db);
     await ensureSeoSlugSchema(db);
     await ensureSupportChatSchema(db);
     await ensureIndexesForExistingTables(db);

@@ -28,7 +28,7 @@ const {
 } = require('../modules/pricing/engine');
 const { getCurrentRolePlanSubscription, getRolePlanBySlug } = require('./commercial');
 const { isRoleSubscriptionUsable } = require('../utils/roleSubscriptionAccess');
-const { normalizeCompanyKey } = require('./companyDirectory');
+const { normalizeCompanyKey, toCompanySlug } = require('./companyDirectory');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
 const MAX_JOB_POSTING_LOCATIONS = 1;
@@ -571,6 +571,39 @@ const validateNewJobPayload = (payload) => {
 
 const normalizeLogoInput = (value = '') => String(value || '').trim();
 
+const COMPANY_PROFILE_SELECT = [
+  'id',
+  'company_key',
+  'company_slug',
+  'company_name',
+  'hr_user_id',
+  'logo_url',
+  'website_url',
+  'location',
+  'state_id',
+  'district_id',
+  'state_name',
+  'district_name',
+  'sector_id',
+  'sector_name',
+  'industry_type',
+  'company_type',
+  'company_size',
+  'about',
+  'is_verified',
+  'is_active',
+  'source',
+  'created_at',
+  'updated_at'
+].join(', ');
+
+const buildCompanyLocationLabel = (payload = {}) =>
+  [payload.location || payload.job_location, payload.district_name, payload.state_name, payload.pincode]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .filter((item, index, list) => list.findIndex((value) => value.toLowerCase() === item.toLowerCase()) === index)
+    .join(', ');
+
 const getHrProfileCompanyForUser = async (userId) => {
   if (!Database || !userId) return '';
 
@@ -584,8 +617,127 @@ const getHrProfileCompanyForUser = async (userId) => {
   return String(data?.company_name || '').trim();
 };
 
+const getHrProfileForUser = async (userId) => {
+  if (!Database || !userId) return null;
+
+  const { data, error } = await Database
+    .from('hr_profiles')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+};
+
+const findHrManagedCompany = async ({ userId, companyKey }) => {
+  if (!Database || !userId || !companyKey) return null;
+
+  const { data, error } = await Database
+    .from('companies')
+    .select(COMPANY_PROFILE_SELECT)
+    .eq('hr_user_id', userId)
+    .eq('company_key', companyKey)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+};
+
+const buildCompanyProfilePayload = ({ userId, companyName, companyKey, companySlug, payload = {}, body = {}, profile = {}, existing = null }) => {
+  const primaryProfileKey = normalizeCompanyKey(profile?.company_name);
+  const isPrimaryCompany = primaryProfileKey && primaryProfileKey === companyKey;
+  const pick = (...values) => {
+    for (const value of values) {
+      const text = String(value ?? '').trim();
+      if (text) return text;
+    }
+    return null;
+  };
+
+  return {
+    id: existing?.id || undefined,
+    company_key: companyKey,
+    company_slug: companySlug,
+    company_name: companyName,
+    hr_user_id: userId,
+    logo_url: pick(body.logoUrl, body.logo_url, body.companyLogo, body.company_logo, payload.company_logo, existing?.logo_url, isPrimaryCompany ? profile.logo_url : ''),
+    website_url: pick(body.companyWebsite, body.company_website, body.websiteUrl, body.website_url, existing?.website_url, isPrimaryCompany ? profile.company_website : ''),
+    location: pick(body.companyLocation, body.company_location, body.location, existing?.location, buildCompanyLocationLabel(payload), isPrimaryCompany ? profile.location : ''),
+    state_id: optionalUuid(body.companyStateId ?? body.company_state_id ?? payload.state_id ?? existing?.state_id ?? (isPrimaryCompany ? profile.state_id : null)),
+    district_id: optionalUuid(body.companyDistrictId ?? body.company_district_id ?? payload.district_id ?? existing?.district_id ?? (isPrimaryCompany ? profile.district_id : null)),
+    state_name: pick(body.companyStateName, body.company_state_name, payload.state_name, existing?.state_name, isPrimaryCompany ? profile.state_name : ''),
+    district_name: pick(body.companyDistrictName, body.company_district_name, payload.district_name, payload.city_name, existing?.district_name, isPrimaryCompany ? profile.district_name : ''),
+    sector_id: optionalUuid(body.companySectorId ?? body.company_sector_id ?? payload.sector_id ?? existing?.sector_id ?? (isPrimaryCompany ? profile.sector_id : null)),
+    sector_name: pick(body.companySectorName, body.company_sector_name, payload.sector_name, payload.category, existing?.sector_name, isPrimaryCompany ? profile.sector_name : ''),
+    industry_type: pick(body.companyIndustryType, body.company_industry_type, payload.sector_name, existing?.industry_type, isPrimaryCompany ? profile.industry_type : ''),
+    company_type: pick(body.companyType, body.company_type, existing?.company_type, isPrimaryCompany ? profile.company_type : ''),
+    company_size: pick(body.companySize, body.company_size, existing?.company_size, isPrimaryCompany ? profile.company_size : ''),
+    about: pick(body.companyAbout, body.company_about, existing?.about, isPrimaryCompany ? profile.about : ''),
+    is_active: existing?.is_active ?? 1,
+    source: existing?.source || (isPrimaryCompany ? 'hr_profile' : 'hr_managed'),
+    updated_at: new Date().toISOString()
+  };
+};
+
+const stripUndefinedEntries = (value = {}) =>
+  Object.fromEntries(Object.entries(value).filter(([, entryValue]) => entryValue !== undefined));
+
+const ensureHrManagedCompanyForJob = async ({ userId, payload = {}, body = {} }) => {
+  if (!Database || !userId) return { payload };
+
+  const profile = await getHrProfileForUser(userId);
+  const companyName = optionalText(body.companyName ?? body.company_name ?? payload.company_name)
+    || optionalText(profile?.company_name);
+  if (!companyName) return { payload };
+
+  const companyKey = normalizeCompanyKey(companyName);
+  const companySlug = toCompanySlug(companyName);
+  if (!companyKey) return { payload: { ...payload, company_name: companyName } };
+
+  const existing = await findHrManagedCompany({ userId, companyKey });
+  const companyPayload = buildCompanyProfilePayload({
+    userId,
+    companyName,
+    companyKey,
+    companySlug,
+    payload,
+    body,
+    profile,
+    existing
+  });
+
+  const saveQuery = existing?.id
+    ? Database.from('companies').update(stripUndefinedEntries(companyPayload)).eq('id', existing.id)
+    : Database.from('companies').insert(stripUndefinedEntries({
+      ...companyPayload,
+      created_at: new Date().toISOString()
+    }));
+
+  const { data, error } = await saveQuery.select(COMPANY_PROFILE_SELECT).single();
+  if (error) throw error;
+
+  return {
+    company: data,
+    payload: {
+      ...payload,
+      company_name: data?.company_name || companyName,
+      company_id: data?.id || null,
+      company_key: data?.company_key || companyKey,
+      company_slug: data?.company_slug || companySlug,
+      company_logo: normalizeLogoInput(payload.company_logo) || normalizeLogoInput(data?.logo_url) || payload.company_logo
+    }
+  };
+};
+
 const getHrProfileLogoForUser = async (userId, companyName) => {
   if (!Database || !userId) return '';
+
+  const requestedCompanyKey = normalizeCompanyKey(companyName);
+  if (requestedCompanyKey) {
+    const company = await findHrManagedCompany({ userId, companyKey: requestedCompanyKey });
+    if (company?.logo_url) return normalizeLogoInput(company.logo_url);
+  }
 
   const { data, error } = await Database
     .from('hr_profiles')
@@ -595,7 +747,6 @@ const getHrProfileLogoForUser = async (userId, companyName) => {
 
   if (error) throw error;
 
-  const requestedCompanyKey = normalizeCompanyKey(companyName);
   const profileCompanyKey = normalizeCompanyKey(data?.company_name);
   if (requestedCompanyKey && profileCompanyKey && requestedCompanyKey !== profileCompanyKey) {
     return '';
@@ -726,13 +877,15 @@ const applyJobFilters = (query, filters = {}) => {
 };
 
 const createHrJob = async (req, res) => {
-  const payload = buildJobPayload(req.body || {});
+  let payload = buildJobPayload(req.body || {});
   try {
-    const profileCompanyName = req.user.role === ROLES.HR
-      ? await getHrProfileCompanyForUser(req.user.id)
-      : '';
-    if (profileCompanyName) {
-      payload.company_name = profileCompanyName;
+    if (req.user.role === ROLES.HR) {
+      const resolved = await ensureHrManagedCompanyForJob({
+        userId: req.user.id,
+        payload,
+        body: req.body || {}
+      });
+      payload = resolved.payload;
     }
   } catch (error) {
     if (error?.code) {
@@ -906,13 +1059,18 @@ const updateHrJob = async (req, res) => {
   const existingJob = await assertJobOwnership(jobId, req.user, res);
   if (!existingJob) return;
 
-  const payload = buildJobPayload(req.body || {});
+  let payload = buildJobPayload(req.body || {});
   try {
-    const profileCompanyName = req.user.role === ROLES.HR
-      ? await getHrProfileCompanyForUser(req.user.id)
-      : '';
-    if (profileCompanyName) {
-      payload.company_name = profileCompanyName;
+    if (req.user.role === ROLES.HR) {
+      const resolved = await ensureHrManagedCompanyForJob({
+        userId: req.user.id,
+        payload: {
+          ...payload,
+          company_name: payload.company_name || existingJob.company_name
+        },
+        body: req.body || {}
+      });
+      payload = resolved.payload;
     }
   } catch (error) {
     if (error?.code) {
