@@ -11,6 +11,7 @@
     "worker": "node scripts/worker.js",
     "migrate:postgres-to-mysql": "node scripts/migrate-postgres-to-mysql.js",
     "ensure:mysql-schema": "node scripts/ensure-mysql-app-schema.js",
+    "generate:sitemap": "node scripts/generate-sitemap.js",
     "export:mysql-schema": "node scripts/export-mysql-schema.js",
     "ensure:support-chat-schema": "node scripts/ensure-support-chat-mysql-schema.js",
     "create:super-admin": "node scripts/create-super-admin.js",
