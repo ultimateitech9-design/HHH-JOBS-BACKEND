@@ -510,6 +510,7 @@ const buildJobPayload = (body = {}) => {
 
   return {
     job_title: body.jobTitle ?? body.job_title,
+    company_key: optionalText(body.companyKey ?? body.company_key),
     company_name: body.companyName ?? body.company_name,
     seo_slug: seoSlug || undefined,
     min_price: body.minPrice ?? body.min_price,
@@ -687,15 +688,30 @@ const ensureHrManagedCompanyForJob = async ({ userId, payload = {}, body = {} })
   if (!Database || !userId) return { payload };
 
   const profile = await getHrProfileForUser(userId);
-  const companyName = optionalText(body.companyName ?? body.company_name ?? payload.company_name)
+  const requestedCompanyKey = normalizeCompanyKey(body.companyKey ?? body.company_key ?? payload.company_key);
+  let existing = null;
+
+  if (requestedCompanyKey) {
+    existing = await findHrManagedCompany({ userId, companyKey: requestedCompanyKey });
+    if (!existing) {
+      const error = new Error('Select a hiring company from your profile before posting this job.');
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  const companyName = optionalText(existing?.company_name)
+    || optionalText(body.companyName ?? body.company_name ?? payload.company_name)
     || optionalText(profile?.company_name);
   if (!companyName) return { payload };
 
-  const companyKey = normalizeCompanyKey(companyName);
-  const companySlug = toCompanySlug(companyName);
+  const companyKey = existing?.company_key || requestedCompanyKey || normalizeCompanyKey(companyName);
+  const companySlug = existing?.company_slug || toCompanySlug(companyName);
   if (!companyKey) return { payload: { ...payload, company_name: companyName } };
 
-  const existing = await findHrManagedCompany({ userId, companyKey });
+  if (!existing) {
+    existing = await findHrManagedCompany({ userId, companyKey });
+  }
   const companyPayload = buildCompanyProfilePayload({
     userId,
     companyName,
