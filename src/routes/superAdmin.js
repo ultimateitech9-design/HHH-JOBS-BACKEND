@@ -11,6 +11,7 @@ const { notifyMatchingJobAlerts } = require('../services/notifications');
 const { notifyRecommendedStudentsForJob } = require('../services/recommendations');
 const { processAutoApplyForJob } = require('../services/autoApply');
 const { enqueueCreatedUserWelcomeEmail } = require('../services/createdUserWelcome');
+const { normalizeCompanyKey, toCompanySlug } = require('../services/companyDirectory');
 const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
@@ -196,6 +197,77 @@ const getCurrentMonthRange = () => {
 };
 
 const normalizeLogText = (value = '') => String(value || '').trim().toLowerCase();
+
+const normalizeCompanySearchText = (value = '') => normalizeLogText(value)
+  .replace(/&/g, ' and ')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .replace(/\b(private|pvt|limited|ltd|llp|inc|corp|corporation|company|co|jobs|job|india|pvtltd)\b/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const buildCompanySearchVariants = (value = '') => {
+  const normalized = normalizeLogText(value);
+  const stripped = normalizeCompanySearchText(value);
+  const compact = stripped.replace(/\s+/g, '');
+  const companyKey = normalizeCompanyKey(value);
+  const companySlug = toCompanySlug(value);
+  return [...new Set([normalized, stripped, compact, companyKey, companySlug].filter((item) => item.length >= 2))];
+};
+
+const buildCompanyLikeValue = (value = '') => {
+  const variants = buildCompanySearchVariants(value);
+  return `%${variants[1] || variants[0] || normalizeLogText(value)}%`;
+};
+
+const buildCompanyLikeValues = (value = '') => (
+  buildCompanySearchVariants(value).map((variant) => `%${variant}%`)
+);
+
+const buildCompanyTokenLikeValues = (value = '') => (
+  normalizeCompanySearchText(value)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2)
+    .slice(0, 6)
+    .map((token) => `%${token}%`)
+);
+
+const buildCompanyTextPredicate = (fields = [], likeValues = [], tokenLikeValues = []) => {
+  const safeFields = fields.filter(Boolean);
+  if (!safeFields.length) return { sql: '1 = 0', params: [] };
+
+  const exactPredicates = [];
+  const exactParams = [];
+  safeFields.forEach((field) => {
+    likeValues.forEach((likeValue) => {
+      exactPredicates.push(`LOWER(COALESCE(CAST(${field} AS CHAR), '')) LIKE ?`);
+      exactParams.push(likeValue);
+      exactPredicates.push(`REPLACE(LOWER(COALESCE(CAST(${field} AS CHAR), '')), ' ', '') LIKE ?`);
+      exactParams.push(likeValue.replace(/\s+/g, ''));
+    });
+  });
+
+  const concatExpression = `LOWER(CONCAT_WS(' ', ${safeFields.map((field) => `COALESCE(CAST(${field} AS CHAR), '')`).join(', ')}))`;
+  const tokenPredicate = tokenLikeValues.length
+    ? `(${tokenLikeValues.map(() => `${concatExpression} LIKE ?`).join(' AND ')})`
+    : '';
+
+  return {
+    sql: [...exactPredicates, tokenPredicate].filter(Boolean).join('\n            OR '),
+    params: [...exactParams, ...tokenLikeValues]
+  };
+};
+
+const companyTextMatchesSearch = (company = '', search = '') => {
+  if (!search) return false;
+  const companyText = normalizeLogText(company);
+  const companyCompact = normalizeCompanySearchText(company).replace(/\s+/g, '');
+  return buildCompanySearchVariants(search).some((variant) => (
+    companyText.includes(variant)
+    || normalizeCompanySearchText(company).includes(variant)
+    || (companyCompact && companyCompact.includes(variant))
+  ));
+};
 
 const splitAggregatedList = (value = '') => (
   String(value || '')
@@ -727,6 +799,9 @@ router.get('/command-search', asyncHandler(async (req, res) => {
   const where = [];
   const params = [];
   const normalizedSearch = search.toLowerCase();
+  const companyLike = buildCompanyLikeValue(search);
+  const companyLikeValues = buildCompanyLikeValues(search);
+  const companyTokenLikeValues = buildCompanyTokenLikeValues(search);
   const searchDigits = search.replace(/\D/g, '');
 
   if (search) {
@@ -762,18 +837,33 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       'ep.access_scope'
     ];
     const textPredicates = searchableFields.map((field) => `LOWER(COALESCE(CAST(${field} AS CHAR), '')) LIKE ?`);
+    const companyProfileMatch = buildCompanyTextPredicate([
+      'hc.company_name',
+      'hc.company_key',
+      'hc.company_slug',
+      'hc.website_url',
+      'hc.location',
+      'hc.state_name',
+      'hc.district_name',
+      'hc.city'
+    ], companyLikeValues, companyTokenLikeValues);
+    const jobCompanyMatch = buildCompanyTextPredicate([
+      'hj.company_name',
+      'hj.company_key',
+      'hj.company_slug',
+      'hj.job_title',
+      'hj.job_location',
+      'hj.city_name',
+      'hj.district_name',
+      'hj.state_name'
+    ], companyLikeValues, companyTokenLikeValues);
     const hrCompanyRelationPredicates = [
       `EXISTS (
         SELECT 1
         FROM companies hc
         WHERE hc.hr_user_id = u.id
           AND (
-            LOWER(COALESCE(CAST(hc.company_name AS CHAR), '')) LIKE ?
-            OR LOWER(COALESCE(CAST(hc.website_url AS CHAR), '')) LIKE ?
-            OR LOWER(COALESCE(CAST(hc.location AS CHAR), '')) LIKE ?
-            OR LOWER(COALESCE(CAST(hc.state_name AS CHAR), '')) LIKE ?
-            OR LOWER(COALESCE(CAST(hc.district_name AS CHAR), '')) LIKE ?
-            OR LOWER(COALESCE(CAST(hc.city AS CHAR), '')) LIKE ?
+            ${companyProfileMatch.sql}
           )
       )`,
       `EXISTS (
@@ -782,10 +872,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         WHERE hj.created_by = u.id
           AND COALESCE(hj.status, '') <> ?
           AND (
-            LOWER(COALESCE(CAST(hj.company_name AS CHAR), '')) LIKE ?
-            OR LOWER(COALESCE(CAST(hj.company_key AS CHAR), '')) LIKE ?
-            OR LOWER(COALESCE(CAST(hj.company_slug AS CHAR), '')) LIKE ?
-            OR LOWER(COALESCE(CAST(hj.job_title AS CHAR), '')) LIKE ?
+            ${jobCompanyMatch.sql}
           )
       )`
     ];
@@ -799,8 +886,8 @@ router.get('/command-search', asyncHandler(async (req, res) => {
 
     where.push(`(${[...textPredicates, ...hrCompanyRelationPredicates, ...phonePredicates].join('\n      OR ')})`);
     params.push(...searchableFields.map(() => like));
-    params.push(...Array(6).fill(like));
-    params.push(JOB_STATUSES.DELETED, ...Array(4).fill(like));
+    params.push(...companyProfileMatch.params);
+    params.push(JOB_STATUSES.DELETED, ...jobCompanyMatch.params);
     if (searchDigits) {
       params.push(...phonePredicates.map(() => `%${searchDigits}%`));
     }
@@ -1077,7 +1164,16 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     `,
     [
       JOB_STATUSES.DELETED,
-      ...Array(10).fill(`%${normalizedSearch}%`),
+      companyLike,
+      `%${normalizedSearch}%`,
+      `%${normalizedSearch}%`,
+      `%${normalizedSearch}%`,
+      companyLike,
+      `%${normalizedSearch}%`,
+      `%${normalizedSearch}%`,
+      `%${normalizedSearch}%`,
+      `%${normalizedSearch}%`,
+      `%${normalizedSearch}%`,
       ...(searchDigits ? [`%${searchDigits}%`, `%${searchDigits}%`] : []),
       ...(roleFilters.length ? roleFilters : []),
       ...(statusFilters.length ? statusFilters : []),
@@ -1100,7 +1196,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       .filter((item, index, list) => list.findIndex((entry) => entry.toLowerCase() === item.toLowerCase()) === index);
     const companyJobTitles = splitAggregatedList(row.company_job_titles).slice(0, 5);
     const matchedCompany = search
-      ? allRelatedCompanies.find((company) => normalizeLogText(company).includes(normalizedSearch))
+      ? allRelatedCompanies.find((company) => companyTextMatchesSearch(company, search))
       : '';
     const hasCompanyRelation = allRelatedCompanies.length > 0 && (normalizedRole === ROLES.HR || normalizedRole === 'company_admin');
     const supportLinks = buildSupportContextLinks(row.id, normalizedRole);

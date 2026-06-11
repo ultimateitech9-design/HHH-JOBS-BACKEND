@@ -126,7 +126,7 @@ router.get('/plans/:slug', asyncHandler(async (req, res) => {
   }
 }));
 
-router.get('/admin/plans', requireAuth, requireActiveUser, requireRole(ROLES.ADMIN), asyncHandler(async (req, res) => {
+router.get('/admin/plans', requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
   try {
     const plans = await fetchPlans({ includeInactive: true });
     res.send({ status: true, plans: plans.map(formatPlanForClient) });
@@ -135,7 +135,7 @@ router.get('/admin/plans', requireAuth, requireActiveUser, requireRole(ROLES.ADM
   }
 }));
 
-router.patch('/plans/:slug', requireAuth, requireActiveUser, requireRole(ROLES.ADMIN), asyncHandler(async (req, res) => {
+router.patch('/plans/:slug', requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
   try {
     const updated = await updatePlanBySlug(req.params.slug, req.body || {});
 
@@ -181,7 +181,7 @@ router.get('/role-plans', asyncHandler(async (req, res) => {
   }
 }));
 
-router.get('/admin/role-plans', requireAuth, requireActiveUser, requireRole(ROLES.ADMIN), asyncHandler(async (req, res) => {
+router.get('/admin/role-plans', requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
   try {
     const plans = await fetchRolePlans({
       audienceRole: req.query.audienceRole || req.query.audience_role || '',
@@ -193,7 +193,7 @@ router.get('/admin/role-plans', requireAuth, requireActiveUser, requireRole(ROLE
   }
 }));
 
-router.patch('/role-plans/:slug', requireAuth, requireActiveUser, requireRole(ROLES.ADMIN), asyncHandler(async (req, res) => {
+router.patch('/role-plans/:slug', requireAuth, requireActiveUser, requireRole(ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
   try {
     const updated = await updateRolePlanBySlug(req.params.slug, req.body || {});
 
