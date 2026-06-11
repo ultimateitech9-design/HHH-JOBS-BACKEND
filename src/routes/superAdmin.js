@@ -1040,6 +1040,163 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     [JOB_STATUSES.DELETED, ...params, ...orderParams]
   );
 
+  const allowsHrCompanySearch = search && (
+    !roleFilters.length
+    || roleFilters.includes(ROLES.HR)
+    || roleFilters.includes('company_admin')
+  );
+  const linkedCompanyProfileMatch = allowsHrCompanySearch
+    ? buildCompanyTextPredicate([
+        'hc.company_name',
+        'hc.company_key',
+        'hc.company_slug',
+        'hc.website_url',
+        'hc.location',
+        'hc.state_name',
+        'hc.district_name'
+      ], companyLikeValues, companyTokenLikeValues)
+    : null;
+  const linkedJobCompanyMatch = allowsHrCompanySearch
+    ? buildCompanyTextPredicate([
+        'hj.company_name',
+        'hj.company_key',
+        'hj.company_slug',
+        'hj.job_title',
+        'hj.job_location',
+        'hj.city_name',
+        'hj.district_name',
+        'hj.state_name'
+      ], companyLikeValues, companyTokenLikeValues)
+    : null;
+  const companyLinkedHrRows = allowsHrCompanySearch ? await safeQueryRows(
+    `
+      SELECT
+        u.id,
+        u.name,
+        u.email,
+        u.mobile,
+        u.role,
+        u.status,
+        u.is_hr_approved,
+        u.is_email_verified,
+        u.created_at,
+        u.last_login_at,
+        hp.company_name,
+        hp.contact_email AS hr_contact_email,
+        hp.contact_phone AS hr_contact_phone,
+        hp.location AS hr_location,
+        hp.state_name AS hr_state,
+        hp.district_name AS hr_city,
+        hp.is_verified AS hr_verified,
+        ep.employee_code,
+        ep.department AS employee_department,
+        ep.designation AS employee_designation,
+        ep.office_location AS employee_location,
+        ep.access_scope AS employee_access_scope,
+        sp.headline,
+        sp.location AS student_location,
+        sp.identity_verified,
+        c.name AS campus_name,
+        c.city AS campus_city,
+        c.state AS campus_state,
+        company_counts.managed_companies,
+        company_counts.total_managed_companies,
+        job_company_counts.job_companies,
+        job_company_counts.company_job_titles,
+        job_company_counts.total_company_jobs,
+        COALESCE(job_counts.total_jobs, 0) AS total_jobs,
+        COALESCE(application_counts.total_applications, 0) AS total_applications,
+        COALESCE(payment_counts.total_payments, 0) AS total_payments,
+        COALESCE(activity_counts.total_activity, 0) AS total_activity
+      FROM users u
+      LEFT JOIN hr_profiles hp ON hp.user_id = u.id
+      LEFT JOIN employee_profiles ep ON ep.user_id = u.id
+      LEFT JOIN student_profiles sp ON sp.user_id = u.id
+      LEFT JOIN colleges c ON c.user_id = u.id
+      LEFT JOIN (
+        SELECT
+          hr_user_id AS user_id,
+          GROUP_CONCAT(DISTINCT company_name ORDER BY company_name SEPARATOR '||') AS managed_companies,
+          COUNT(DISTINCT company_key) AS total_managed_companies
+        FROM companies
+        WHERE hr_user_id IS NOT NULL
+        GROUP BY hr_user_id
+      ) company_counts ON company_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT
+          created_by AS user_id,
+          GROUP_CONCAT(DISTINCT company_name ORDER BY company_name SEPARATOR '||') AS job_companies,
+          GROUP_CONCAT(DISTINCT job_title SEPARATOR '||') AS company_job_titles,
+          COUNT(*) AS total_company_jobs
+        FROM jobs
+        WHERE created_by IS NOT NULL
+          AND COALESCE(status, '') <> ?
+        GROUP BY created_by
+      ) job_company_counts ON job_company_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT created_by AS user_id, COUNT(*) AS total_jobs
+        FROM jobs
+        WHERE created_by IS NOT NULL
+        GROUP BY created_by
+      ) job_counts ON job_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT applicant_id AS user_id, COUNT(*) AS total_applications
+        FROM applications
+        WHERE applicant_id IS NOT NULL
+        GROUP BY applicant_id
+      ) application_counts ON application_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) AS total_payments
+        FROM (
+          SELECT hr_id AS user_id FROM job_plan_purchases WHERE hr_id IS NOT NULL
+          UNION ALL
+          SELECT user_id FROM role_plan_purchases WHERE user_id IS NOT NULL
+          UNION ALL
+          SELECT hr_id AS user_id FROM job_payments WHERE hr_id IS NOT NULL
+        ) payment_sources
+        GROUP BY user_id
+      ) payment_counts ON payment_counts.user_id = u.id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) AS total_activity
+        FROM audit_logs
+        WHERE user_id IS NOT NULL
+        GROUP BY user_id
+      ) activity_counts ON activity_counts.user_id = u.id
+      WHERE LOWER(u.role) IN (?, ?)
+        ${statusFilters.length ? `AND LOWER(u.status) IN (${statusFilters.map(() => '?').join(', ')})` : ''}
+        AND (
+          EXISTS (
+            SELECT 1
+            FROM companies hc
+            WHERE hc.hr_user_id = u.id
+              AND (${linkedCompanyProfileMatch.sql})
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM jobs hj
+            WHERE hj.created_by = u.id
+              AND COALESCE(hj.status, '') <> ?
+              AND (${linkedJobCompanyMatch.sql})
+          )
+        )
+      ORDER BY
+        COALESCE(job_company_counts.total_company_jobs, 0) DESC,
+        COALESCE(company_counts.total_managed_companies, 0) DESC,
+        u.last_login_at DESC,
+        u.created_at DESC
+      LIMIT ${limit}
+    `,
+    [
+      JOB_STATUSES.DELETED,
+      ROLES.HR,
+      'company_admin',
+      ...(statusFilters.length ? statusFilters : []),
+      ...linkedCompanyProfileMatch.params,
+      JOB_STATUSES.DELETED,
+      ...linkedJobCompanyMatch.params
+    ]
+  ) : [];
+
   const commercialRows = search ? await safeQueryRows(
     `
       SELECT
@@ -1184,7 +1341,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     ]
   ) : [];
 
-  const uniqueRows = [...new Map([...rows, ...commercialRows].map((row) => [row.id, row])).values()];
+  const uniqueRows = [...new Map([...companyLinkedHrRows, ...rows, ...commercialRows].map((row) => [row.id, row])).values()];
   const results = uniqueRows.map((row) => {
     const normalizedRole = normalizeLogText(row.role);
     const contextType = getCommandSearchContextType(normalizedRole);
