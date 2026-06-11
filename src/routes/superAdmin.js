@@ -844,8 +844,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       'hc.website_url',
       'hc.location',
       'hc.state_name',
-      'hc.district_name',
-      'hc.city'
+      'hc.district_name'
     ], companyLikeValues, companyTokenLikeValues);
     const jobCompanyMatch = buildCompanyTextPredicate([
       'hj.company_name',
