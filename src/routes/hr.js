@@ -311,6 +311,21 @@ const syncHrPrimaryCompanyDirectory = async ({ targetUserId, profile = {} }) => 
   return data;
 };
 
+const ensureHrPrimaryCompanySynced = async (targetUserId) => {
+  if (!Database || !targetUserId) return null;
+
+  const { data: profile, error } = await Database
+    .from('hr_profiles')
+    .select('*')
+    .eq('user_id', targetUserId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!profile?.company_name) return null;
+
+  return syncHrPrimaryCompanyDirectory({ targetUserId, profile });
+};
+
 const readHrProfileSeedUser = async ({ targetUserId, currentUser }) => {
   if (!Database) return currentUser;
 
@@ -575,6 +590,13 @@ router.get('/companies', asyncHandler(async (req, res) => {
     ? req.query.userId
     : req.user.id;
 
+  try {
+    await ensureHrPrimaryCompanySynced(targetUserId);
+  } catch (syncError) {
+    sendDatabaseError(res, syncError);
+    return;
+  }
+
   const [companyResponse, jobsResponse] = await Promise.all([
     Database
       .from('companies')
@@ -598,6 +620,13 @@ router.get('/companies', asyncHandler(async (req, res) => {
     return;
   }
 
+  const allCompanyRows = companyResponse.data || [];
+  const knownCompanyKeys = new Set(
+    allCompanyRows
+      .map((row) => normalizeCompanyKey(row.company_key || row.company_name))
+      .filter(Boolean)
+  );
+
   const jobs = jobsResponse.data || [];
   const jobsByCompanyKey = new Map();
   for (const job of jobs) {
@@ -607,14 +636,16 @@ router.get('/companies', asyncHandler(async (req, res) => {
   }
 
   const rowsByKey = new Map();
-  for (const row of companyResponse.data || []) {
+  for (const row of allCompanyRows) {
     const key = normalizeCompanyKey(row.company_key || row.company_name);
     if (!key) continue;
+    const isActive = row.is_active !== false && row.is_active !== 0;
+    if (!isActive) continue;
     rowsByKey.set(key, row);
   }
 
   for (const [key, companyJobs] of jobsByCompanyKey.entries()) {
-    if (rowsByKey.has(key)) continue;
+    if (rowsByKey.has(key) || knownCompanyKeys.has(key)) continue;
     const firstJob = companyJobs[0] || {};
     rowsByKey.set(key, {
       company_key: key,
@@ -702,6 +733,57 @@ router.put('/companies/:companyKey', asyncHandler(async (req, res) => {
     .eq('company_key', data.company_key);
 
   res.send({ status: true, company: normalizeCompanyRow(data) });
+}));
+
+router.delete('/companies/:companyKey', asyncHandler(async (req, res) => {
+  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query.userId)
+    ? req.query.userId
+    : req.user.id;
+  const companyKey = normalizeCompanyKey(req.params.companyKey);
+
+  if (!companyKey) {
+    res.status(400).send({ status: false, message: 'Company key is required.' });
+    return;
+  }
+
+  const { data: existing, error: existingError } = await Database
+    .from('companies')
+    .select(COMPANY_PROFILE_SELECT)
+    .eq('hr_user_id', targetUserId)
+    .eq('company_key', companyKey)
+    .maybeSingle();
+
+  if (existingError) {
+    sendDatabaseError(res, existingError);
+    return;
+  }
+
+  if (!existing) {
+    res.status(404).send({ status: false, message: 'Hiring company not found.' });
+    return;
+  }
+
+  if (String(existing.source || '').toLowerCase() === 'hr_profile') {
+    res.status(400).send({
+      status: false,
+      message: 'Primary profile company cannot be deleted. Edit your company profile instead.'
+    });
+    return;
+  }
+
+  const { data, error } = await Database
+    .from('companies')
+    .update({ is_active: 0, updated_at: new Date().toISOString() })
+    .eq('id', existing.id)
+    .select(COMPANY_PROFILE_SELECT)
+    .single();
+
+  if (error) {
+    sendDatabaseError(res, error);
+    return;
+  }
+
+  res.send({ status: true, message: 'Hiring company removed.', company: normalizeCompanyRow(data) });
 }));
 
 router.get('/companies/:companyKey/jobs', asyncHandler(async (req, res) => {
