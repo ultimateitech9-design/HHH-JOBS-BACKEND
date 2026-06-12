@@ -259,7 +259,7 @@ const buildCompanyPayloadFromRequest = ({ body = {}, targetUserId, companyKeyPar
     company_type: body.companyType ?? body.company_type ?? existing?.company_type ?? null,
     company_size: body.companySize ?? body.company_size ?? existing?.company_size ?? null,
     about: body.about ?? body.companyAbout ?? existing?.about ?? null,
-    is_active: body.isActive ?? body.is_active ?? existing?.is_active ?? 1,
+    is_active: body.isActive ?? body.is_active ?? 1,
     source: existing?.source || 'hr_managed',
     updated_at: new Date().toISOString()
   };
@@ -644,28 +644,6 @@ router.get('/companies', asyncHandler(async (req, res) => {
     rowsByKey.set(key, row);
   }
 
-  for (const [key, companyJobs] of jobsByCompanyKey.entries()) {
-    if (rowsByKey.has(key) || knownCompanyKeys.has(key)) continue;
-    const firstJob = companyJobs[0] || {};
-    rowsByKey.set(key, {
-      company_key: key,
-      company_slug: toCompanySlug(firstJob.company_name),
-      company_name: firstJob.company_name,
-      hr_user_id: targetUserId,
-      logo_url: firstJob.company_logo,
-      location: firstJob.job_location,
-      state_id: firstJob.state_id,
-      district_id: firstJob.district_id,
-      state_name: firstJob.state_name,
-      district_name: firstJob.district_name,
-      sector_id: firstJob.sector_id,
-      sector_name: firstJob.sector_name || firstJob.category,
-      industry_type: firstJob.category,
-      source: 'job_history',
-      is_active: 1
-    });
-  }
-
   const companies = [...rowsByKey.values()]
     .map((row) => normalizeCompanyRow(row, jobsByCompanyKey.get(normalizeCompanyKey(row.company_key || row.company_name)) || []))
     .sort((a, b) => b.jobsCount - a.jobsCount || a.companyName.localeCompare(b.companyName));
@@ -759,7 +737,57 @@ router.delete('/companies/:companyKey', asyncHandler(async (req, res) => {
   }
 
   if (!existing) {
-    res.status(404).send({ status: false, message: 'Hiring company not found.' });
+    const { data: companyJobs, error: jobsError } = await Database
+      .from('jobs')
+      .select('company_key, company_slug, company_name, company_logo, job_location, state_id, district_id, state_name, district_name, sector_id, sector_name, category')
+      .eq('created_by', targetUserId)
+      .eq('company_key', companyKey)
+      .neq('status', JOB_STATUSES.DELETED)
+      .limit(1);
+
+    if (jobsError) {
+      sendDatabaseError(res, jobsError);
+      return;
+    }
+
+    const jobCompany = companyJobs?.[0];
+    if (!jobCompany) {
+      res.status(404).send({ status: false, message: 'Hiring company not found.' });
+      return;
+    }
+
+    const tombstonePayload = {
+      company_key: companyKey,
+      company_slug: toCompanySlug(jobCompany.company_name || companyKey),
+      company_name: jobCompany.company_name || companyKey,
+      hr_user_id: targetUserId,
+      logo_url: jobCompany.company_logo || null,
+      location: jobCompany.job_location || null,
+      state_id: jobCompany.state_id || null,
+      district_id: jobCompany.district_id || null,
+      state_name: jobCompany.state_name || null,
+      district_name: jobCompany.district_name || null,
+      sector_id: jobCompany.sector_id || null,
+      sector_name: jobCompany.sector_name || jobCompany.category || null,
+      industry_type: jobCompany.category || jobCompany.sector_name || null,
+      is_active: 0,
+      source: 'job_history_removed',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await Database
+      .from('companies')
+      .insert(tombstonePayload)
+      .select(COMPANY_PROFILE_SELECT)
+      .single();
+
+    if (error) {
+      sendDatabaseError(res, error);
+      return;
+    }
+
+    res.send({ status: true, message: 'Hiring company removed.', company: normalizeCompanyRow(data) });
     return;
   }
 
@@ -1785,6 +1813,7 @@ router.get('/candidates/search', requireApprovedHr, requirePlanFeature('hr.candi
       access: result.access,
       summary: result.summary,
       pagination: result.pagination,
+      search: result.search,
       candidates: result.candidates
     });
   } catch (error) {

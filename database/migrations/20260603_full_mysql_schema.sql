@@ -994,10 +994,14 @@ CREATE TABLE IF NOT EXISTS `master_industries` (
 CREATE TABLE IF NOT EXISTS `master_locations` (
   `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT (uuid()),
   `name` longtext COLLATE utf8mb4_unicode_ci,
+  `state_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `district_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `pincode` varchar(32) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `is_active` tinyint(1) NOT NULL DEFAULT '1',
   `created_by` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  KEY `master_locations_scope_idx` (`state_id`,`district_id`,`name`(128),`pincode`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: master_pincodes
@@ -1778,7 +1782,12 @@ CREATE TABLE IF NOT EXISTS `student_profiles` (
   `district_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `state_name` longtext COLLATE utf8mb4_unicode_ci,
   `district_name` longtext COLLATE utf8mb4_unicode_ci,
-  PRIMARY KEY (`id`)
+  `city_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `city_name` longtext COLLATE utf8mb4_unicode_ci,
+  `pincode` varchar(32) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `student_profiles_user_idx` (`user_id`),
+  KEY `student_profiles_location_idx` (`state_name`(128),`district_name`(128),`city_name`(128),`pincode`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: student_recommendation_preferences

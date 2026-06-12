@@ -19,6 +19,8 @@
     "import:resume-candidates": "node scripts/resume-bulk-onboard.js",
     "import:market-sectors": "node scripts/import-market-sectors.js",
     "import:postal-codes": "node scripts/import-statewise-postal-codes.js",
+    "import:resume-xlsx-live": "node scripts/import-resume-xlsx-live-db.js",
+    "search:reindex:candidates": "node scripts/reindex-candidate-search.js",
     "notify:hr-job-metadata": "node scripts/notify-hr-job-metadata-update.js",
     "email:seeded-students": "node scripts/send-seeded-student-welcome.js",
     "email:seeded-users": "node scripts/send-seeded-user-welcome.js",

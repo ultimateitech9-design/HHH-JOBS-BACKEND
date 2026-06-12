@@ -60,6 +60,9 @@ const resolveResumeForApplication = async ({
       .from('student_profiles')
       .select('resume_url, resume_text')
       .eq('user_id', userId)
+      .order('updated_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     if (profileError) {

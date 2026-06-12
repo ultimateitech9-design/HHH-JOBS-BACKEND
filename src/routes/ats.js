@@ -81,6 +81,9 @@ const resolveResumeInput = async ({ req, source }) => {
       .from('student_profiles')
       .select('resume_text, resume_url')
       .eq('user_id', req.user.id)
+      .order('updated_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     if (profileError) {

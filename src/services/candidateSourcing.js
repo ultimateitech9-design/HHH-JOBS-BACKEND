@@ -1,7 +1,8 @@
 const { ROLES } = require('../constants');
-const { Database } = require('../db');
+const { Database, queryRows } = require('../db');
 const { isValidUuid, maskEmail, maskMobile } = require('../utils/helpers');
 const { buildHrJobApplicantsPath } = require('./jobs');
+const { searchCandidateProfileIds } = require('./search/candidateSearchIndex');
 
 const DEFAULT_TEMPLATES = [
   {
@@ -30,7 +31,8 @@ const STUDENT_PROFILE_FETCH_MAX_ROWS = 100000;
 const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
 const CANDIDATE_PROFILE_FIELDS = [
   'user_id', 'headline', 'target_role', 'skills', 'technical_skills', 'tools_technologies',
-  'experience', 'location', 'resume_url', 'resume_text', 'about', 'profile_summary',
+  'experience', 'location', 'state_name', 'district_name', 'city_name', 'pincode',
+  'current_pincode', 'preferred_work_location', 'resume_url', 'resume_text', 'about', 'profile_summary',
   'is_discoverable', 'available_to_hire', 'expected_salary', 'preferred_salary_max',
   'availability_to_join', 'education', 'graduation_details', 'education_score',
   'linkedin_url', 'github_url', 'portfolio_url', 'eimager_id', 'verification_status',
@@ -64,6 +66,9 @@ const parseMissingStudentProfileColumn = (error) => {
 
     const genericMatch = message.match(/column\s+['"]?([a-zA-Z0-9_]+)['"]?\s+of\s+['"]?student_profiles['"]?/i);
     if (genericMatch?.[1]) return genericMatch[1];
+
+    const mysqlUnknownColumnMatch = message.match(/Unknown column\s+['"]?([a-zA-Z0-9_]+)['"]?/i);
+    if (mysqlUnknownColumnMatch?.[1]) return mysqlUnknownColumnMatch[1];
   }
 
   return null;
@@ -116,6 +121,9 @@ const chunkList = (items = [], size = 200) => {
   }
   return chunks;
 };
+const sanitizePostgrestSearchTerm = (value = '') =>
+  normalizeText(value).replace(/[,%().]/g, ' ').replace(/\s+/g, ' ').trim();
+const makeLikeValue = (value = '') => `%${sanitizePostgrestSearchTerm(value)}%`;
 
 const parseNumber = (value) => {
   if (value === null || value === undefined || value === '') return null;
@@ -474,6 +482,255 @@ const collectSkills = (profile = {}) => {
   return [...new Set(combined)];
 };
 
+const buildProfileLocationText = (profile = {}) => [
+  profile.location,
+  profile.city_name,
+  profile.district_name,
+  profile.state_name,
+  profile.pincode,
+  profile.current_pincode,
+  profile.preferred_work_location
+]
+  .map((item) => normalizeLowerText(item))
+  .filter(Boolean)
+  .join(' ');
+
+const buildProfileLocationLabel = (profile = {}) => [
+  profile.location,
+  [profile.city_name, profile.district_name, profile.state_name].map((item) => normalizeText(item)).filter(Boolean).join(', '),
+  profile.pincode || profile.current_pincode
+]
+  .map((item) => normalizeText(item))
+  .filter(Boolean)
+  .filter((item, index, list) => list.findIndex((entry) => entry.toLowerCase() === item.toLowerCase()) === index)
+  .join(' | ');
+
+const buildCandidateProfileBlob = (profile = {}) => [
+  profile.headline,
+  profile.target_role,
+  profile.location,
+  profile.city_name,
+  profile.district_name,
+  profile.state_name,
+  profile.pincode,
+  profile.current_pincode,
+  profile.current_address,
+  profile.preferred_work_location,
+  profile.about,
+  profile.profile_summary,
+  profile.availability_to_join,
+  profile.graduation_details,
+  profile.education_score,
+  profile.resume_text,
+  JSON.stringify(Array.isArray(profile.education) ? profile.education : []),
+  JSON.stringify(Array.isArray(profile.experience) ? profile.experience : []),
+  (collectSkills(profile) || []).join(' ')
+]
+  .map((item) => normalizeText(item))
+  .filter(Boolean)
+  .join(' ')
+  .toLowerCase();
+
+const tokenizeSearchText = (value = '') =>
+  normalizeLowerText(value)
+    .split(/[\s,|/]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2);
+
+const buildCandidateDbPrefilters = (filters = {}) => {
+  const prefilters = [];
+  const skills = normalizeList(filters.skills).map(sanitizePostgrestSearchTerm).filter(Boolean).slice(0, 6);
+  const location = sanitizePostgrestSearchTerm(filters.location);
+  const experience = sanitizePostgrestSearchTerm(filters.experience);
+  const degree = sanitizePostgrestSearchTerm(filters.degree);
+  const branch = sanitizePostgrestSearchTerm(filters.branch);
+  const college = sanitizePostgrestSearchTerm(filters.college);
+  const batchYear = sanitizePostgrestSearchTerm(filters.batchYear || filters.batch_year);
+  const availableOnly = Boolean(filters.availableOnly || filters.available);
+  const verifiedOnly = Boolean(filters.verifiedOnly || filters.verified);
+
+  if (availableOnly) {
+    prefilters.push((query) => query.eq('available_to_hire', true));
+  }
+
+  if (verifiedOnly) {
+    prefilters.push((query) => query.or('identity_verified.eq.1,verification_status.eq.verified'));
+  }
+
+  if (skills.length > 0) {
+    const clauses = skills.flatMap((skill) => [
+      `skills.ilike.${makeLikeValue(skill)}`,
+      `technical_skills.ilike.${makeLikeValue(skill)}`,
+      `tools_technologies.ilike.${makeLikeValue(skill)}`,
+      `resume_text.ilike.${makeLikeValue(skill)}`,
+      `profile_summary.ilike.${makeLikeValue(skill)}`,
+      `about.ilike.${makeLikeValue(skill)}`
+    ]);
+    prefilters.push((query) => query.or(clauses.join(',')));
+  }
+
+  if (location) {
+    const like = makeLikeValue(location);
+    prefilters.push((query) => query.or([
+      `location.ilike.${like}`,
+      `state_name.ilike.${like}`,
+      `district_name.ilike.${like}`,
+      `current_address.ilike.${like}`,
+      `preferred_work_location.ilike.${like}`,
+      `resume_text.ilike.${like}`,
+      `profile_summary.ilike.${like}`,
+      `about.ilike.${like}`
+    ].join(',')));
+  }
+
+  if (experience) {
+    const like = makeLikeValue(experience);
+    prefilters.push((query) => query.or([
+      `experience.ilike.${like}`,
+      `resume_text.ilike.${like}`,
+      `profile_summary.ilike.${like}`,
+      `about.ilike.${like}`,
+      `headline.ilike.${like}`,
+      `target_role.ilike.${like}`
+    ].join(',')));
+  }
+
+  [degree, branch, college, batchYear].filter(Boolean).forEach((term) => {
+    const like = makeLikeValue(term);
+    prefilters.push((query) => query.or([
+      `education.ilike.${like}`,
+      `graduation_details.ilike.${like}`,
+      `resume_text.ilike.${like}`,
+      `profile_summary.ilike.${like}`,
+      `about.ilike.${like}`
+    ].join(',')));
+  });
+
+  return prefilters;
+};
+
+const escapeLikeValue = (value = '') => normalizeText(value).replace(/[\\%_]/g, (char) => `\\${char}`);
+const normalizeBooleanFullTextTerm = (value = '') =>
+  normalizeLowerText(value)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+const buildBooleanFullTextQuery = (value = '') => {
+  const terms = normalizeBooleanFullTextTerm(value)
+    .split(/\s+/)
+    .filter((term) => term.length >= 2)
+    .slice(0, 12);
+  return terms.map((term) => `+${term}*`).join(' ');
+};
+
+const doesCandidateSearchDocumentTableExist = async () => {
+  const rows = await queryRows(
+    'SELECT COUNT(*) AS total FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
+    ['candidate_search_documents']
+  );
+  return Number(rows?.[0]?.total || 0) > 0;
+};
+
+const addMySqlSearchClause = ({ clauses, params, columns = [], value = '' }) => {
+  const text = sanitizePostgrestSearchTerm(value);
+  if (!text || columns.length === 0) return;
+
+  const booleanQuery = buildBooleanFullTextQuery(text);
+  const likeValue = `%${escapeLikeValue(text)}%`;
+  const clauseParams = [];
+  const orParts = columns.flatMap((column) => {
+    const pieces = [];
+    if (booleanQuery) {
+      pieces.push(`MATCH(${column}) AGAINST (? IN BOOLEAN MODE)`);
+      clauseParams.push(booleanQuery);
+    }
+    pieces.push(`LOWER(${column}) LIKE LOWER(?) ESCAPE '\\\\'`);
+    clauseParams.push(likeValue);
+    return pieces;
+  });
+
+  clauses.push(`(${orParts.join(' OR ')})`);
+  params.push(...clauseParams);
+};
+
+const buildMySqlCandidateSearchWhere = (filters = {}) => {
+  const clauses = [];
+  const params = [];
+  const keyword = sanitizePostgrestSearchTerm(filters.keyword || filters.q || filters.search);
+  const skills = normalizeList(filters.skills).map(sanitizePostgrestSearchTerm).filter(Boolean).slice(0, 8);
+  const location = sanitizePostgrestSearchTerm(filters.location);
+  const experience = sanitizePostgrestSearchTerm(filters.experience);
+  const degree = sanitizePostgrestSearchTerm(filters.degree);
+  const branch = sanitizePostgrestSearchTerm(filters.branch);
+  const college = sanitizePostgrestSearchTerm(filters.college);
+  const batchYear = sanitizePostgrestSearchTerm(filters.batchYear || filters.batch_year);
+  const minCgpa = parseNumber(filters.minCgpa || filters.min_cgpa);
+  const availableOnly = Boolean(filters.availableOnly || filters.available);
+  const verifiedOnly = Boolean(filters.verifiedOnly || filters.verified);
+
+  addMySqlSearchClause({ clauses, params, columns: ['search_text'], value: keyword });
+
+  if (skills.length > 0) {
+    const skillClauses = [];
+    skills.forEach((skill) => {
+      addMySqlSearchClause({ clauses: skillClauses, params, columns: ['skill_text', 'search_text'], value: skill });
+    });
+    if (skillClauses.length > 0) clauses.push(`(${skillClauses.join(' OR ')})`);
+  }
+
+  addMySqlSearchClause({ clauses, params, columns: ['location_text', 'search_text'], value: location });
+  addMySqlSearchClause({ clauses, params, columns: ['experience_text', 'search_text'], value: experience });
+  addMySqlSearchClause({ clauses, params, columns: ['education_text', 'search_text'], value: degree });
+  addMySqlSearchClause({ clauses, params, columns: ['education_text', 'search_text'], value: branch });
+  addMySqlSearchClause({ clauses, params, columns: ['education_text', 'search_text'], value: college });
+
+  if (batchYear) {
+    clauses.push('(batch_year = ? OR LOWER(education_text) LIKE LOWER(?) ESCAPE \'\\\\\')');
+    params.push(batchYear, `%${escapeLikeValue(batchYear)}%`);
+  }
+  if (minCgpa != null) {
+    clauses.push('(cgpa IS NOT NULL AND cgpa >= ?)');
+    params.push(minCgpa);
+  }
+  if (availableOnly) clauses.push('available_to_hire = 1');
+  if (verifiedOnly) clauses.push('verified = 1');
+
+  return {
+    sql: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
+    params
+  };
+};
+
+const searchCandidateProfileIdsFromMySql = async ({ filters = {}, page = 1, limit = 24 } = {}) => {
+  try {
+    const exists = await doesCandidateSearchDocumentTableExist();
+    if (!exists) return { skipped: true, reason: 'mysql-candidate-search-index-missing' };
+
+    const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 24));
+    const offset = (currentPage - 1) * pageSize;
+    const where = buildMySqlCandidateSearchWhere(filters);
+
+    const countRows = await queryRows(
+      `SELECT COUNT(*) AS total FROM candidate_search_documents ${where.sql}`,
+      where.params
+    );
+    const total = Number(countRows?.[0]?.total || 0);
+    const rows = await queryRows(
+      `SELECT user_id FROM candidate_search_documents ${where.sql} ORDER BY updated_at DESC, user_id ASC LIMIT ? OFFSET ?`,
+      [...where.params, pageSize, offset]
+    );
+
+    return {
+      skipped: false,
+      engine: 'mysql_search',
+      ids: rows.map((row) => row.user_id).filter(Boolean),
+      total
+    };
+  } catch (error) {
+    return { skipped: true, reason: error.message || 'mysql-candidate-search-unavailable' };
+  }
+};
+
 const getCandidateVerification = (profile = {}) => {
   const status = normalizeLowerText(profile.verification_status || 'unverified') || 'unverified';
   const identityVerified = Boolean(profile.identity_verified || status === 'verified');
@@ -498,12 +755,20 @@ const getCandidateVerification = (profile = {}) => {
 const buildCandidateSearchText = ({ user = {}, profile = {}, education = {} }) => {
   const pieces = [
     user.name,
+    user.email,
+    user.mobile,
     profile.headline,
     profile.target_role,
-    profile.location,
+    buildProfileLocationText(profile),
     profile.about,
     profile.profile_summary,
+    profile.current_address,
     profile.availability_to_join,
+    profile.preferred_work_location,
+    profile.graduation_details,
+    profile.education_score,
+    profile.resume_text,
+    JSON.stringify(Array.isArray(profile.education) ? profile.education : []),
     education.degree,
     education.branch,
     education.college,
@@ -533,20 +798,26 @@ const matchesCandidateFilters = ({ candidate, filters = {} }) => {
   const verifiedOnly = Boolean(filters.verifiedOnly || filters.verified);
 
   const searchableText = buildCandidateSearchText(candidate);
+  const keywordTerms = tokenizeSearchText(keyword);
   const candidateSkills = collectSkills(candidate.profile).map((item) => item.toLowerCase());
   const education = candidate.education || toEducationInsight(candidate.profile);
   const verification = getCandidateVerification(candidate.profile);
+  const locationText = buildProfileLocationText(candidate.profile);
+  const profileBlob = buildCandidateProfileBlob(candidate.profile);
 
   if (availableOnly && !candidate.profile?.available_to_hire) return false;
   if (verifiedOnly && !verification.isVerified) return false;
-  if (skills.length > 0 && !skills.some((skill) => candidateSkills.some((item) => item.includes(skill)))) return false;
-  if (keyword && !searchableText.includes(keyword)) return false;
-  if (location && !normalizeLowerText(candidate.profile?.location).includes(location)) return false;
-  if (experience && !stringifyExperience(candidate.profile?.experience).includes(experience)) return false;
-  if (degree && !normalizeLowerText(education.degree).includes(degree)) return false;
-  if (branch && !normalizeLowerText(education.branch).includes(branch)) return false;
-  if (college && !normalizeLowerText(education.college).includes(college)) return false;
-  if (batchYear && normalizeText(education.batchYear) !== batchYear) return false;
+  if (skills.length > 0 && !skills.some((skill) => (
+    candidateSkills.some((item) => item.includes(skill))
+    || profileBlob.includes(skill)
+  ))) return false;
+  if (keywordTerms.length > 0 && !keywordTerms.every((term) => searchableText.includes(term))) return false;
+  if (location && !locationText.includes(location) && !profileBlob.includes(location)) return false;
+  if (experience && !stringifyExperience(candidate.profile?.experience).includes(experience) && !profileBlob.includes(experience)) return false;
+  if (degree && !normalizeLowerText(education.degree).includes(degree) && !profileBlob.includes(degree)) return false;
+  if (branch && !normalizeLowerText(education.branch).includes(branch) && !profileBlob.includes(branch)) return false;
+  if (college && !normalizeLowerText(education.college).includes(college) && !profileBlob.includes(college)) return false;
+  if (batchYear && normalizeText(education.batchYear) !== batchYear && !profileBlob.includes(batchYear.toLowerCase())) return false;
   if (minCgpa != null && (education.cgpa == null || Number(education.cgpa) < minCgpa)) return false;
 
   return true;
@@ -566,7 +837,7 @@ const scoreCandidate = ({ candidate, filters = {} }) => {
   if (verification.addressVerified) score += 4;
   if (verification.experienceVerified) score += Math.min(8, 2 + verification.verifiedExperienceCount * 2);
   if (candidate.education?.cgpa != null) score += Math.min(10, Number(candidate.education.cgpa));
-  if (normalizeLowerText(filters.location) && normalizeLowerText(candidate.profile?.location).includes(normalizeLowerText(filters.location))) {
+  if (normalizeLowerText(filters.location) && buildProfileLocationText(candidate.profile).includes(normalizeLowerText(filters.location))) {
     score += 6;
   }
 
@@ -596,6 +867,7 @@ const buildCandidatePresentation = ({
   const canViewResume = Boolean(access.forceResumeAccess || canBrowseFullProfile);
   const visibleSkills = canBrowseFullProfile ? collectSkills(profile) : collectSkills(profile).slice(0, 4);
   const verification = getCandidateVerification(profile);
+  const locationLabel = buildProfileLocationLabel(profile);
   const visibleLinks = canBrowseFullProfile
     ? {
         linkedinUrl: profile.linkedin_url || null,
@@ -620,7 +892,7 @@ const buildCandidatePresentation = ({
     profile: {
       headline: canBrowseFullProfile ? (profile.headline || profile.target_role || '') : blurText(profile.headline || profile.target_role || 'React Developer'),
       targetRole: canBrowseFullProfile ? (profile.target_role || '') : blurText(profile.target_role || ''),
-      location: canBrowseFullProfile ? (profile.location || '') : blurText(profile.location || 'Mumbai'),
+      location: canBrowseFullProfile ? locationLabel : blurText(locationLabel || 'Mumbai'),
       about: canBrowseFullProfile ? (profile.about || profile.profile_summary || '') : '',
       availableToHire: Boolean(profile.available_to_hire),
       availabilityToJoin: canBrowseFullProfile ? (profile.availability_to_join || '') : '',
@@ -1066,12 +1338,143 @@ const viewHrCandidateResume = async ({ hrUser, studentId } = {}) => {
   };
 };
 
+const buildCandidateSearchResponse = async ({
+  hrUser,
+  access,
+  rawCandidates = [],
+  total = 0,
+  currentPage = 1,
+  pageSize = 24,
+  totalPages = null,
+  engine = 'database'
+} = {}) => {
+  const quota = await applyStudentDbViewQuota({
+    hrUser,
+    access,
+    candidates: rawCandidates,
+    consume: false
+  });
+  const pagedCandidates = rawCandidates.map((candidate) => buildCandidatePresentation({
+    candidate,
+    access: {
+      ...quota.access,
+      candidateProfileUnlocked: quota.unlockedIds.has(candidate.user?.id)
+    },
+    exposeResume: false
+  }));
+  const resolvedTotal = Number(total || 0);
+  const resolvedTotalPages = totalPages || Math.max(1, Math.ceil(resolvedTotal / pageSize));
+
+  return {
+    access: quota.access,
+    summary: {
+      total: resolvedTotal,
+      blurred: quota.access.hasPaidAccess
+        ? pagedCandidates.filter((item) => item.access?.requiresUpgrade || !item.access?.canBrowseFullProfile).length
+        : resolvedTotal,
+      connected: rawCandidates.filter((item) => item.crm?.interestStatus === 'accepted').length,
+      availableNow: rawCandidates.filter((item) => item.profile?.available_to_hire).length,
+      verified: rawCandidates.filter((item) => getCandidateVerification(item.profile).isVerified).length,
+      studentDbViewsUsed: quota.access.studentDbViewsUsed,
+      studentDbViewsRemaining: quota.access.studentDbViewsRemaining,
+      studentDbViewLimit: quota.access.studentDbViewLimit
+    },
+    pagination: {
+      page: currentPage,
+      limit: pageSize,
+      total: resolvedTotal,
+      totalPages: resolvedTotalPages,
+      count: pagedCandidates.length
+    },
+    search: {
+      engine
+    },
+    candidates: pagedCandidates
+  };
+};
+
 const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, limit = 24 }) => {
   const access = await getHrSourcingAccess({ userId: hrUser.id, role: hrUser.role });
   const currentPage = Math.max(1, Number.parseInt(page, 10) || 1);
   const pageSize = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 24));
   const hasActiveFilters = hasCandidateSearchFilters(filters);
   const profileFields = CANDIDATE_PROFILE_FIELDS;
+
+  if (hasActiveFilters) {
+    const indexedResult = await searchCandidateProfileIds({
+      filters,
+      page: currentPage,
+      limit: pageSize
+    });
+
+    if (!indexedResult.skipped) {
+      const { data: indexedProfiles, error: indexedProfileError } = await selectStudentProfilesSafe({
+        fields: profileFields,
+        userIds: indexedResult.ids
+      });
+
+      if (indexedProfileError) throw indexedProfileError;
+
+      const profilesByUserId = new Map((indexedProfiles || []).map((profile) => [profile.user_id, profile]));
+      const orderedProfiles = indexedResult.ids.map((id) => profilesByUserId.get(id)).filter(Boolean);
+      const { candidates: rawIndexedCandidates } = await buildCandidateRowsForProfiles({ profiles: orderedProfiles, hrUser });
+      const candidatesByUserId = new Map(rawIndexedCandidates.map((candidate) => [candidate.user?.id, candidate]));
+      const orderedCandidates = indexedResult.ids
+        .map((id) => candidatesByUserId.get(id))
+        .filter(Boolean)
+        .filter((candidate) => matchesCandidateFilters({ candidate, filters }));
+      const total = Math.max(orderedCandidates.length, Number(indexedResult.total || 0));
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+      return buildCandidateSearchResponse({
+        hrUser,
+        access,
+        rawCandidates: orderedCandidates,
+        total,
+        currentPage,
+        pageSize,
+        totalPages,
+        engine: 'opensearch'
+      });
+    }
+
+    const mysqlIndexedResult = await searchCandidateProfileIdsFromMySql({
+      filters,
+      page: currentPage,
+      limit: pageSize
+    });
+
+    if (!mysqlIndexedResult.skipped) {
+      const { data: indexedProfiles, error: indexedProfileError } = await selectStudentProfilesSafe({
+        fields: profileFields,
+        userIds: mysqlIndexedResult.ids
+      });
+
+      if (indexedProfileError) throw indexedProfileError;
+
+      const profilesByUserId = new Map((indexedProfiles || []).map((profile) => [profile.user_id, profile]));
+      const orderedProfiles = mysqlIndexedResult.ids.map((id) => profilesByUserId.get(id)).filter(Boolean);
+      const { candidates: rawIndexedCandidates } = await buildCandidateRowsForProfiles({ profiles: orderedProfiles, hrUser });
+      const candidatesByUserId = new Map(rawIndexedCandidates.map((candidate) => [candidate.user?.id, candidate]));
+      const orderedCandidates = mysqlIndexedResult.ids
+        .map((id) => candidatesByUserId.get(id))
+        .filter(Boolean)
+        .filter((candidate) => matchesCandidateFilters({ candidate, filters }));
+      const total = Math.max(orderedCandidates.length, Number(mysqlIndexedResult.total || 0));
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+      return buildCandidateSearchResponse({
+        hrUser,
+        access,
+        rawCandidates: orderedCandidates,
+        total,
+        currentPage,
+        pageSize,
+        totalPages,
+        engine: mysqlIndexedResult.engine || 'mysql_search'
+      });
+    }
+  }
 
   if (!hasActiveFilters) {
     const from = (currentPage - 1) * pageSize;
@@ -1102,48 +1505,21 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
     }
 
     const { candidates: rawCandidates } = await buildCandidateRowsForProfiles({ profiles: pageProfiles, hrUser });
-    const quota = await applyStudentDbViewQuota({
+    return buildCandidateSearchResponse({
       hrUser,
       access,
-      candidates: rawCandidates,
-      consume: false
+      rawCandidates,
+      total,
+      currentPage: safePage,
+      pageSize,
+      totalPages,
+      engine: 'database'
     });
-    const pagedCandidates = rawCandidates.map((candidate) => buildCandidatePresentation({
-      candidate,
-      access: {
-        ...quota.access,
-        candidateProfileUnlocked: quota.unlockedIds.has(candidate.user?.id)
-      },
-      exposeResume: false
-    }));
-
-    return {
-      access: quota.access,
-      summary: {
-        total,
-        blurred: quota.access.hasPaidAccess
-          ? pagedCandidates.filter((item) => item.access?.requiresUpgrade || !item.access?.canBrowseFullProfile).length
-          : total,
-        connected: rawCandidates.filter((item) => item.crm?.interestStatus === 'accepted').length,
-        availableNow: rawCandidates.filter((item) => item.profile?.available_to_hire).length,
-        verified: rawCandidates.filter((item) => getCandidateVerification(item.profile).isVerified).length,
-        studentDbViewsUsed: quota.access.studentDbViewsUsed,
-        studentDbViewsRemaining: quota.access.studentDbViewsRemaining,
-        studentDbViewLimit: quota.access.studentDbViewLimit
-      },
-      pagination: {
-        page: safePage,
-        limit: pageSize,
-        total,
-        totalPages,
-        count: pagedCandidates.length
-      },
-      candidates: pagedCandidates
-    };
   }
 
   const { data: profiles, error } = await selectAllStudentProfilesSafe({
-    fields: profileFields
+    fields: profileFields,
+    filters: buildCandidateDbPrefilters(filters)
   });
 
   if (error) throw error;
@@ -1168,44 +1544,16 @@ const searchDiscoverableCandidates = async ({ hrUser, filters = {}, page = 1, li
   const safePage = Math.min(currentPage, totalPages);
   const startIndex = (safePage - 1) * pageSize;
   const pagedRawCandidates = filtered.slice(startIndex, startIndex + pageSize);
-  const quota = await applyStudentDbViewQuota({
+  return buildCandidateSearchResponse({
     hrUser,
     access,
-    candidates: pagedRawCandidates,
-    consume: false
+    rawCandidates: pagedRawCandidates,
+    total,
+    currentPage: safePage,
+    pageSize,
+    totalPages,
+    engine: 'database'
   });
-  const pagedCandidates = pagedRawCandidates.map((candidate) => buildCandidatePresentation({
-    candidate,
-    access: {
-      ...quota.access,
-      candidateProfileUnlocked: quota.unlockedIds.has(candidate.user?.id)
-    },
-    exposeResume: false
-  }));
-
-  return {
-    access: quota.access,
-    summary: {
-      total,
-      blurred: quota.access.hasPaidAccess
-        ? pagedCandidates.filter((item) => item.access?.requiresUpgrade || !item.access?.canBrowseFullProfile).length
-        : total,
-      connected: filtered.filter((item) => item.crm.interestStatus === 'accepted').length,
-      availableNow: filtered.filter((item) => item.profile.available_to_hire).length,
-      verified: filtered.filter((item) => getCandidateVerification(item.profile).isVerified).length,
-      studentDbViewsUsed: quota.access.studentDbViewsUsed,
-      studentDbViewsRemaining: quota.access.studentDbViewsRemaining,
-      studentDbViewLimit: quota.access.studentDbViewLimit
-    },
-    pagination: {
-      page: safePage,
-      limit: pageSize,
-      total,
-      totalPages,
-      count: pagedCandidates.length
-    },
-    candidates: pagedCandidates
-  };
 };
 
 const listHrCandidateInterests = async ({ hrUser }) => {

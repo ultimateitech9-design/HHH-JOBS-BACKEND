@@ -466,6 +466,33 @@ const ensureJobFacetSchema = async (db) => {
   );
 };
 
+const ensureCandidateProfileLocationSchema = async (db) => {
+  if (await tableExists(db, 'student_profiles')) {
+    await addColumnIfMissing(db, 'student_profiles', 'city_id', 'CHAR(36) NULL');
+    await addColumnIfMissing(db, 'student_profiles', 'city_name', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'student_profiles', 'pincode', 'VARCHAR(32) NULL');
+    await addIndexIfMissing(db, 'student_profiles', 'student_profiles_user_idx', '(`user_id`)');
+    await addIndexIfMissing(
+      db,
+      'student_profiles',
+      'student_profiles_location_idx',
+      '(`state_name`(128), `district_name`(128), `city_name`(128), `pincode`)'
+    );
+  }
+
+  if (await tableExists(db, 'master_locations')) {
+    await addColumnIfMissing(db, 'master_locations', 'state_id', 'CHAR(36) NULL');
+    await addColumnIfMissing(db, 'master_locations', 'district_id', 'CHAR(36) NULL');
+    await addColumnIfMissing(db, 'master_locations', 'pincode', 'VARCHAR(32) NULL');
+    await addIndexIfMissing(
+      db,
+      'master_locations',
+      'master_locations_scope_idx',
+      '(`state_id`, `district_id`, `name`(128), `pincode`)'
+    );
+  }
+};
+
 const companyKeyExpression = (columnSql) => `
   TRIM(REGEXP_REPLACE(
     REGEXP_REPLACE(
@@ -1142,6 +1169,7 @@ const ensureMySqlAppSchema = async () => {
   try {
     await ensureMissingFeatureTables(db);
     await ensureJobFacetSchema(db);
+    await ensureCandidateProfileLocationSchema(db);
     await ensureHrProfilePrefillSchema(db);
     await ensureCompanyDirectorySchema(db);
     await ensureSeoSlugSchema(db);

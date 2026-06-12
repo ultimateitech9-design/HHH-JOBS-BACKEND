@@ -82,6 +82,24 @@ const config = {
   queueBlockTimeoutSeconds: Number(process.env.QUEUE_BLOCK_TIMEOUT_SECONDS) > 0 ? Number(process.env.QUEUE_BLOCK_TIMEOUT_SECONDS) : 2,
   disableSchedulers: parseBoolean(process.env.DISABLE_SCHEDULERS, false),
 
+  // -- Search ------------------------------------------------------------------
+  openSearchUrl: normalizeUrl(
+    process.env.OPENSEARCH_URL
+    || process.env.OPEN_SEARCH_URL
+    || process.env.ELASTICSEARCH_URL
+    || process.env.SEARCH_URL
+  ),
+  openSearchUsername: normalizeText(process.env.OPENSEARCH_USERNAME || process.env.OPENSEARCH_USER),
+  openSearchPassword: process.env.OPENSEARCH_PASSWORD || '',
+  openSearchApiKey: normalizeText(process.env.OPENSEARCH_API_KEY || process.env.ELASTICSEARCH_API_KEY),
+  openSearchIndexPrefix: normalizeText(process.env.OPENSEARCH_INDEX_PREFIX || process.env.SEARCH_INDEX_PREFIX) || 'hhh_jobs',
+  openSearchCandidateIndex: normalizeText(process.env.OPENSEARCH_CANDIDATE_INDEX || process.env.CANDIDATE_SEARCH_INDEX),
+  openSearchTimeoutMs: Number(process.env.OPENSEARCH_TIMEOUT_MS) > 0 ? Number(process.env.OPENSEARCH_TIMEOUT_MS) : 2500,
+  openSearchEnabled: parseBoolean(
+    process.env.OPENSEARCH_ENABLED ?? process.env.SEARCH_ENABLED,
+    Boolean(process.env.OPENSEARCH_URL || process.env.OPEN_SEARCH_URL || process.env.ELASTICSEARCH_URL || process.env.SEARCH_URL)
+  ),
+
   // -- Database ----------------------------------------------------------------
   dbProvider,
   isMysqlProvider: dbProvider === 'mysql',

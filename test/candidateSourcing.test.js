@@ -87,6 +87,86 @@ test('matchesCandidateFilters supports campus, location, availability, and cgpa 
   }), false);
 });
 
+test('matchesCandidateFilters searches mapped location fields and keyword tokens', () => {
+  const candidate = {
+    user: { name: 'Rahul Verma', email: 'rahul@example.com' },
+    profile: {
+      headline: 'Backend Developer',
+      target_role: 'Node.js Engineer',
+      state_name: 'Uttar Pradesh',
+      district_name: 'Lucknow',
+      city_name: 'Gomti Nagar',
+      pincode: '226010',
+      preferred_work_location: 'Remote',
+      skills: ['Node.js', 'MySQL'],
+      experience: [{ responsibilities: 'Built REST APIs for hiring workflows' }]
+    },
+    education: {
+      college: 'Integral University',
+      degree: 'B.Tech',
+      branch: 'Information Technology',
+      batchYear: '2025',
+      cgpa: 8
+    }
+  };
+
+  assert.equal(matchesCandidateFilters({
+    candidate,
+    filters: {
+      search: 'backend lucknow',
+      location: '226010',
+      skills: 'mysql'
+    }
+  }), true);
+
+  assert.equal(matchesCandidateFilters({
+    candidate,
+    filters: {
+      search: 'backend pune'
+    }
+  }), false);
+});
+
+test('matchesCandidateFilters falls back to imported resume text and sections', () => {
+  const candidate = {
+    user: { name: 'Abhay Vishwakarma', email: 'abhay@example.com', mobile: '8957707292' },
+    profile: {
+      headline: 'Imported candidate',
+      skills: ['Excel'],
+      location: '',
+      current_address: 'Village-khoribari Rampur district Deoria Uttar Pradesh',
+      graduation_details: 'Bachelor of technology Harcourt Butler Technical University Kanpur 62.55% 2024',
+      resume_text: 'Quantity Surveyor planning and Billing engineer in SWSM Project with NCC Limited. AutoCAD skills. Gate score 329.',
+      experience: []
+    },
+    education: {
+      college: '',
+      degree: '',
+      branch: '',
+      batchYear: '',
+      cgpa: null
+    }
+  };
+
+  assert.equal(matchesCandidateFilters({
+    candidate,
+    filters: {
+      search: 'quantity surveyor',
+      location: 'deoria',
+      degree: 'bachelor',
+      skills: 'autocad',
+      experience: 'billing engineer'
+    }
+  }), true);
+
+  assert.equal(matchesCandidateFilters({
+    candidate,
+    filters: {
+      location: 'jaipur'
+    }
+  }), false);
+});
+
 test('buildCandidatePresentation shows browseable profiles and unlocks contact after acceptance', () => {
   const baseCandidate = {
     user: {
