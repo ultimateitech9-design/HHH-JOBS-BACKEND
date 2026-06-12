@@ -642,7 +642,9 @@ const addMySqlSearchClause = ({ clauses, params, columns = [], value = '' }) => 
     if (booleanQuery) {
       pieces.push(`MATCH(${column}) AGAINST (? IN BOOLEAN MODE)`);
       clauseParams.push(booleanQuery);
+      return pieces;
     }
+
     pieces.push(`LOWER(${column}) LIKE LOWER(?) ESCAPE '\\\\'`);
     clauseParams.push(likeValue);
     return pieces;
@@ -677,11 +679,11 @@ const buildMySqlCandidateSearchWhere = (filters = {}) => {
     if (skillClauses.length > 0) clauses.push(`(${skillClauses.join(' OR ')})`);
   }
 
-  addMySqlSearchClause({ clauses, params, columns: ['location_text', 'search_text'], value: location });
-  addMySqlSearchClause({ clauses, params, columns: ['experience_text', 'search_text'], value: experience });
-  addMySqlSearchClause({ clauses, params, columns: ['education_text', 'search_text'], value: degree });
-  addMySqlSearchClause({ clauses, params, columns: ['education_text', 'search_text'], value: branch });
-  addMySqlSearchClause({ clauses, params, columns: ['education_text', 'search_text'], value: college });
+  addMySqlSearchClause({ clauses, params, columns: ['location_text'], value: location });
+  addMySqlSearchClause({ clauses, params, columns: ['experience_text'], value: experience });
+  addMySqlSearchClause({ clauses, params, columns: ['education_text'], value: degree });
+  addMySqlSearchClause({ clauses, params, columns: ['education_text'], value: branch });
+  addMySqlSearchClause({ clauses, params, columns: ['education_text'], value: college });
 
   if (batchYear) {
     clauses.push('(batch_year = ? OR LOWER(education_text) LIKE LOWER(?) ESCAPE \'\\\\\')');
@@ -716,8 +718,8 @@ const searchCandidateProfileIdsFromMySql = async ({ filters = {}, page = 1, limi
     );
     const total = Number(countRows?.[0]?.total || 0);
     const rows = await queryRows(
-      `SELECT user_id FROM candidate_search_documents ${where.sql} ORDER BY updated_at DESC, user_id ASC LIMIT ? OFFSET ?`,
-      [...where.params, pageSize, offset]
+      `SELECT user_id FROM candidate_search_documents ${where.sql} ORDER BY updated_at DESC, user_id ASC LIMIT ${pageSize} OFFSET ${offset}`,
+      where.params
     );
 
     return {

@@ -69,6 +69,7 @@ DELIMITER ;
 CALL `_hhh_add_column_if_missing`('student_profiles', 'city_id', 'CHAR(36) NULL');
 CALL `_hhh_add_column_if_missing`('student_profiles', 'city_name', 'LONGTEXT NULL');
 CALL `_hhh_add_column_if_missing`('student_profiles', 'pincode', 'VARCHAR(32) NULL');
+CALL `_hhh_add_column_if_missing`('student_profiles', 'current_pincode', 'VARCHAR(32) NULL');
 CALL `_hhh_add_column_if_missing`('master_locations', 'state_id', 'CHAR(36) NULL');
 CALL `_hhh_add_column_if_missing`('master_locations', 'district_id', 'CHAR(36) NULL');
 CALL `_hhh_add_column_if_missing`('master_locations', 'pincode', 'VARCHAR(32) NULL');

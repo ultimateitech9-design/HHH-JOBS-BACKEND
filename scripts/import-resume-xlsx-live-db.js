@@ -31,6 +31,7 @@ Options:
   --limit <n>                  Process only the first N candidate records
   --batch-size <n>             DB write progress batch size (default: ${DEFAULT_BATCH_SIZE})
   --skip-upload                Do not copy resume files into uploads
+  --assume-uploaded            Set resume URLs as if files already exist under uploads/resumes
   --upload-root <path>         Storage folder under uploads/resumes (default: ${DEFAULT_UPLOAD_ROOT})
   --resume-drive <drive>       Replace source drive with this drive (default: ${DEFAULT_RESUME_DRIVE})
   --postal-code-dir <path>     State-wise postal CSV folder for pincode->location mapping
@@ -94,6 +95,7 @@ const parseArgs = (argv = []) => {
     limit: null,
     batchSize: DEFAULT_BATCH_SIZE,
     skipUpload: false,
+    assumeUploaded: false,
     uploadRoot: DEFAULT_UPLOAD_ROOT,
     resumeDrive: DEFAULT_RESUME_DRIVE,
     publicApiUrl: config.publicApiUrl,
@@ -149,6 +151,10 @@ const parseArgs = (argv = []) => {
     }
     if (token === '--skip-upload') {
       args.skipUpload = true;
+      continue;
+    }
+    if (token === '--assume-uploaded') {
+      args.assumeUploaded = true;
       continue;
     }
     if (token === '--skip-postal-location') {
@@ -660,6 +666,7 @@ const ensureCandidateLocationSchema = async (pool) => {
   if (await ensureColumn(pool, 'student_profiles', 'city_id', 'CHAR(36) NULL')) changed.push('student_profiles.city_id');
   if (await ensureColumn(pool, 'student_profiles', 'city_name', 'LONGTEXT NULL')) changed.push('student_profiles.city_name');
   if (await ensureColumn(pool, 'student_profiles', 'pincode', 'VARCHAR(32) NULL')) changed.push('student_profiles.pincode');
+  if (await ensureColumn(pool, 'student_profiles', 'current_pincode', 'VARCHAR(32) NULL')) changed.push('student_profiles.current_pincode');
   if (await ensureIndex(pool, 'student_profiles', 'student_profiles_user_idx', '(`user_id`)')) changed.push('student_profiles_user_idx');
   if (await ensureIndex(pool, 'student_profiles', 'student_profiles_location_idx', '(`state_name`(128), `district_name`(128), `city_name`(128), `pincode`)')) {
     changed.push('student_profiles_location_idx');
@@ -768,16 +775,26 @@ const fetchProfilesByUserIds = async (pool, userIds = []) => {
   return result;
 };
 
-const uploadResume = async (record, { uploadRoot, skipUpload } = {}) => {
+const getResumeStoragePath = (record, uploadRoot = DEFAULT_UPLOAD_ROOT) =>
+  `${uploadRoot}/${record.sourcePathHash.slice(0, 2)}/${record.sourcePathHash}-${sanitizeFileName(record.fileName)}`;
+
+const getPublicResumeUrl = (storagePath) => {
+  const { data } = Database.storage.from('resumes').getPublicUrl(storagePath);
+  return data?.publicUrl || '';
+};
+
+const uploadResume = async (record, { uploadRoot, skipUpload, assumeUploaded } = {}) => {
   if (skipUpload || !record.fixedPath) return { resumeUrl: '', uploaded: false, reason: 'skipped' };
+  const storagePath = getResumeStoragePath(record, uploadRoot);
+  if (assumeUploaded) {
+    return { resumeUrl: getPublicResumeUrl(storagePath), uploaded: false, assumed: true, reason: 'assumed_uploaded' };
+  }
   if (!fs.existsSync(record.fixedPath)) return { resumeUrl: '', uploaded: false, reason: 'missing_file' };
 
-  const storagePath = `${uploadRoot}/${record.sourcePathHash.slice(0, 2)}/${record.sourcePathHash}-${sanitizeFileName(record.fileName)}`;
   const buffer = await fsp.readFile(record.fixedPath);
   const { error } = await Database.storage.from('resumes').upload(storagePath, buffer);
   if (error) return { resumeUrl: '', uploaded: false, reason: error.message || 'upload_failed' };
-  const { data } = Database.storage.from('resumes').getPublicUrl(storagePath);
-  return { resumeUrl: data?.publicUrl || '', uploaded: true, reason: '' };
+  return { resumeUrl: getPublicResumeUrl(storagePath), uploaded: true, reason: '' };
 };
 
 const buildReqBody = (existingReqBody, record, importRunId, resumeUrl) => ({
@@ -868,6 +885,7 @@ const buildProfilePayload = ({ record, userId, resumeUrl, existingProfile, profi
   district_name: record.districtName || existingProfile?.district_name || null,
   city_name: record.cityName || existingProfile?.city_name || null,
   pincode: record.pincode || existingProfile?.pincode || null,
+  current_pincode: record.pincode || existingProfile?.current_pincode || null,
   resume_url: resumeUrl || existingProfile?.resume_url || null,
   resume_text: record.resumeText,
   is_discoverable: 1,
@@ -1033,6 +1051,7 @@ const main = async () => {
     postalRowsLoaded: postal.rowsLoaded,
     postalLocationsMatched: records.filter((record) => record.pincode).length,
     uploadRoot: args.skipUpload ? null : `uploads/resumes/${args.uploadRoot}`,
+    assumeUploaded: args.assumeUploaded,
     publicApiUrl: args.publicApiUrl || config.publicApiUrl || null
   };
   console.log(JSON.stringify(previewSummary, null, 2));
@@ -1056,6 +1075,7 @@ const main = async () => {
     profilesUpdated: 0,
     searchDocumentsUpserted: 0,
     resumesUploaded: 0,
+    resumeUrlsAssumed: 0,
     resumeUploadSkipped: 0,
     errors: []
   };
@@ -1067,9 +1087,11 @@ const main = async () => {
       try {
         const uploadResult = await uploadResume(record, {
           uploadRoot: args.uploadRoot,
-          skipUpload: args.skipUpload
+          skipUpload: args.skipUpload,
+          assumeUploaded: args.assumeUploaded
         });
         if (uploadResult.uploaded) stats.resumesUploaded += 1;
+        else if (uploadResult.assumed) stats.resumeUrlsAssumed += 1;
         else stats.resumeUploadSkipped += 1;
 
         await conn.beginTransaction();
