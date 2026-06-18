@@ -195,6 +195,9 @@ const DEFAULT_ROLE_PERMISSIONS = [
 
 const normalizeLogText = (value = '') => String(value || '').trim().toLowerCase();
 
+const isEmailSearchText = (value = '') => normalizeLogText(value).includes('@');
+const isExactEmailSearchText = (value = '') => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeLogText(value));
+
 const normalizeCompanySearchText = (value = '') => normalizeLogText(value)
   .replace(/&/g, ' and ')
   .replace(/[^a-z0-9]+/g, ' ')
@@ -754,92 +757,101 @@ router.get('/command-search', asyncHandler(async (req, res) => {
   const companyLikeValues = buildCompanyLikeValues(search);
   const companyTokenLikeValues = buildCompanyTokenLikeValues(search);
   const searchDigits = search.replace(/\D/g, '');
+  const isEmailLookup = isEmailSearchText(search);
+  const emailSearchOperator = isExactEmailSearchText(search) ? '=' : 'LIKE';
+  const emailSearchValue = emailSearchOperator === '=' ? normalizedSearch : `%${normalizedSearch}%`;
 
   if (search) {
-    const like = `%${normalizedSearch}%`;
-    const searchableFields = [
-      'u.id',
-      'u.name',
-      'u.email',
-      'u.mobile',
-      'hp.contact_email',
-      'hp.contact_phone',
-      'hp.company_name',
-      'hp.company_website',
-      'hp.industry_type',
-      'hp.sector_name',
-      'hp.location',
-      'hp.state_name',
-      'hp.district_name',
-      'c.name',
-      'c.contact_email',
-      'c.contact_phone',
-      'c.city',
-      'c.state',
-      'c.state_name',
-      'c.district_name',
-      'sp.headline',
-      'sp.location',
-      'sp.resume_url',
-      'ep.employee_code',
-      'ep.department',
-      'ep.work_email',
-      'ep.office_location',
-      'ep.access_scope'
-    ];
-    const textPredicates = searchableFields.map((field) => `LOWER(COALESCE(CAST(${field} AS CHAR), '')) LIKE ?`);
-    const companyProfileMatch = buildCompanyTextPredicate([
-      'hc.company_name',
-      'hc.company_key',
-      'hc.company_slug',
-      'hc.website_url',
-      'hc.location',
-      'hc.state_name',
-      'hc.district_name'
-    ], companyLikeValues, companyTokenLikeValues);
-    const jobCompanyMatch = buildCompanyTextPredicate([
-      'hj.company_name',
-      'hj.company_key',
-      'hj.company_slug',
-      'hj.job_title',
-      'hj.job_location',
-      'hj.city_name',
-      'hj.district_name',
-      'hj.state_name'
-    ], companyLikeValues, companyTokenLikeValues);
-    const hrCompanyRelationPredicates = [
-      `EXISTS (
-        SELECT 1
-        FROM companies hc
-        WHERE hc.hr_user_id = u.id
-          AND (
-            ${companyProfileMatch.sql}
-          )
-      )`,
-      `EXISTS (
-        SELECT 1
-        FROM jobs hj
-        WHERE hj.created_by = u.id
-          AND COALESCE(hj.status, '') <> ?
-          AND (
-            ${jobCompanyMatch.sql}
-          )
-      )`
-    ];
-    const phonePredicates = searchDigits
-      ? [
-          "REGEXP_REPLACE(COALESCE(u.mobile, ''), '[^0-9]', '') LIKE ?",
-          "REGEXP_REPLACE(COALESCE(hp.contact_phone, ''), '[^0-9]', '') LIKE ?",
-          "REGEXP_REPLACE(COALESCE(c.contact_phone, ''), '[^0-9]', '') LIKE ?"
-        ]
-      : [];
+    if (isEmailLookup) {
+      const emailFields = ['u.email', 'hp.contact_email', 'c.contact_email', 'ep.work_email'];
+      where.push(`(${emailFields.map((field) => `LOWER(COALESCE(CAST(${field} AS CHAR), '')) ${emailSearchOperator} ?`).join('\n      OR ')})`);
+      params.push(...emailFields.map(() => emailSearchValue));
+    } else {
+      const like = `%${normalizedSearch}%`;
+      const searchableFields = [
+        'u.id',
+        'u.name',
+        'u.email',
+        'u.mobile',
+        'hp.contact_email',
+        'hp.contact_phone',
+        'hp.company_name',
+        'hp.company_website',
+        'hp.industry_type',
+        'hp.sector_name',
+        'hp.location',
+        'hp.state_name',
+        'hp.district_name',
+        'c.name',
+        'c.contact_email',
+        'c.contact_phone',
+        'c.city',
+        'c.state',
+        'c.state_name',
+        'c.district_name',
+        'sp.headline',
+        'sp.location',
+        'sp.resume_url',
+        'ep.employee_code',
+        'ep.department',
+        'ep.work_email',
+        'ep.office_location',
+        'ep.access_scope'
+      ];
+      const textPredicates = searchableFields.map((field) => `LOWER(COALESCE(CAST(${field} AS CHAR), '')) LIKE ?`);
+      const companyProfileMatch = buildCompanyTextPredicate([
+        'hc.company_name',
+        'hc.company_key',
+        'hc.company_slug',
+        'hc.website_url',
+        'hc.location',
+        'hc.state_name',
+        'hc.district_name'
+      ], companyLikeValues, companyTokenLikeValues);
+      const jobCompanyMatch = buildCompanyTextPredicate([
+        'hj.company_name',
+        'hj.company_key',
+        'hj.company_slug',
+        'hj.job_title',
+        'hj.job_location',
+        'hj.city_name',
+        'hj.district_name',
+        'hj.state_name'
+      ], companyLikeValues, companyTokenLikeValues);
+      const hrCompanyRelationPredicates = [
+        `EXISTS (
+          SELECT 1
+          FROM companies hc
+          WHERE hc.hr_user_id = u.id
+            AND (
+              ${companyProfileMatch.sql}
+            )
+        )`,
+        `EXISTS (
+          SELECT 1
+          FROM jobs hj
+          WHERE hj.created_by = u.id
+            AND COALESCE(hj.status, '') <> ?
+            AND (
+              ${jobCompanyMatch.sql}
+            )
+        )`
+      ];
+      const phonePredicates = searchDigits
+        ? [
+            "REGEXP_REPLACE(COALESCE(u.mobile, ''), '[^0-9]', '') LIKE ?",
+            "REGEXP_REPLACE(COALESCE(hp.contact_phone, ''), '[^0-9]', '') LIKE ?",
+            "REGEXP_REPLACE(COALESCE(c.contact_phone, ''), '[^0-9]', '') LIKE ?"
+          ]
+        : [];
 
-    where.push(`(${[...textPredicates, ...hrCompanyRelationPredicates, ...phonePredicates].join('\n      OR ')})`);
-    params.push(...searchableFields.map(() => like));
-    params.push(...companyProfileMatch.params);
-    params.push(JOB_STATUSES.DELETED, ...jobCompanyMatch.params);
-    if (searchDigits) {
-      params.push(...phonePredicates.map(() => `%${searchDigits}%`));
+      where.push(`(${[...textPredicates, ...hrCompanyRelationPredicates, ...phonePredicates].join('\n      OR ')})`);
+      params.push(...searchableFields.map(() => like));
+      params.push(...companyProfileMatch.params);
+      params.push(JOB_STATUSES.DELETED, ...jobCompanyMatch.params);
+      if (searchDigits) {
+        params.push(...phonePredicates.map(() => `%${searchDigits}%`));
+      }
     }
   }
 
@@ -991,7 +1003,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     [JOB_STATUSES.DELETED, ...params, ...orderParams]
   );
 
-  const allowsHrCompanySearch = search && (
+  const allowsHrCompanySearch = search && !isEmailLookup && (
     !roleFilters.length
     || roleFilters.includes(ROLES.HR)
     || roleFilters.includes('company_admin')
@@ -1148,6 +1160,22 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     ]
   ) : [];
 
+  const commercialSearchParams = isEmailLookup
+    ? [emailSearchValue, emailSearchValue]
+    : [
+        companyLike,
+        `%${normalizedSearch}%`,
+        `%${normalizedSearch}%`,
+        `%${normalizedSearch}%`,
+        companyLike,
+        `%${normalizedSearch}%`,
+        `%${normalizedSearch}%`,
+        `%${normalizedSearch}%`,
+        `%${normalizedSearch}%`,
+        `%${normalizedSearch}%`,
+        ...(searchDigits ? [`%${searchDigits}%`, `%${searchDigits}%`] : [])
+      ];
+
   const commercialRows = search ? await safeQueryRows(
     `
       SELECT
@@ -1239,6 +1267,9 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         GROUP BY user_id
       ) activity_counts ON activity_counts.user_id = u.id
       WHERE (
+        ${isEmailLookup ? `
+        LOWER(COALESCE(CAST(sc.email AS CHAR), '')) ${emailSearchOperator} ?
+        OR LOWER(COALESCE(CAST(sl.contact_email AS CHAR), '')) ${emailSearchOperator} ?` : `
         LOWER(COALESCE(CAST(sc.company_name AS CHAR), '')) LIKE ?
         OR LOWER(COALESCE(CAST(sc.contact_name AS CHAR), '')) LIKE ?
         OR LOWER(COALESCE(CAST(sc.email AS CHAR), '')) LIKE ?
@@ -1251,7 +1282,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         OR LOWER(COALESCE(CAST(sl.target_role AS CHAR), '')) LIKE ?
         ${searchDigits ? `
         OR REGEXP_REPLACE(COALESCE(sc.phone, ''), '[^0-9]', '') LIKE ?
-        OR REGEXP_REPLACE(COALESCE(sl.contact_phone, ''), '[^0-9]', '') LIKE ?` : ''}
+        OR REGEXP_REPLACE(COALESCE(sl.contact_phone, ''), '[^0-9]', '') LIKE ?` : ''}`}
       )
       ${roleFilters.length ? `AND LOWER(u.role) IN (${roleFilters.map(() => '?').join(', ')})` : ''}
       ${statusFilters.length ? `AND LOWER(u.status) IN (${statusFilters.map(() => '?').join(', ')})` : ''}
@@ -1271,17 +1302,7 @@ router.get('/command-search', asyncHandler(async (req, res) => {
     `,
     [
       JOB_STATUSES.DELETED,
-      companyLike,
-      `%${normalizedSearch}%`,
-      `%${normalizedSearch}%`,
-      `%${normalizedSearch}%`,
-      companyLike,
-      `%${normalizedSearch}%`,
-      `%${normalizedSearch}%`,
-      `%${normalizedSearch}%`,
-      `%${normalizedSearch}%`,
-      `%${normalizedSearch}%`,
-      ...(searchDigits ? [`%${searchDigits}%`, `%${searchDigits}%`] : []),
+      ...commercialSearchParams,
       ...(roleFilters.length ? roleFilters : []),
       ...(statusFilters.length ? statusFilters : []),
       normalizedSearch,
