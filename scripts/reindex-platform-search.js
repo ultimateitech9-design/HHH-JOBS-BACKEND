@@ -8,7 +8,18 @@ const {
   buildPlatformSearchDocument
 } = require('../src/services/search/platformSearchIndex');
 
-const BATCH_SIZE = Number(process.env.PLATFORM_SEARCH_REINDEX_BATCH_SIZE || 500);
+const DEFAULT_BATCH_SIZE = 500;
+const MAX_BATCH_SIZE = 2000;
+
+const parsePositiveInteger = (value, fallback = DEFAULT_BATCH_SIZE) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, MAX_BATCH_SIZE);
+};
+
+const BATCH_SIZE = parsePositiveInteger(process.env.PLATFORM_SEARCH_REINDEX_BATCH_SIZE);
+
+const sqlLimit = (value) => String(Math.max(0, Number.parseInt(value, 10) || 0));
 
 const ENTITY_QUERIES = {
   jobs: `
@@ -188,7 +199,7 @@ const reindexEntity = async (entity) => {
 
   let indexed = 0;
   for (let offset = 0; ; offset += BATCH_SIZE) {
-    const rows = await safeQueryRows(`${baseSql}\nLIMIT ? OFFSET ?`, [BATCH_SIZE, offset]);
+    const rows = await safeQueryRows(`${baseSql}\nLIMIT ${sqlLimit(BATCH_SIZE)} OFFSET ${sqlLimit(offset)}`);
     if (rows === null) return indexed;
     if (!rows.length) break;
 

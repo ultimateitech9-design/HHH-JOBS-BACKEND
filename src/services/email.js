@@ -166,6 +166,8 @@ const createTransporter = (options) => {
   }
 
   const transporter = nodemailer.createTransport({
+    disableFileAccess: true,
+    disableUrlAccess: true,
     ...options
   });
   transporterCache.set(transportKey, transporter);

@@ -91,7 +91,7 @@ const buildMissingCollegePayload = (existing = {}, seedPayload = {}) => Object.f
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024, fields: 50, fieldNestingDepth: 5 },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
       cb(null, true);
@@ -103,7 +103,7 @@ const upload = multer({
 
 const logoUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 4 * 1024 * 1024 },
+  limits: { fileSize: 4 * 1024 * 1024, fields: 20, fieldNestingDepth: 5 },
   fileFilter: (_req, file, cb) => {
     const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
     cb(allowedTypes.has(file.mimetype) ? null : new Error('Only JPG, PNG, WebP, and GIF logo images are allowed'), allowedTypes.has(file.mimetype));

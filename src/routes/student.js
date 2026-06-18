@@ -45,7 +45,7 @@ const { requirePlanFeature } = require('../middleware/planAccess');
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  limits: { fileSize: 5 * 1024 * 1024, fields: 30, fieldNestingDepth: 5 }, // 5 MB
   fileFilter: (_req, file, cb) => {
     const allowed = [
       'application/pdf',

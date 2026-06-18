@@ -13,7 +13,10 @@ const { saveSubscription, removeSubscription, getVapidPublicKey } = require('../
 const { saveWhatsAppPreference, getWhatsAppPreference } = require('../services/whatsapp');
 const multer = require('multer');
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024, fields: 80, fieldNestingDepth: 5 }
+});
 const router = express.Router();
 
 // ── Resume Builder ───────────────────────────────────────────────────────────
