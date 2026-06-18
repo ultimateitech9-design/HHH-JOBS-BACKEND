@@ -20,6 +20,7 @@
     "import:market-sectors": "node scripts/import-market-sectors.js",
     "import:postal-codes": "node scripts/import-statewise-postal-codes.js",
     "import:resume-xlsx-live": "node scripts/import-resume-xlsx-live-db.js",
+    "backfill:student-contacts": "node scripts/backfill-student-contacts-from-resume-xlsx.js",
     "search:reindex:candidates": "node scripts/reindex-candidate-search.js",
     "notify:hr-job-metadata": "node scripts/notify-hr-job-metadata-update.js",
     "email:seeded-students": "node scripts/send-seeded-student-welcome.js",

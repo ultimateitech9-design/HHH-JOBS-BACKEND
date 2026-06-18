@@ -41,6 +41,10 @@ Options:
 `.trim();
 
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
+const PHONE_PATTERN = /(?:\+?91[\s-]?)?[6-9]\d{9}\b/g;
+const NAME_NOISE_PATTERN = /\b(resume|cv|curriculum|vitae|bio\s*data|biodata|whatsapp|image|photo|key\s*skills?|work\s*history|work(?:ing)?\s*experience|outcome|profile|objective|education|updated|compressed|copy|projects?|declaration|responsibilit(?:y|ies)|career|summary|personal\s*details?|employment|production\s*records?|records?|organization|construction|site|highrise|building|civil|mechanical|electrical|engineer(?:ing)?|architect(?:ural)?|survey(?:or|ing)?|autocad|revit|diploma|b\.?\s*tech|final|latest)\b/i;
+const ADDRESS_CUE_PATTERN = /\b(mohalla|qila|village|district|tehsil|post|ward|sector|road|street|pincode|pin\s*code)\b/i;
+const STRONG_STOP_PATTERN = /\b(resume|cv|curriculum|vitae|bio\s*data|biodata|updated|compressed|copy|whatsapp|image|photo|key\s*skills?|work\s*history|work(?:ing)?\s*experience|outcome|profile|objective|education|projects?|declaration|responsibilit(?:y|ies)|production\s*records?|organization|construction\s*site|highrise|building|final|latest)\b/i;
 const INDIAN_STATES = [
   'Andhra Pradesh',
   'Arunachal Pradesh',
@@ -79,6 +83,54 @@ const normalizeSpace = (value) => normalizeText(value).replace(/\s+/g, ' ');
 const normalizeEmail = (value) => {
   const match = normalizeText(value).match(EMAIL_PATTERN);
   return match?.[0]?.toLowerCase() || '';
+};
+const titleCaseName = (value) =>
+  normalizeSpace(value)
+    .toLowerCase()
+    .replace(/\b([a-z])/g, (letter) => letter.toUpperCase());
+const prepareNameCandidate = (value) => {
+  let raw = normalizeSpace(value)
+    .replace(/\.(pdf|docx?|rtf|txt)$/ig, '')
+    .replace(EMAIL_PATTERN, ' ')
+    .replace(PHONE_PATTERN, ' ')
+    .replace(/\b(mr|mrs|ms|miss|dr|prof)\.?\b/ig, ' ')
+    .replace(/^(?:resume|cv|curriculum vitae|bio\s*data|biodata|copy|updated|final|latest|new)\b[:\s._-]*/i, '')
+    .replace(/\b\d{4}[-_ ]?\d{1,2}[-_ ]?\d{1,2}\b/g, ' ')
+    .replace(/\b\d{1,2}[.:]\d{1,2}(?:[.:]\d{1,2})?\b/g, ' ')
+    .replace(/\([^)]+\)/g, ' ')
+    .replace(/[_/|]+/g, ' ')
+    .replace(/\s+-\s+|-\s+|\s+-/g, ' ')
+    .replace(/\b([A-Za-z\u0900-\u097F]{3,})(?:cv|resume)\b/ig, '$1')
+    .replace(/[^A-Za-z\u0900-\u097F'. -]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const addressCueIndex = raw.search(ADDRESS_CUE_PATTERN);
+  if (addressCueIndex > 4) raw = raw.slice(0, addressCueIndex).trim();
+
+  const stopIndex = raw.search(STRONG_STOP_PATTERN);
+  if (stopIndex > 4) raw = raw.slice(0, stopIndex).trim();
+
+  return titleCaseName(raw.replace(/\bnew\b/ig, ' ').replace(/\s+/g, ' ').trim());
+};
+const isLikelyPersonName = (value) => {
+  const name = normalizeSpace(value);
+  if (!name || name === '-' || name.length < 2 || name.length > 60) return false;
+  if (normalizeEmail(name)) return false;
+  if (/\.(pdf|docx?|rtf|txt|jpg|jpeg|png)$/i.test(name)) return false;
+  if (/\d/.test(name)) return false;
+  if (NAME_NOISE_PATTERN.test(name)) return false;
+  if (!/[A-Za-z\u0900-\u097F]/.test(name)) return false;
+
+  const tokens = name.split(/\s+/).filter(Boolean);
+  if (tokens.length < 1 || tokens.length > 5) return false;
+  if (!tokens.some((token) => token.replace(/[^A-Za-z\u0900-\u097F]/g, '').length >= 3)) return false;
+
+  return tokens.every((token) => /^[A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F'.-]{0,28}$/.test(token));
+};
+const cleanImportedCandidateName = (value, fallback = '') => {
+  const options = [value, fallback].map(prepareNameCandidate).filter(Boolean);
+  return options.find(isLikelyPersonName) || '';
 };
 const nowSql = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const sha1 = (value) => crypto.createHash('sha1').update(String(value || '')).digest('hex');
@@ -511,7 +563,7 @@ const toCandidateRecord = (row = {}, { resumeDrive, sheet, xlsxPath, postalLooku
   return {
     key: normalizeEmail(row.emails) ? `email:${normalizeEmail(row.emails)}` : `source:${sourcePathHash}`,
     email: normalizeEmail(row.emails),
-    name: normalizeSpace(row.candidate_name_guess) || path.parse(fileName).name || 'Candidate',
+    name: cleanImportedCandidateName(row.candidate_name_guess, path.parse(fileName).name) || 'Candidate',
     mobile: firstPhone(row.phones),
     fileName,
     originalPath: normalizeText(row.file_path),
@@ -818,21 +870,36 @@ const compactPayload = (payload = {}, columns = new Set()) =>
     && !(Array.isArray(value) && value.length === 0)
   )));
 
+const shouldReplaceExistingName = (existingName, nextName) => {
+  const existing = normalizeSpace(existingName);
+  const next = normalizeSpace(nextName);
+  if (!isLikelyPersonName(next)) return false;
+  if (!existing || existing === '-' || NAME_NOISE_PATTERN.test(existing)) return true;
+  if (/\.(pdf|docx?|rtf|txt)$/i.test(existing)) return true;
+  if ((existing.match(/\d/g) || []).length > Math.max(3, existing.length / 3)) return true;
+  return false;
+};
+
 const saveUser = async (conn, { record, existingUser, usersColumns, passwordHash, importRunId, resumeUrl }) => {
   const reqBody = buildReqBody(existingUser?.req_body, record, importRunId, resumeUrl);
   if (existingUser?.id) {
+    const existingEmail = normalizeEmail(existingUser.email);
+    const nextEmail = existingEmail || record.email || null;
     const payload = compactPayload({
-      name: record.name,
+      name: shouldReplaceExistingName(existingUser.name, record.name)
+        ? record.name
+        : (existingUser.name || record.name || 'Candidate'),
+      email: nextEmail,
       mobile: record.mobile || existingUser.mobile || null,
       role: existingUser.role || ROLES.STUDENT,
       status: existingUser.status || USER_STATUSES.ACTIVE,
-      is_email_verified: existingUser.is_email_verified || (record.email ? 1 : 0),
+      is_email_verified: existingUser.is_email_verified || (nextEmail ? 1 : 0),
       updated_at: nowSql(),
       req_body: reqBody
     }, usersColumns);
     const fields = Object.keys(payload);
     await conn.execute(
-      `UPDATE users SET ${fields.map((field) => `\`${field}\` = ${field === 'req_body' ? 'CAST(? AS JSON)' : '?'}`).join(', ')} WHERE id = ?`,
+      `UPDATE users SET ${fields.map((field) => `\`${field}\` = ?`).join(', ')} WHERE id = ?`,
       [...fields.map((field) => field === 'req_body' ? jsonParam(payload[field]) : payload[field]), existingUser.id]
     );
     return { id: existingUser.id, inserted: false };
@@ -855,7 +922,7 @@ const saveUser = async (conn, { record, existingUser, usersColumns, passwordHash
   }, usersColumns);
   const fields = Object.keys(payload);
   await conn.execute(
-    `INSERT INTO users (${fields.map((field) => `\`${field}\``).join(', ')}) VALUES (${fields.map((field) => field === 'req_body' ? 'CAST(? AS JSON)' : '?').join(', ')})`,
+    `INSERT INTO users (${fields.map((field) => `\`${field}\``).join(', ')}) VALUES (${fields.map(() => '?').join(', ')})`,
     fields.map((field) => field === 'req_body' ? jsonParam(payload[field]) : payload[field])
   );
   return { id, inserted: true };
@@ -900,7 +967,7 @@ const saveProfile = async (conn, { record, userId, resumeUrl, existingProfile, p
   if (existingProfile?.id) {
     const fields = Object.keys(payload).filter((field) => field !== 'user_id');
     await conn.execute(
-      `UPDATE student_profiles SET ${fields.map((field) => `\`${field}\` = ${jsonFields.has(field) ? 'CAST(? AS JSON)' : '?'}`).join(', ')} WHERE id = ?`,
+      `UPDATE student_profiles SET ${fields.map((field) => `\`${field}\` = ?`).join(', ')} WHERE id = ?`,
       [...fields.map((field) => jsonFields.has(field) ? jsonParam(payload[field]) : payload[field]), existingProfile.id]
     );
     return { inserted: false };
@@ -913,7 +980,7 @@ const saveProfile = async (conn, { record, userId, resumeUrl, existingProfile, p
   };
   const fields = Object.keys(insertPayload);
   await conn.execute(
-    `INSERT INTO student_profiles (${fields.map((field) => `\`${field}\``).join(', ')}) VALUES (${fields.map((field) => jsonFields.has(field) ? 'CAST(? AS JSON)' : '?').join(', ')})`,
+    `INSERT INTO student_profiles (${fields.map((field) => `\`${field}\``).join(', ')}) VALUES (${fields.map(() => '?').join(', ')})`,
     fields.map((field) => jsonFields.has(field) ? jsonParam(insertPayload[field]) : insertPayload[field])
   );
   return { inserted: true };
