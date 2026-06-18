@@ -37,11 +37,13 @@ Leave username, password, and API key blank only when OpenSearch security is dis
 redis-cli ping
 curl http://127.0.0.1:9200
 cd /opt/hhh-jobs/backend
+npm run search:doctor
 npm run search:reindex:platform
 ```
 
 `redis-cli ping` should print `PONG`.
 `curl http://127.0.0.1:9200` should return OpenSearch cluster JSON.
+`npm run search:doctor` validates the backend `.env` values and both network connections.
 The reindex command should print indexed counts for jobs, users, companies, campuses, applications, tickets, and data entries.
 
 ## Deployment Order
@@ -50,5 +52,6 @@ The reindex command should print indexed counts for jobs, users, companies, camp
 2. Add the environment values to `/opt/hhh-jobs/backend/.env`.
 3. Deploy backend code.
 4. Run `npm run ensure:mysql-schema`.
-5. Run `npm run search:reindex:platform`.
-6. Restart `hhh-jobs-backend`.
+5. Run `npm run search:doctor`.
+6. Run `npm run search:reindex:platform`.
+7. Restart `hhh-jobs-backend`.

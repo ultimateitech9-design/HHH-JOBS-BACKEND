@@ -23,6 +23,7 @@
     "backfill:student-contacts": "node scripts/backfill-student-contacts-from-resume-xlsx.js",
     "search:reindex:candidates": "node scripts/reindex-candidate-search.js",
     "search:reindex:platform": "node scripts/reindex-platform-search.js",
+    "search:doctor": "node scripts/search-infra-doctor.js",
     "notify:hr-job-metadata": "node scripts/notify-hr-job-metadata-update.js",
     "email:seeded-students": "node scripts/send-seeded-student-welcome.js",
     "email:seeded-users": "node scripts/send-seeded-user-welcome.js",
