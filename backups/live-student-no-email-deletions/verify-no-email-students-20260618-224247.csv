@@ -1,0 +1,4 @@
+user_id,name,email,role,status,created_at,last_login_at,mobile
+"d7af76da-f1ec-4cc4-aa3b-6c0368ac1467","Imported Candidate","","student","active","2026-06-12 10:25:45","",""
+"bca07fa1-a128-44a0-85c2-2abf36be3bfd","Deepak Kumar","","student","active","2026-06-12 10:25:31","","+918737014429"
+"ff601246-ddf6-4d17-ace7-fd82fce3a29e","Kishor Boruah","","student","active","2026-06-12 10:24:59","",""
