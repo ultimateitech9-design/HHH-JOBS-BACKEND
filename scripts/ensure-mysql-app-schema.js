@@ -63,6 +63,29 @@ const addIndexIfMissing = async (db, table, index, definition) => {
   return true;
 };
 
+const addFullTextIndexIfMissing = async (db, table, index, definition) => {
+  if (await indexExists(db, table, index)) return false;
+  await db.execute(`ALTER TABLE ${tableName(table)} ADD FULLTEXT INDEX ${columnName(index)} ${definition}`);
+  return true;
+};
+
+const allColumnsExist = async (db, table, columns = []) => {
+  for (const column of columns) {
+    if (!(await columnExists(db, table, column))) return false;
+  }
+  return true;
+};
+
+const addIndexIfColumnsExist = async (db, table, index, definition, columns = []) => {
+  if (!(await allColumnsExist(db, table, columns))) return false;
+  return addIndexIfMissing(db, table, index, definition);
+};
+
+const addFullTextIndexIfColumnsExist = async (db, table, index, definition, columns = []) => {
+  if (!(await allColumnsExist(db, table, columns))) return false;
+  return addFullTextIndexIfMissing(db, table, index, definition);
+};
+
 const addUniqueIndexIfMissing = async (db, table, index, definition) => {
   if (await indexExists(db, table, index)) return false;
   try {
@@ -1095,6 +1118,28 @@ const ensureIndexesForExistingTables = async (db) => {
     await addIndexIfMissing(db, 'users', 'users_role_status_idx', '(`role`(64), `status`(32), `created_at`)');
     await addIndexIfMissing(db, 'users', 'users_email_idx', '(`email`(191))');
     await addIndexIfMissing(db, 'users', 'users_mobile_idx', '(`mobile`(64))');
+    await addIndexIfColumnsExist(db, 'users', 'users_created_id_idx', '(`created_at`, `id`)', ['created_at', 'id']);
+    await addFullTextIndexIfColumnsExist(db, 'users', 'users_search_ftx', '(`name`, `email`, `mobile`)', ['name', 'email', 'mobile']);
+  }
+  if (await tableExists(db, 'jobs')) {
+    await addIndexIfColumnsExist(db, 'jobs', 'jobs_status_approval_created_idx', '(`status`(32), `approval_status`(32), `created_at`)', ['status', 'approval_status', 'created_at']);
+    await addIndexIfColumnsExist(db, 'jobs', 'jobs_created_id_idx', '(`created_at`, `id`)', ['created_at', 'id']);
+    await addIndexIfColumnsExist(db, 'jobs', 'jobs_company_created_idx', '(`company_name`(191), `created_at`)', ['company_name', 'created_at']);
+    await addFullTextIndexIfColumnsExist(db, 'jobs', 'jobs_search_ftx', '(`job_title`, `company_name`, `description`, `sector_name`, `category`, `city_name`, `district_name`, `pincode`)', ['job_title', 'company_name', 'description', 'sector_name', 'category', 'city_name', 'district_name', 'pincode']);
+  }
+  if (await tableExists(db, 'hr_profiles')) {
+    await addIndexIfColumnsExist(db, 'hr_profiles', 'hr_profiles_company_created_idx', '(`company_name`(191), `created_at`)', ['company_name', 'created_at']);
+    await addIndexIfColumnsExist(db, 'hr_profiles', 'hr_profiles_created_id_idx', '(`created_at`, `id`)', ['created_at', 'id']);
+    await addFullTextIndexIfColumnsExist(db, 'hr_profiles', 'hr_profiles_search_ftx', '(`company_name`, `location`, `industry_type`, `sector_name`, `about`)', ['company_name', 'location', 'industry_type', 'sector_name', 'about']);
+  }
+  if (await tableExists(db, 'colleges')) {
+    await addIndexIfColumnsExist(db, 'colleges', 'colleges_created_id_idx', '(`created_at`, `id`)', ['created_at', 'id']);
+    await addFullTextIndexIfColumnsExist(db, 'colleges', 'colleges_search_ftx', '(`name`, `city`, `state`, `affiliation`)', ['name', 'city', 'state', 'affiliation']);
+  }
+  if (await tableExists(db, 'applications')) {
+    await addIndexIfColumnsExist(db, 'applications', 'applications_status_created_idx', '(`status`(32), `created_at`)', ['status', 'created_at']);
+    await addIndexIfColumnsExist(db, 'applications', 'applications_job_created_idx', '(`job_id`, `created_at`)', ['job_id', 'created_at']);
+    await addFullTextIndexIfColumnsExist(db, 'applications', 'applications_search_ftx', '(`applicant_name`, `applicant_email`, `cover_letter`)', ['applicant_name', 'applicant_email', 'cover_letter']);
   }
   if (await tableExists(db, 'platform_settings')) {
     await addUniqueIndexIfMissing(db, 'platform_settings', 'platform_settings_key_uidx', '(`key`(191))');

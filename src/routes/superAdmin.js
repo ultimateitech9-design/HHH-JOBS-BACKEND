@@ -1,6 +1,6 @@
 const express = require('express');
 const { ROLES, USER_STATUSES, JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
-const { Database, countRows, countRowsByColumn, queryRows, sendDatabaseError, sumRows } = require('../db');
+const { Database, countRows, queryRows, sendDatabaseError, sumRows } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { resetMaintenanceModeCache } = require('../middleware/maintenance');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
@@ -12,6 +12,12 @@ const { notifyRecommendedStudentsForJob } = require('../services/recommendations
 const { processAutoApplyForJob } = require('../services/autoApply');
 const { enqueueCreatedUserWelcomeEmail } = require('../services/createdUserWelcome');
 const { normalizeCompanyKey, toCompanySlug } = require('../services/companyDirectory');
+const { getSuperAdminDashboardMetrics } = require('../services/dashboardMetrics');
+const {
+  reorderRowsBySearchIds,
+  searchPlatformEntityIds,
+  suggestPlatformSearch
+} = require('../services/search/platformSearchIndex');
 const portalStore = require('../mock/portalStore');
 
 const router = express.Router();
@@ -186,15 +192,6 @@ const DEFAULT_ROLE_PERMISSIONS = [
     }
   }
 ];
-
-const getCount = (countMap, key) => Number(countMap.get(String(key || '').toLowerCase()) || 0);
-const sumCountMap = (countMap) => [...countMap.values()].reduce((sum, value) => sum + Number(value || 0), 0);
-const getCurrentMonthRange = () => {
-  const now = new Date();
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  return { monthStart, nextMonthStart };
-};
 
 const normalizeLogText = (value = '') => String(value || '').trim().toLowerCase();
 
@@ -652,92 +649,13 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
     return;
   }
 
-  const excludeCampusConnectUsers = (query) => query.neq('role', ROLES.CAMPUS_CONNECT);
-
-  const { monthStart, nextMonthStart } = getCurrentMonthRange();
-
-  const [
-    userRoleCounts,
-    totalJobs,
-    totalApplications,
-    openTickets,
-    monthlyRevenue,
-    activeSubscriptions,
-  ] = await Promise.all([
-    countRowsByColumn('users', 'role', [{ column: 'role', operator: '<>', value: ROLES.CAMPUS_CONNECT }]),
-    countRows('jobs', (q) => q.neq('status', JOB_STATUSES.DELETED)),
-    countRows('applications'),
-    countRows('support_tickets', (q) => q.in('status', ['open', 'pending'])),
-    sumRows('accounts_transactions', 'amount', [
-      { column: 'type', operator: '=', value: 'credit' },
-      { column: 'status', operator: '=', value: 'completed' },
-      { column: 'created_at', operator: '>=', value: monthStart },
-      { column: 'created_at', operator: '<', value: nextMonthStart }
-    ]),
-    countRows('accounts_subscriptions', (q) => q.eq('status', 'active'))
-  ]);
-
-  const totalUsers = sumCountMap(userRoleCounts);
-  const totalHr = getCount(userRoleCounts, ROLES.HR);
-  const totalStudents = getCount(userRoleCounts, ROLES.STUDENT);
-
-  const [
-    recentUsersResult,
-    recentJobsResult,
-    recentTicketsResult,
-    recentLogsResult
-  ] = await Promise.all([
-    Database
-      .from('users')
-      .select('id, name, email, role, status, created_at')
-      .neq('role', ROLES.CAMPUS_CONNECT)
-      .order('created_at', { ascending: false })
-      .limit(10),
-    Database
-      .from('jobs')
-      .select('id, title, status, approval_status, created_at')
-      .order('created_at', { ascending: false })
-      .limit(10),
-    Database
-      .from('support_tickets')
-      .select('id, ticket_number, title, status, priority, created_at')
-      .order('created_at', { ascending: false })
-      .limit(10),
-    Database
-      .from('system_logs')
-      .select('id, action, module, level, actor_name, details, created_at')
-      .order('created_at', { ascending: false })
-      .limit(20)
-  ]);
-
-  const recentUsers = recentUsersResult.data || [];
-  const recentJobs = recentJobsResult.data || [];
-  const recentTickets = recentTicketsResult.data || [];
-  const recentLogs = recentLogsResult.data || [];
+  const forceRefresh = ['1', 'true', 'yes'].includes(String(req.query.refresh || '').trim().toLowerCase());
+  const { value: dashboard, cache } = await getSuperAdminDashboardMetrics({ forceRefresh });
 
   res.send({
     status: true,
-    dashboard: {
-      stats: {
-        totalUsers,
-        totalHr,
-        totalStudents,
-        liveJobs: totalJobs,
-        totalApplications,
-        openSupportTickets: openTickets,
-        monthlyRevenue,
-        activeSubscriptions,
-        activeCompanies: totalHr,
-        pendingApprovals: 0,
-        criticalLogs: (recentLogs || []).filter((l) => l.level === 'critical').length,
-        duplicateAccounts: 0
-      },
-      roleSync: [],
-      users: recentUsers,
-      jobs: recentJobs,
-      supportTickets: recentTickets,
-      systemLogs: recentLogs
-    }
+    dashboard,
+    cache
   });
 }));
 
@@ -773,6 +691,39 @@ router.get('/users', asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
+
+  const indexedResult = search
+    ? await searchPlatformEntityIds({ entity: 'users', filters: { search, role, status }, page, limit })
+    : { skipped: true, reason: 'no-search' };
+
+  if (!indexedResult.skipped) {
+    if (indexedResult.ids.length === 0) {
+      res.send({ status: true, users: [], total: 0, page, limit, search: { engine: 'opensearch' } });
+      return;
+    }
+
+    let indexedQuery = Database
+      .from('users')
+      .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at')
+      .in('id', indexedResult.ids);
+
+    if (role) indexedQuery = indexedQuery.eq('role', role);
+    if ([USER_STATUSES.ACTIVE, USER_STATUSES.BLOCKED, USER_STATUSES.BANNED].includes(status)) indexedQuery = indexedQuery.eq('status', status);
+
+    const { data, error } = await indexedQuery;
+    if (error) { sendDatabaseError(res, error); return; }
+
+    const users = await enrichManagedUsers(reorderRowsBySearchIds(data || [], indexedResult.ids));
+    res.send({
+      status: true,
+      users,
+      total: indexedResult.total || users.length,
+      page,
+      limit,
+      search: { engine: indexedResult.engine }
+    });
+    return;
+  }
 
   let query = Database
     .from('users')
@@ -1427,6 +1378,23 @@ router.get('/command-search', asyncHandler(async (req, res) => {
   res.send({ status: true, results, total: results.length });
 }));
 
+router.get('/search/autocomplete', asyncHandler(async (req, res) => {
+  const entity = String(req.query.entity || 'users').trim();
+  const query = String(req.query.q || req.query.search || '').trim();
+  const limit = Math.max(1, Math.min(12, parseInt(req.query.limit || '8', 10)));
+  const result = await suggestPlatformSearch({ entity, query, limit });
+
+  res.send({
+    status: true,
+    suggestions: result.suggestions || [],
+    search: {
+      engine: result.skipped ? 'database' : result.engine,
+      fallback: Boolean(result.skipped),
+      reason: result.reason || ''
+    }
+  });
+}));
+
 router.get('/users/:id/support-context', asyncHandler(async (req, res) => {
   const userId = String(req.params.id || '').trim();
   if (!userId) return res.status(400).send({ status: false, message: 'User id is required' });
@@ -1745,21 +1713,33 @@ router.get('/companies', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
+  const indexedResult = search
+    ? await searchPlatformEntityIds({ entity: 'companies', filters: { search }, page, limit })
+    : { skipped: true, reason: 'no-search' };
+
   let query = Database
     .from('hr_profiles')
     .select(`
       id, company_name, company_website, company_size, location, about, logo_url, is_verified, created_at,
       users!inner(id, name, email, status, is_hr_approved)
     `, { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+    .order('created_at', { ascending: false });
 
-  if (search) query = query.ilike('company_name', `%${search}%`);
+  if (!indexedResult.skipped) {
+    if (indexedResult.ids.length === 0) {
+      res.send({ status: true, companies: [], total: 0, page, limit, search: { engine: 'opensearch' } });
+      return;
+    }
+    query = query.in('id', indexedResult.ids);
+  } else {
+    query = query.range(offset, offset + limit - 1);
+    if (search) query = query.ilike('company_name', `%${search}%`);
+  }
 
   const { data, error, count } = await query;
   if (error) { sendDatabaseError(res, error); return; }
 
-  const companies = data || [];
+  const companies = !indexedResult.skipped ? reorderRowsBySearchIds(data || [], indexedResult.ids) : (data || []);
   const ownerIds = companies
     .map((company) => {
       const owner = Array.isArray(company.users) ? company.users[0] : company.users;
@@ -1817,9 +1797,10 @@ router.get('/companies', asyncHandler(async (req, res) => {
         application_count: ownerId ? (applicationCountByOwner[ownerId] || 0) : 0
       };
     }),
-    total: count || 0,
+    total: !indexedResult.skipped ? (indexedResult.total || companies.length) : (count || 0),
     page,
-    limit
+    limit,
+    ...(!indexedResult.skipped ? { search: { engine: indexedResult.engine } } : {})
   });
 }));
 
@@ -1829,23 +1810,51 @@ router.get('/campuses', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
+  const indexedResult = search
+    ? await searchPlatformEntityIds({ entity: 'campuses', filters: { search }, page, limit })
+    : { skipped: true, reason: 'no-search' };
+
   let query = Database
     .from('colleges')
     .select(`
       id, name, city, state, affiliation, created_at, user_id,
       users!inner(id, name, email, status, last_login_at)
     `, { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+    .order('created_at', { ascending: false });
 
-  if (search) {
+  if (!indexedResult.skipped) {
+    if (indexedResult.ids.length === 0) {
+      res.send({
+        status: true,
+        campuses: [],
+        summary: {
+          totalCampuses: 0,
+          activeCampuses: 0,
+          connectedCampuses: 0,
+          totalTalentPool: 0,
+          placedStudents: 0,
+          liveDrives: 0
+        },
+        total: 0,
+        page,
+        limit,
+        search: { engine: 'opensearch' }
+      });
+      return;
+    }
+    query = query.in('id', indexedResult.ids);
+  } else {
+    query = query.range(offset, offset + limit - 1);
+  }
+
+  if (search && indexedResult.skipped) {
     query = query.or(`name.ilike.%${search}%,city.ilike.%${search}%,state.ilike.%${search}%,affiliation.ilike.%${search}%`);
   }
 
   const { data, error, count } = await query;
   if (error) { sendDatabaseError(res, error); return; }
 
-  const campuses = data || [];
+  const campuses = !indexedResult.skipped ? reorderRowsBySearchIds(data || [], indexedResult.ids) : (data || []);
   const campusIds = campuses.map((campus) => campus.id).filter(Boolean);
 
   let studentsByCampus = {};
@@ -1959,9 +1968,10 @@ router.get('/campuses', asyncHandler(async (req, res) => {
       placedStudents: summaryStudents.filter((student) => student.is_placed).length,
       liveDrives: summaryDrives.filter((drive) => isLiveCampusDriveStatus(drive.status)).length
     },
-    total: count || 0,
+    total: !indexedResult.skipped ? (indexedResult.total || campuses.length) : (count || 0),
     page,
-    limit
+    limit,
+    ...(!indexedResult.skipped ? { search: { engine: indexedResult.engine } } : {})
   });
 }));
 
@@ -1975,19 +1985,42 @@ router.get('/jobs', asyncHandler(async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
+  const indexedResult = search
+    ? await searchPlatformEntityIds({ entity: 'jobs', filters: { search, status }, page, limit })
+    : { skipped: true, reason: 'no-search' };
+
   let query = Database
     .from('jobs')
     .select('id, title, job_title, company_name, status, approval_status, location, job_location, category, applications_count, employment_type, created_at, poster_name, poster_email', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+    .order('created_at', { ascending: false });
 
   if ([JOB_STATUSES.OPEN, JOB_STATUSES.CLOSED, JOB_STATUSES.DELETED].includes(status)) query = query.eq('status', status);
-  if (search) query = query.ilike('title', `%${search}%`);
+  if (!indexedResult.skipped) {
+    if (indexedResult.ids.length === 0) {
+      res.send({ status: true, jobs: [], total: 0, page, limit, search: { engine: 'opensearch' } });
+      return;
+    }
+    query = query.in('id', indexedResult.ids);
+  } else {
+    query = query.range(offset, offset + limit - 1);
+    if (search) {
+      const safeSearch = search.replace(/[,().]/g, '');
+      query = query.or(`title.ilike.%${safeSearch}%,job_title.ilike.%${safeSearch}%,company_name.ilike.%${safeSearch}%,location.ilike.%${safeSearch}%,job_location.ilike.%${safeSearch}%,category.ilike.%${safeSearch}%,poster_name.ilike.%${safeSearch}%,poster_email.ilike.%${safeSearch}%`);
+    }
+  }
 
   const { data, error, count } = await query;
   if (error) { sendDatabaseError(res, error); return; }
 
-  res.send({ status: true, jobs: data || [], total: count || 0, page, limit });
+  const jobs = !indexedResult.skipped ? reorderRowsBySearchIds(data || [], indexedResult.ids) : (data || []);
+  res.send({
+    status: true,
+    jobs,
+    total: !indexedResult.skipped ? (indexedResult.total || jobs.length) : (count || 0),
+    page,
+    limit,
+    ...(!indexedResult.skipped ? { search: { engine: indexedResult.engine } } : {})
+  });
 }));
 
 router.patch('/jobs/:id/status', asyncHandler(async (req, res) => {
@@ -2027,19 +2060,42 @@ router.patch('/jobs/:id/status', asyncHandler(async (req, res) => {
 // Applications
 // =============================================
 router.get('/applications', asyncHandler(async (req, res) => {
+  const search = String(req.query.search || req.query.q || '').trim();
+  const status = String(req.query.status || '').trim().toLowerCase();
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
   const offset = (page - 1) * limit;
 
-  const { data, error, count } = await Database
+  const indexedResult = search
+    ? await searchPlatformEntityIds({ entity: 'applications', filters: { search, status }, page, limit })
+    : { skipped: true, reason: 'no-search' };
+
+  let query = Database
     .from('applications')
     .select('id, status, created_at, job_id, applicant_id, applicant_name, applicant_email', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+    .order('created_at', { ascending: false });
+
+  if (status) query = query.eq('status', status);
+
+  if (!indexedResult.skipped) {
+    if (indexedResult.ids.length === 0) {
+      res.send({ status: true, applications: [], total: 0, page, limit, search: { engine: 'opensearch' } });
+      return;
+    }
+    query = query.in('id', indexedResult.ids);
+  } else {
+    query = query.range(offset, offset + limit - 1);
+    if (search) {
+      const safeSearch = search.replace(/[,().]/g, '');
+      query = query.or(`applicant_name.ilike.%${safeSearch}%,applicant_email.ilike.%${safeSearch}%,status.ilike.%${safeSearch}%`);
+    }
+  }
+
+  const { data, error, count } = await query;
 
   if (error) { sendDatabaseError(res, error); return; }
 
-  const applications = data || [];
+  const applications = !indexedResult.skipped ? reorderRowsBySearchIds(data || [], indexedResult.ids) : (data || []);
   const jobIds = [...new Set(applications.map((application) => application.job_id).filter(Boolean))];
   const applicationIds = applications.map((application) => application.id);
 
@@ -2081,9 +2137,10 @@ router.get('/applications', asyncHandler(async (req, res) => {
       company_name: jobsMap[application.job_id]?.company_name || null,
       score: scoresMap[application.id] || 0
     })),
-    total: count || 0,
+    total: !indexedResult.skipped ? (indexedResult.total || applications.length) : (count || 0),
     page,
-    limit
+    limit,
+    ...(!indexedResult.skipped ? { search: { engine: indexedResult.engine } } : {})
   });
 }));
 

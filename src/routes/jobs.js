@@ -7,10 +7,16 @@ const { createRateLimitMiddleware, resolveRequestKey } = require('../middleware/
 const { createAutomationProtection, createBrowserWriteProtection } = require('../middleware/requestProtection');
 const { mapJobFromRow } = require('../utils/mappers');
 const { normalizeEmail, clamp, asyncHandler } = require('../utils/helpers');
+const { decodeCursor, makeCreatedAtCursor } = require('../utils/cursorPagination');
 const { applyJobFilters, createHrJob, updateHrJob, deleteHrJob, getJobByIdAndOptionallyTrackView } = require('../services/jobs');
 const { applyToJob } = require('../services/applications');
 const { buildCompanyBrandIndex, resolveCompanyBrand } = require('../services/companyBranding');
 const { getPool } = require('../mysqlDatabaseAdapter');
+const {
+  hasPlatformSearchIntent,
+  reorderRowsBySearchIds,
+  searchPlatformEntityIds
+} = require('../services/search/platformSearchIndex');
 
 const router = express.Router();
 const publicJobsReadLimiter = createRateLimitMiddleware({
@@ -591,7 +597,9 @@ router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHead
 
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = clamp(parseInt(req.query.limit || '10', 10), 1, 50);
-  const from = (page - 1) * limit;
+  const cursor = decodeCursor(req.query.cursor);
+  const usesCursor = Boolean(cursor?.createdAt);
+  const from = usesCursor ? 0 : (page - 1) * limit;
   const to = from + limit - 1;
 
   const filters = {
@@ -616,6 +624,80 @@ router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHead
     includeUnapproved: String(req.query.includeUnapproved || '').trim().toLowerCase() === 'true'
   };
 
+  const indexedResult = hasPlatformSearchIntent(filters)
+    ? await searchPlatformEntityIds({ entity: 'jobs', filters, page, limit })
+    : { skipped: true, reason: 'no-search-intent' };
+
+  if (!indexedResult.skipped) {
+    if (indexedResult.ids.length === 0) {
+      res.send({
+        status: true,
+        jobs: [],
+        search: { engine: 'opensearch' },
+        pagination: {
+          page,
+          limit,
+          total: 0,
+        totalPages: 1,
+        nextCursor: ''
+        }
+      });
+      return;
+    }
+
+    let indexedQuery = Database
+      .from('jobs')
+      .select('*')
+      .in('id', indexedResult.ids);
+
+    indexedQuery = applyJobFilters(indexedQuery, { ...filters, search: '' });
+
+    const [{ data, error }, sponsorsResp, profilesResp] = await Promise.all([
+      indexedQuery,
+      Database
+        .from('sponsored_companies')
+        .select('company_name, logo_url, website_url')
+        .eq('is_active', true),
+      Database
+        .from('hr_profiles')
+        .select('company_name, logo_url, company_website')
+    ]);
+
+    if (error) {
+      sendDatabaseError(res, error);
+      return;
+    }
+
+    if (sponsorsResp.error) {
+      sendDatabaseError(res, sponsorsResp.error);
+      return;
+    }
+
+    if (profilesResp.error) {
+      sendDatabaseError(res, profilesResp.error);
+      return;
+    }
+
+    const brandIndex = buildCompanyBrandIndex({
+      sponsoredCompanies: sponsorsResp.data || [],
+      hrProfiles: profilesResp.data || []
+    });
+
+    res.send({
+      status: true,
+      jobs: reorderRowsBySearchIds(data || [], indexedResult.ids).map((job) => mapJobWithBrand(job, brandIndex)),
+      search: { engine: indexedResult.engine },
+      pagination: {
+        page,
+        limit,
+        total: indexedResult.total || 0,
+        totalPages: Math.max(1, Math.ceil((indexedResult.total || 0) / limit)),
+        nextCursor: makeCreatedAtCursor(reorderRowsBySearchIds(data || [], indexedResult.ids).at(-1) || {})
+      }
+    });
+    return;
+  }
+
   let query = Database
     .from('jobs')
     .select('*', { count: 'exact' })
@@ -624,6 +706,9 @@ router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHead
     .range(from, to);
 
   query = applyJobFilters(query, filters);
+  if (cursor?.createdAt) {
+    query = query.lt('created_at', cursor.createdAt);
+  }
 
   const [{ data, error, count }, sponsorsResp, profilesResp] = await Promise.all([
     query,
@@ -663,7 +748,8 @@ router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHead
       page,
       limit,
       total: count || 0,
-      totalPages: Math.max(1, Math.ceil((count || 0) / limit))
+      totalPages: Math.max(1, Math.ceil((count || 0) / limit)),
+      nextCursor: makeCreatedAtCursor((data || []).at(-1) || {})
     }
   });
 }));
@@ -677,13 +763,7 @@ router.get('/all', automationProtection, publicJobsReadLimiter, setCatalogCacheH
     return;
   }
 
-  let query = Database
-    .from('jobs')
-    .select('*')
-    .order('is_featured', { ascending: false })
-    .order('created_at', { ascending: false });
-
-  query = applyJobFilters(query, {
+  const filters = {
     status: String(req.query.status || JOB_STATUSES.OPEN).toLowerCase(),
     search: String(req.query.search || req.query.q || '').trim(),
     location: String(req.query.location || '').trim(),
@@ -702,7 +782,67 @@ router.get('/all', automationProtection, publicJobsReadLimiter, setCatalogCacheH
     sectorName: String(req.query.sectorName || req.query.sector_name || '').trim(),
     category: String(req.query.category || '').trim(),
     includeExpiredOpen: String(req.query.includeExpiredOpen || req.query.include_expired_open || '').trim().toLowerCase() === 'true'
-  });
+  };
+
+  const indexedResult = hasPlatformSearchIntent(filters)
+    ? await searchPlatformEntityIds({ entity: 'jobs', filters, page: 1, limit: 500 })
+    : { skipped: true, reason: 'no-search-intent' };
+
+  if (!indexedResult.skipped) {
+    if (indexedResult.ids.length === 0) {
+      res.send([]);
+      return;
+    }
+
+    let indexedQuery = Database
+      .from('jobs')
+      .select('*')
+      .in('id', indexedResult.ids);
+
+    indexedQuery = applyJobFilters(indexedQuery, { ...filters, search: '' });
+
+    const [{ data, error }, sponsorsResp, profilesResp] = await Promise.all([
+      indexedQuery,
+      Database
+        .from('sponsored_companies')
+        .select('company_name, logo_url, website_url')
+        .eq('is_active', true),
+      Database
+        .from('hr_profiles')
+        .select('company_name, logo_url, company_website')
+    ]);
+
+    if (error) {
+      sendDatabaseError(res, error);
+      return;
+    }
+
+    if (sponsorsResp.error) {
+      sendDatabaseError(res, sponsorsResp.error);
+      return;
+    }
+
+    if (profilesResp.error) {
+      sendDatabaseError(res, profilesResp.error);
+      return;
+    }
+
+    const brandIndex = buildCompanyBrandIndex({
+      sponsoredCompanies: sponsorsResp.data || [],
+      hrProfiles: profilesResp.data || []
+    });
+
+    res.send(reorderRowsBySearchIds(data || [], indexedResult.ids).map((job) => mapJobWithBrand(job, brandIndex)));
+    return;
+  }
+
+  let query = Database
+    .from('jobs')
+    .select('*')
+    .order('is_featured', { ascending: false })
+    .order('created_at', { ascending: false });
+
+  query = applyJobFilters(query, filters);
 
   const [{ data, error }, sponsorsResp, profilesResp] = await Promise.all([
     query,

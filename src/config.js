@@ -76,6 +76,8 @@ const config = {
   isProduction,
   redisUrl: normalizeText(process.env.REDIS_URL || process.env.UPSTASH_REDIS_URL || process.env.RENDER_REDIS_URL),
   redisKeyPrefix: normalizeText(process.env.REDIS_KEY_PREFIX) || 'hhh_jobs',
+  dashboardCacheTtlSeconds: Number(process.env.DASHBOARD_CACHE_TTL_SECONDS) > 0 ? Number(process.env.DASHBOARD_CACHE_TTL_SECONDS) : 75,
+  dashboardCacheSwrSeconds: Number(process.env.DASHBOARD_CACHE_SWR_SECONDS) > 0 ? Number(process.env.DASHBOARD_CACHE_SWR_SECONDS) : 300,
   queueWorkersEmbedded: parseBoolean(process.env.QUEUE_WORKERS_EMBEDDED, process.env.NODE_ENV !== 'test'),
   queueWorkerConcurrency: Number(process.env.QUEUE_WORKER_CONCURRENCY) > 0 ? Number(process.env.QUEUE_WORKER_CONCURRENCY) : 2,
   queueRetryLimit: Number(process.env.QUEUE_RETRY_LIMIT) > 0 ? Number(process.env.QUEUE_RETRY_LIMIT) : 3,
@@ -95,6 +97,9 @@ const config = {
   openSearchIndexPrefix: normalizeText(process.env.OPENSEARCH_INDEX_PREFIX || process.env.SEARCH_INDEX_PREFIX) || 'hhh_jobs',
   openSearchCandidateIndex: normalizeText(process.env.OPENSEARCH_CANDIDATE_INDEX || process.env.CANDIDATE_SEARCH_INDEX),
   openSearchTimeoutMs: Number(process.env.OPENSEARCH_TIMEOUT_MS) > 0 ? Number(process.env.OPENSEARCH_TIMEOUT_MS) : 2500,
+  openSearchSemanticEnabled: parseBoolean(process.env.OPENSEARCH_SEMANTIC_ENABLED, false),
+  openSearchVectorField: normalizeText(process.env.OPENSEARCH_VECTOR_FIELD || 'embedding'),
+  openSearchEmbeddingModel: normalizeText(process.env.OPENSEARCH_EMBEDDING_MODEL || process.env.SEARCH_EMBEDDING_MODEL),
   openSearchEnabled: parseBoolean(
     process.env.OPENSEARCH_ENABLED ?? process.env.SEARCH_ENABLED,
     Boolean(process.env.OPENSEARCH_URL || process.env.OPEN_SEARCH_URL || process.env.ELASTICSEARCH_URL || process.env.SEARCH_URL)
