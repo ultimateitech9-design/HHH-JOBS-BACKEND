@@ -4,6 +4,12 @@ const { requireAuth, optionalAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { askAi, logAiInteraction } = require('../services/ai');
 const { buildChatbotKnowledgeContext } = require('../services/chatbotKnowledge');
+const {
+  buildHrCandidateFitRanking,
+  buildPlacementAnalytics,
+  buildSalesRevenueAutomation,
+  buildStudentCareerCopilot
+} = require('../services/growthIntelligence');
 const { asyncHandler, isValidUuid } = require('../utils/helpers');
 
 const router = express.Router();
@@ -77,6 +83,154 @@ const requireAiUser = [requireAuth, requireActiveUser];
 router.get('/health', (req, res) => {
   res.send({ status: true, message: 'AI routes are reachable' });
 });
+
+router.get('/student/career-copilot', requireAiUser, requireRole(ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
+  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.query?.userId)
+    ? req.query.userId
+    : req.user.id;
+  const question = String(req.query?.question || '').trim();
+  const includeAi = String(req.query?.ai || '').toLowerCase() !== 'false';
+
+  try {
+    const copilot = await buildStudentCareerCopilot({
+      userId: targetUserId,
+      question,
+      includeAi
+    });
+
+    if (req.user?.id) {
+      await logAiInteraction({
+        userId: req.user.id,
+        role: req.user.role,
+        featureKey: 'student_career_copilot',
+        promptText: question || 'career_copilot_snapshot',
+        responseText: copilot.answer || JSON.stringify(copilot.snapshot || {}),
+        meta: {
+          targetUserId,
+          aiPowered: copilot.aiPowered,
+          readinessScore: copilot.snapshot?.readinessScore
+        }
+      });
+    }
+
+    res.send({ status: true, copilot });
+  } catch (error) {
+    sendAiError(res, error);
+  }
+}));
+
+router.post('/student/career-copilot', requireAiUser, requireRole(ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
+  const targetUserId = [ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role) && isValidUuid(req.body?.userId)
+    ? req.body.userId
+    : req.user.id;
+  const question = String(req.body?.question || '').trim();
+  const includeAi = req.body?.ai !== false;
+
+  try {
+    const copilot = await buildStudentCareerCopilot({
+      userId: targetUserId,
+      question,
+      includeAi
+    });
+
+    if (req.user?.id) {
+      await logAiInteraction({
+        userId: req.user.id,
+        role: req.user.role,
+        featureKey: 'student_career_copilot',
+        promptText: question || 'career_copilot_snapshot',
+        responseText: copilot.answer || JSON.stringify(copilot.snapshot || {}),
+        meta: {
+          targetUserId,
+          aiPowered: copilot.aiPowered,
+          readinessScore: copilot.snapshot?.readinessScore
+        }
+      });
+    }
+
+    res.send({ status: true, copilot });
+  } catch (error) {
+    sendAiError(res, error);
+  }
+}));
+
+router.get('/hr/candidate-fit-ranking/:jobId', requireAiUser, requireRole(ROLES.HR, ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
+  const jobId = String(req.params.jobId || '').trim();
+  if (!isValidUuid(jobId)) {
+    res.status(400).send({ status: false, message: 'Valid jobId is required.' });
+    return;
+  }
+
+  try {
+    const ranking = await buildHrCandidateFitRanking({
+      user: req.user,
+      jobId,
+      includeAi: String(req.query?.ai || '').toLowerCase() === 'true'
+    });
+
+    if (req.user?.id) {
+      await logAiInteraction({
+        userId: req.user.id,
+        role: req.user.role,
+        featureKey: 'hr_candidate_fit_ranking',
+        promptText: `job:${jobId}`,
+        responseText: ranking.aiSummary || JSON.stringify(ranking.summary || {}),
+        meta: {
+          jobId,
+          aiPowered: ranking.aiPowered,
+          totalCandidates: ranking.summary?.totalCandidates
+        },
+        jobId
+      });
+    }
+
+    res.send({ status: true, ranking });
+  } catch (error) {
+    sendAiError(res, error);
+  }
+}));
+
+router.get('/campus/placement-analytics', requireAiUser, requireRole(ROLES.CAMPUS_CONNECT, ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
+  try {
+    const analytics = await buildPlacementAnalytics({ user: req.user });
+
+    if (req.user?.id) {
+      await logAiInteraction({
+        userId: req.user.id,
+        role: req.user.role,
+        featureKey: 'campus_placement_analytics',
+        promptText: 'placement_analytics_snapshot',
+        responseText: JSON.stringify(analytics.summary || {}),
+        meta: { placementRate: analytics.summary?.placementRate }
+      });
+    }
+
+    res.send({ status: true, analytics });
+  } catch (error) {
+    sendAiError(res, error);
+  }
+}));
+
+router.get('/sales/revenue-automation', requireAiUser, requireRole(ROLES.SALES, ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
+  try {
+    const automation = await buildSalesRevenueAutomation({ user: req.user });
+
+    if (req.user?.id) {
+      await logAiInteraction({
+        userId: req.user.id,
+        role: req.user.role,
+        featureKey: 'sales_revenue_automation',
+        promptText: 'sales_revenue_automation_snapshot',
+        responseText: JSON.stringify(automation.summary || {}),
+        meta: { forecastNext30: automation.summary?.forecastNext30 }
+      });
+    }
+
+    res.send({ status: true, automation });
+  } catch (error) {
+    sendAiError(res, error);
+  }
+}));
 
 router.post('/chatbot', optionalAuth, asyncHandler(async (req, res) => {
   const message = String(req.body?.message || '').trim();
