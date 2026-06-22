@@ -1010,6 +1010,16 @@ const completeOAuthFlow = async ({
     return;
   }
 
+  if (!oauthProfile?.email) {
+    sendOAuthFailure({
+      res,
+      message: 'OAuth provider did not return a usable profile. Please try again with another account.',
+      clientAppUrl,
+      responseMode
+    });
+    return;
+  }
+
   let authUser = null;
   let created = false;
   try {
@@ -1019,6 +1029,9 @@ const completeOAuthFlow = async ({
       avatarUrl: oauthProfile.avatarUrl,
       requestedRole
     });
+    if (!result?.user?.id) {
+      throw new Error('OAuth sign-in did not return a user account');
+    }
     authUser = result.user;
     created = result.created;
   } catch (error) {
@@ -1057,7 +1070,7 @@ const completeOAuthFlow = async ({
     return;
   }
 
-  authUser = updatedUser;
+  authUser = updatedUser?.id ? updatedUser : { ...authUser, ...userUpdatePayload };
 
   try {
     await ensureDatabaseRoleProfile({ user: authUser });

@@ -331,11 +331,7 @@ test('google oauth exchange repairs missing student profile rows for existing us
                       select() {
                         return {
                           single: async () => ({
-                            data: {
-                              ...existingUser,
-                              ...payload,
-                              [field]: value
-                            },
+                            data: null,
                             error: null
                           })
                         };
