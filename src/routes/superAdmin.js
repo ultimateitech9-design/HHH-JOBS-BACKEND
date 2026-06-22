@@ -251,9 +251,10 @@ const buildCompanyTextPredicate = (fields = [], likeValues = [], tokenLikeValues
   const tokenPredicate = tokenLikeValues.length
     ? `(${tokenLikeValues.map(() => `${concatExpression} LIKE ?`).join(' AND ')})`
     : '';
+  const predicates = [...exactPredicates, tokenPredicate].filter(Boolean);
 
   return {
-    sql: [...exactPredicates, tokenPredicate].filter(Boolean).join('\n            OR '),
+    sql: predicates.length ? predicates.join('\n            OR ') : '1 = 0',
     params: [...exactParams, ...tokenLikeValues]
   };
 };
