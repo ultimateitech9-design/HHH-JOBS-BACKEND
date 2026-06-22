@@ -72,6 +72,7 @@ const normalizeLocations = (payload = {}) => {
 };
 
 const getDescription = (payload = {}) => String(payload.description || '').trim();
+const LEGACY_DESCRIPTION_CHAR_LIMIT_FLOOR = 7500;
 
 const validateJobPayloadAgainstPlan = (payload = {}, plan) => {
   const errors = [];
@@ -81,7 +82,11 @@ const validateJobPayloadAgainstPlan = (payload = {}, plan) => {
     errors.push('description is required');
   }
 
-  if (plan.maxDescriptionChars != null && description.length > plan.maxDescriptionChars) {
+  if (
+    plan.maxDescriptionChars != null
+    && plan.maxDescriptionChars >= LEGACY_DESCRIPTION_CHAR_LIMIT_FLOOR
+    && description.length > plan.maxDescriptionChars
+  ) {
     errors.push(`description cannot exceed ${plan.maxDescriptionChars} characters for ${plan.name}`);
   }
 

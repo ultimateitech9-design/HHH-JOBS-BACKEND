@@ -165,6 +165,59 @@ const IMPACT_VERBS = new Set([
   'cut'
 ]);
 
+const PROJECT_EVIDENCE_VERBS = new Set([
+  'built',
+  'created',
+  'delivered',
+  'developed',
+  'implemented',
+  'integrated',
+  'designed',
+  'deployed',
+  'launched',
+  'automated',
+  'optimized',
+  'migrated',
+  'tested',
+  'debugged',
+  'scaled',
+  'owned'
+]);
+
+const USE_CASE_TERMS = [
+  'workflow',
+  'dashboard',
+  'portal',
+  'payment',
+  'authentication',
+  'authorization',
+  'notification',
+  'recommendation',
+  'search',
+  'analytics',
+  'reporting',
+  'integration',
+  'api',
+  'database',
+  'deployment',
+  'automation',
+  'performance',
+  'security',
+  'accessibility'
+];
+
+const DOMAIN_SIGNAL_GROUPS = [
+  { key: 'recruitment', label: 'Recruitment / ATS', regex: /\b(ats|recruitment|recruiter|hiring|candidate|applicant|job portal|job board|talent acquisition)\b/i },
+  { key: 'education', label: 'Education / Campus', regex: /\b(education|edtech|campus|college|university|student|placement|learning|course)\b/i },
+  { key: 'finance', label: 'Finance', regex: /\b(finance|fintech|banking|loan|payment|invoice|accounting|gst|payroll)\b/i },
+  { key: 'healthcare', label: 'Healthcare', regex: /\b(healthcare|hospital|clinic|patient|medical|pharma|diagnostic)\b/i },
+  { key: 'commerce', label: 'Commerce / Marketplace', regex: /\b(ecommerce|e-commerce|retail|marketplace|cart|checkout|inventory|order management)\b/i },
+  { key: 'sales', label: 'Sales / CRM', regex: /\b(crm|sales|lead|pipeline|customer success|support desk|ticketing)\b/i },
+  { key: 'data', label: 'Data / AI', regex: /\b(data science|machine learning|ai|analytics|dashboard|reporting|business intelligence|forecasting)\b/i },
+  { key: 'logistics', label: 'Logistics / Operations', regex: /\b(logistics|supply chain|warehouse|dispatch|fleet|delivery|operations)\b/i },
+  { key: 'marketing', label: 'Marketing', regex: /\b(marketing|seo|campaign|content|social media|brand|conversion)\b/i }
+];
+
 const EXPERIENCE_HINTS = [
   { match: /\b(intern|internship|trainee|fresher|graduate trainee|entry level|entry-level)\b/, min: 0, max: 1, label: 'entry' },
   { match: /\b(junior|associate|analyst)\b/, min: 0, max: 2, label: 'junior' },
@@ -578,6 +631,101 @@ const getImpactScore = (resumeText = '') => {
   };
 };
 
+const getProjectEvidenceScore = ({ resumeText = '', requiredKeywords = [], targetTitle = '' }) => {
+  const raw = String(resumeText || '');
+  const lines = raw.split(/\n+|[•]/).map((line) => line.trim()).filter(Boolean);
+  const resumeTokens = tokenize(raw);
+  const resumeSet = new Set(resumeTokens);
+  const normalizedRequired = [...new Set(requiredKeywords || [])].map((item) => normalizeToken(item)).filter(Boolean);
+  const hasProjectSection = /\b(projects?|portfolio|case stud(?:y|ies)|project experience)\b/i.test(raw);
+  const evidenceLines = lines.filter((line) => {
+    const normalizedLine = line.toLowerCase();
+    const lineTokens = tokenize(line);
+    const hasProjectCue = /\b(project|portfolio|case study|built|developed|implemented|designed|deployed|integrated|automated|optimized|launched)\b/i.test(normalizedLine);
+    const hasRelevantKeyword = normalizedRequired.some((keyword) => lineTokens.includes(keyword));
+    return hasProjectCue || hasRelevantKeyword;
+  });
+  const evidenceText = evidenceLines.join(' ');
+  const evidenceTokens = tokenize(evidenceText);
+  const evidenceSet = new Set(evidenceTokens);
+  const relevantKeywordHits = normalizedRequired.filter((keyword) => evidenceSet.has(keyword)).length;
+  const implementationHits = evidenceTokens.filter((token) => PROJECT_EVIDENCE_VERBS.has(token)).length;
+  const useCaseHits = USE_CASE_TERMS.filter((term) => {
+    const normalizedTerm = normalizeToken(term);
+    return normalizedTerm ? resumeSet.has(normalizedTerm) : raw.toLowerCase().includes(term);
+  }).length;
+  const portfolioSignal = /(https?:\/\/)?(www\.)?(github\.com|gitlab\.com|bitbucket\.org|behance\.net|dribbble\.com|portfolio)/i.test(raw);
+
+  let score = 24;
+  if (hasProjectSection) score += 16;
+  score += Math.min(evidenceLines.length, 5) * 6;
+  score += Math.min(relevantKeywordHits, 6) * 5;
+  score += Math.min(implementationHits, 7) * 3;
+  score += Math.min(useCaseHits, 5) * 4;
+  if (portfolioSignal) score += 8;
+
+  const suggestions = [];
+  if (!hasProjectSection) {
+    suggestions.push(`Add a projects or portfolio section tied to ${targetTitle || 'the target role'}.`);
+  }
+  if (relevantKeywordHits < Math.min(3, normalizedRequired.length)) {
+    suggestions.push('Show target-role tools inside real project or experience bullets, not only in the skills list.');
+  }
+  if (implementationHits < 3) {
+    suggestions.push('Explain how you built, integrated, deployed, tested, or optimized the work.');
+  }
+  if (useCaseHits < 2) {
+    suggestions.push('Add practical use-case context such as workflows, dashboards, APIs, analytics, automation, or security where relevant.');
+  }
+
+  return {
+    score: clamp(score, 0, 100),
+    suggestions,
+    evidenceLines: evidenceLines.slice(0, 4),
+    matchedProjectKeywords: formatKeywordList(normalizedRequired.filter((keyword) => evidenceSet.has(keyword)), 12)
+  };
+};
+
+const getDomainSignals = (text = '') => DOMAIN_SIGNAL_GROUPS
+  .filter((group) => group.regex.test(String(text || '')))
+  .map((group) => group);
+
+const getDomainFitScore = ({ resumeText = '', jobRow = {}, jobText = '' }) => {
+  const targetText = [
+    jobText,
+    jobRow?.sector_name,
+    jobRow?.category,
+    jobRow?.company_type,
+    jobRow?.company_name
+  ].join(' ');
+  const jobSignals = getDomainSignals(targetText);
+  const resumeSignals = getDomainSignals(resumeText);
+
+  if (jobSignals.length === 0) {
+    return {
+      score: 58,
+      matchedDomains: [],
+      missingDomains: [],
+      suggestions: []
+    };
+  }
+
+  const resumeKeys = new Set(resumeSignals.map((item) => item.key));
+  const matched = jobSignals.filter((item) => resumeKeys.has(item.key));
+  const missing = jobSignals.filter((item) => !resumeKeys.has(item.key));
+  const ratio = matched.length / jobSignals.length;
+  const score = matched.length > 0 ? 45 + (ratio * 55) : 34;
+
+  return {
+    score: clamp(score, 0, 100),
+    matchedDomains: matched.map((item) => item.label),
+    missingDomains: missing.map((item) => item.label),
+    suggestions: missing.length > 0
+      ? [`Add domain context if genuine, especially ${missing.map((item) => item.label).join(', ')}.`]
+      : []
+  };
+};
+
 const extractResumeExperienceYears = (resumeText = '') => {
   const raw = String(resumeText || '');
   const explicitMatches = [...raw.matchAll(/(\d{1,2})(?:\+)?\s*(?:years?|yrs?)(?:\s+of)?\s+experience/gi)]
@@ -734,6 +882,8 @@ const getResumeRiskFlags = ({
   mustHaveCoverage = {},
   similarityScore = 0,
   impactResult = {},
+  projectEvidence = {},
+  domainFit = {},
   requiredKeywords = [],
   targetTitle = '',
   seniority = {}
@@ -752,6 +902,10 @@ const getResumeRiskFlags = ({
     risks.push('Many important role keywords are missing or not phrased clearly.');
   }
   if (Number(impactResult.score || 0) < 45) risks.push('Impact evidence is light. Add metrics, scale, ownership, or outcomes.');
+  if (Number(projectEvidence.score || 0) < 45) risks.push('Project evidence is weak. Recruiters may not see how the candidate used the listed skills.');
+  if ((domainFit.missingDomains || []).length > 0 && Number(domainFit.score || 0) < 45) {
+    risks.push(`Domain fit is unclear for ${domainFit.missingDomains.slice(0, 2).join(', ')}.`);
+  }
   if ((seniority.flags || []).includes('underqualified_for_role')) risks.push('Experience level appears below the role expectation.');
   if ((seniority.flags || []).includes('possibly_overqualified_for_role')) risks.push('Resume may look overqualified for this role, which can affect recruiter response.');
 
@@ -763,6 +917,8 @@ const getBusinessLogicFlags = ({
   titleAlignmentScore = 0,
   similarityScore = 0,
   impactScore = 0,
+  projectEvidenceScore = 0,
+  domainFitScore = 0,
   seniority = {},
   confidenceScore = 0
 }) => {
@@ -770,6 +926,8 @@ const getBusinessLogicFlags = ({
   if (mustHaveScore < 40) flags.push('insufficient_core_skills');
   if (titleAlignmentScore < 45 && similarityScore < 45) flags.push('role_alignment_low');
   if (impactScore < 40) flags.push('evidence_quality_low');
+  if (projectEvidenceScore < 45) flags.push('project_evidence_low');
+  if (domainFitScore < 45) flags.push('domain_alignment_low');
   if ((seniority.flags || []).includes('underqualified_for_role')) flags.push('seniority_gap');
   if ((seniority.flags || []).includes('possibly_overqualified_for_role')) flags.push('possible_overqualification');
   if (confidenceScore < 55) flags.push('low_analysis_confidence');
@@ -782,6 +940,8 @@ const applyBusinessScoreGuards = ({
   similarityScore = 0,
   titleAlignmentScore = 0,
   seniorityScore = 0,
+  projectEvidenceScore = 0,
+  domainFitScore = 0,
   requiredKeywordCount = 0
 }) => {
   let guardedScore = Number(score || 0);
@@ -794,6 +954,12 @@ const applyBusinessScoreGuards = ({
   }
   if (seniorityScore < 35) {
     guardedScore = Math.min(guardedScore, 62);
+  }
+  if (projectEvidenceScore < 35 && mustHaveScore < 55) {
+    guardedScore = Math.min(guardedScore, 64);
+  }
+  if (domainFitScore < 40 && similarityScore < 50) {
+    guardedScore = Math.min(guardedScore, 68);
   }
 
   return clamp(Math.round(guardedScore), 0, 100);
@@ -830,6 +996,8 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
   const impactResult = getImpactScore(resumeText);
   const sectionCoverage = getSectionCoverage(resumeText);
   const seniority = getSeniorityAlignment({ resumeText, jobRow });
+  const projectEvidence = getProjectEvidenceScore({ resumeText, requiredKeywords, targetTitle });
+  const domainFit = getDomainFitScore({ resumeText, jobRow, jobText });
 
   const similarityScore = clamp(
     Math.round((tfidfScore * 0.55) + (titleAlignmentScore * 0.25) + (benchmarkScore * 0.2)),
@@ -843,14 +1011,16 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
   );
 
   const rawScore = (
-    (mustHaveCoverage.score * 0.22)
-    + (keywordScore * 0.18)
-    + (similarityScore * 0.18)
-    + (titleAlignmentScore * 0.08)
-    + (benchmarkScore * 0.08)
+    (mustHaveCoverage.score * 0.2)
+    + (keywordScore * 0.14)
+    + (similarityScore * 0.16)
+    + (titleAlignmentScore * 0.07)
+    + (benchmarkScore * 0.07)
     + (seniority.score * 0.1)
-    + (formatResult.score * 0.08)
-    + (impactResult.score * 0.08)
+    + (projectEvidence.score * 0.1)
+    + (domainFit.score * 0.06)
+    + (formatResult.score * 0.05)
+    + (impactResult.score * 0.05)
   );
 
   const confidenceScore = getConfidenceScore({
@@ -867,6 +1037,8 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
     similarityScore,
     titleAlignmentScore,
     seniorityScore: seniority.score,
+    projectEvidenceScore: projectEvidence.score,
+    domainFitScore: domainFit.score,
     requiredKeywordCount: requiredKeywords.length
   });
 
@@ -878,6 +1050,8 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
     mustHaveCoverage,
     similarityScore,
     impactResult,
+    projectEvidence,
+    domainFit,
     requiredKeywords,
     targetTitle,
     seniority
@@ -888,6 +1062,8 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
     titleAlignmentScore,
     similarityScore,
     impactScore: impactResult.score,
+    projectEvidenceScore: projectEvidence.score,
+    domainFitScore: domainFit.score,
     seniority,
     confidenceScore
   });
@@ -906,7 +1082,9 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
       ? [`Add missing role keywords where genuinely relevant, especially ${topMergedGaps.join(', ')}.`]
       : []),
     ...formatResult.suggestions,
-    ...impactResult.suggestions
+    ...impactResult.suggestions,
+    ...projectEvidence.suggestions,
+    ...domainFit.suggestions
   ];
 
   const warnings = [
@@ -925,6 +1103,8 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
     titleScore: Number(titleAlignmentScore.toFixed(2)),
     seniorityScore: Number(seniority.score.toFixed(2)),
     benchmarkScore: Number(benchmarkScore.toFixed(2)),
+    projectEvidenceScore: Number(projectEvidence.score.toFixed(2)),
+    domainFitScore: Number(domainFit.score.toFixed(2)),
     formatScore: Number(formatResult.score.toFixed(2)),
     impactScore: Number(impactResult.score.toFixed(2)),
     confidenceScore: Number(confidenceScore.toFixed(2)),
@@ -934,6 +1114,10 @@ const runAtsAnalysis = ({ jobRow = {}, resumeText = '' }) => {
     missingKeywords: formatKeywordList([...mustHaveCoverage.missing, ...mergedCoverage.missing], 24),
     mustHaveKeywords: formatKeywordList([...weightedKeywords.mustHave.keys()], 16),
     sectionCoverage,
+    projectEvidenceLines: projectEvidence.evidenceLines || [],
+    projectMatchedKeywords: projectEvidence.matchedProjectKeywords || [],
+    matchedDomains: domainFit.matchedDomains || [],
+    missingDomains: domainFit.missingDomains || [],
     riskFlags,
     businessLogicFlags,
     priorityActions: [...new Set(suggestions)].filter(Boolean).slice(0, 8),

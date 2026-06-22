@@ -92,18 +92,32 @@ const sendJobAlertWhatsApp = async ({ to, jobTitle, companyName, location, match
 };
 
 const saveWhatsAppPreference = async ({ userId, phoneNumber, isEnabled = true }) => {
+  const normalizedPhoneNumber = String(phoneNumber || '').replace(/[^0-9]/g, '');
+  const enabled = Boolean(isEnabled);
+
   const { data, error } = await Database
     .from('whatsapp_preferences')
     .upsert({
       user_id: userId,
-      phone_number: String(phoneNumber || '').replace(/[^0-9]/g, ''),
-      is_enabled: Boolean(isEnabled),
+      phone_number: normalizedPhoneNumber,
+      is_enabled: enabled,
       updated_at: new Date().toISOString()
     }, { onConflict: 'user_id' })
     .select('*')
     .single();
 
   if (error) throw error;
+
+  const { error: preferenceError } = await Database
+    .from('user_notification_preferences')
+    .upsert({
+      user_id: userId,
+      whatsapp_enabled: enabled && normalizedPhoneNumber.length >= 10,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'user_id' });
+
+  if (preferenceError) throw preferenceError;
+
   return data;
 };
 

@@ -36,8 +36,16 @@ const { normalizeCompanyKey, toCompanySlug } = require('./companyDirectory');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
 const MAX_JOB_POSTING_LOCATIONS = 1;
-const MAX_JOB_POSTING_DESCRIPTION_CHARS = 250;
+const JOB_DESCRIPTION_MIN_WORDS = 500;
+const JOB_DESCRIPTION_MAX_WORDS = 1500;
 const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
+
+const countDescriptionWords = (value = '') =>
+  String(value || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .length;
 
 const pickShortestNonEmptySlug = (...candidates) => {
   const options = [...new Set(candidates.map((candidate) => String(candidate || '').trim()).filter(Boolean))];
@@ -557,8 +565,12 @@ const validateManualJobPostingRules = (payload = {}) => {
     errors.push(`Only ${MAX_JOB_POSTING_LOCATIONS} job location is allowed per posting.`);
   }
 
-  if (description.length > MAX_JOB_POSTING_DESCRIPTION_CHARS) {
-    errors.push(`Job description cannot exceed ${MAX_JOB_POSTING_DESCRIPTION_CHARS} characters.`);
+  const descriptionWordCount = countDescriptionWords(description);
+  if (description && descriptionWordCount < JOB_DESCRIPTION_MIN_WORDS) {
+    errors.push(`Job description must be at least ${JOB_DESCRIPTION_MIN_WORDS} words.`);
+  }
+  if (descriptionWordCount > JOB_DESCRIPTION_MAX_WORDS) {
+    errors.push(`Job description cannot exceed ${JOB_DESCRIPTION_MAX_WORDS} words.`);
   }
 
   return errors;
@@ -936,7 +948,7 @@ const createHrJob = async (req, res) => {
   if (manualValidationErrors.length > 0) {
     res.status(400).send({
       status: false,
-      message: 'Job posting rules were not satisfied.',
+      message: manualValidationErrors.join(' '),
       errors: manualValidationErrors
     });
     return;
@@ -1118,7 +1130,7 @@ const updateHrJob = async (req, res) => {
       : (Array.isArray(existingJob.job_locations) && existingJob.job_locations.length > 0
         ? existingJob.job_locations
         : [existingJob.job_location]),
-    description: payload.description !== undefined ? payload.description : existingJob.description
+    description: payload.description !== undefined ? payload.description : ''
   });
   const allowedStatus = String(req.body?.status || '').toLowerCase();
   const requestedPlanSlug = normalizePlanSlug(payload.plan_slug || req.body?.planSlug || req.body?.plan_slug || '');
@@ -1126,7 +1138,7 @@ const updateHrJob = async (req, res) => {
   if (manualValidationErrors.length > 0) {
     res.status(400).send({
       status: false,
-      message: 'Job posting rules were not satisfied.',
+      message: manualValidationErrors.join(' '),
       errors: manualValidationErrors
     });
     return;

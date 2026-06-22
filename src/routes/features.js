@@ -10,7 +10,12 @@ const { submitReview, getCompanyReviews, getCompanyRatingSummary, getUserReviews
 const { ensureReferralCode, getReferralDashboard, trackReferral, getLeaderboard } = require('../services/referralProgram');
 const { listArticles, getArticleBySlug, getCategories: getBlogCategories } = require('../services/blogCms');
 const { saveSubscription, removeSubscription, getVapidPublicKey } = require('../services/webPush');
-const { saveWhatsAppPreference, getWhatsAppPreference } = require('../services/whatsapp');
+const {
+  getWhatsAppPreference,
+  isWhatsAppConfigured,
+  saveWhatsAppPreference,
+  sendWhatsAppText
+} = require('../services/whatsapp');
 const multer = require('multer');
 
 const upload = multer({
@@ -174,12 +179,36 @@ router.post('/push/unsubscribe', requireAuth, asyncHandler(async (req, res) => {
 // ── WhatsApp Preferences ────────────────────────────────────────────────────
 router.get('/whatsapp/preference', requireAuth, asyncHandler(async (req, res) => {
   const pref = await getWhatsAppPreference(req.user.id);
-  res.json({ status: true, preference: pref });
+  res.json({ status: true, preference: pref, configured: isWhatsAppConfigured() });
 }));
 router.post('/whatsapp/preference', requireAuth, asyncHandler(async (req, res) => {
   const { phoneNumber, isEnabled } = req.body;
+  const normalizedPhoneNumber = String(phoneNumber || '').replace(/[^0-9]/g, '');
+  if (isEnabled !== false && normalizedPhoneNumber.length < 10) {
+    res.status(400).json({ status: false, message: 'Valid WhatsApp number is required for job alerts.' });
+    return;
+  }
   const pref = await saveWhatsAppPreference({ userId: req.user.id, phoneNumber, isEnabled });
-  res.json({ status: true, preference: pref });
+  res.json({ status: true, preference: pref, configured: isWhatsAppConfigured() });
+}));
+router.post('/whatsapp/test', requireAuth, asyncHandler(async (req, res) => {
+  const pref = await getWhatsAppPreference(req.user.id);
+  const phoneNumber = String(req.body?.phoneNumber || pref?.phone_number || '').replace(/[^0-9]/g, '');
+  if (!isWhatsAppConfigured()) {
+    res.status(503).json({ status: false, message: 'WhatsApp provider is not configured on the server.' });
+    return;
+  }
+  if (!phoneNumber || phoneNumber.length < 10) {
+    res.status(400).json({ status: false, message: 'Valid WhatsApp number is required.' });
+    return;
+  }
+
+  const result = await sendWhatsAppText({
+    to: phoneNumber,
+    text: 'HHH Jobs WhatsApp alerts are enabled. Relevant job matches will now reach you here.'
+  });
+
+  res.json({ status: Boolean(result.sent), result });
 }));
 
 module.exports = router;

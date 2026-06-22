@@ -24,6 +24,19 @@ const sendAiError = (res, error) => {
   });
 };
 
+const countWords = (value = '') =>
+  String(value || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .length;
+
+const clampNumber = (value, min, max, fallback) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+};
+
 const normalizeLanguagePreference = (preferredLanguage = '', fallback = 'english') => {
   const normalized = String(preferredLanguage || fallback).trim().toLowerCase();
   if (normalized === 'hindi') return 'Hindi';
@@ -261,6 +274,84 @@ router.post('/hr/job-assistant', requireAiUser, requireRole(ROLES.HR, ROLES.ADMI
     });
 
     res.send({ status: true, answer });
+  } catch (error) {
+    sendAiError(res, error);
+  }
+}));
+
+router.post('/hr/job-description', requireAiUser, requireRole(ROLES.HR, ROLES.ADMIN), asyncHandler(async (req, res) => {
+  const jobTitle = String(req.body?.jobTitle || '').trim();
+  const companyName = String(req.body?.companyName || '').trim();
+  const experienceLevel = String(req.body?.experienceLevel || '').trim();
+  const employmentType = String(req.body?.employmentType || '').trim();
+  const sectorName = String(req.body?.sectorName || req.body?.category || '').trim();
+  const location = String(req.body?.jobLocation || req.body?.location || '').trim();
+  const salaryType = String(req.body?.salaryType || '').trim();
+  const minPrice = String(req.body?.minPrice || '').trim();
+  const maxPrice = String(req.body?.maxPrice || '').trim();
+  const skills = Array.isArray(req.body?.skills)
+    ? req.body.skills.map((item) => String(item || '').trim()).filter(Boolean)
+    : String(req.body?.skills || '').split(',').map((item) => item.trim()).filter(Boolean);
+  const prompt = String(req.body?.prompt || req.body?.extraContext || '').trim();
+  const targetWordCount = clampNumber(req.body?.targetWordCount, 500, 1500, 800);
+
+  if (!jobTitle) {
+    res.status(400).send({ status: false, message: 'jobTitle is required for job description generation.' });
+    return;
+  }
+
+  const systemPrompt = [
+    'You are a senior HR hiring assistant writing production-ready job descriptions.',
+    'Use clear, inclusive, legally safe, and practical language.',
+    'Do not invent company claims, salary promises, benefits, or tools not provided by the user.',
+    'Return only the final job description text.'
+  ].join(' ');
+
+  const userPrompt = [
+    `Write a complete job description between 500 and 1500 words. Aim for about ${targetWordCount} words.`,
+    'Use these sections: Role Overview, Responsibilities, Required Skills, Good To Have, Experience, Work Mode / Location, Compensation, Hiring Process, Equal Opportunity Note.',
+    'Keep the role realistic and ATS-friendly. Include keywords naturally, not as stuffing.',
+    'Make it ready for an HR user to paste into a job post.',
+    '',
+    `Job title: ${jobTitle}`,
+    `Company: ${companyName || 'Not provided'}`,
+    `Sector: ${sectorName || 'Not provided'}`,
+    `Experience level: ${experienceLevel || 'Not provided'}`,
+    `Employment type: ${employmentType || 'Not provided'}`,
+    `Skills: ${skills.join(', ') || 'Not provided'}`,
+    `Location: ${location || 'Not provided'}`,
+    `Salary mode: ${salaryType || 'Not provided'}`,
+    `Salary range: ${[minPrice, maxPrice].filter(Boolean).join(' - ') || 'Not provided'}`,
+    prompt ? `HR instruction:\n${prompt}` : ''
+  ].join('\n');
+
+  try {
+    const answer = await askAi({
+      systemPrompt,
+      userPrompt,
+      temperature: 0.35,
+      maxTokens: 2800
+    });
+
+    const description = String(answer || '').trim();
+    const wordCount = countWords(description);
+
+    await logAiInteraction({
+      userId: req.user.id,
+      role: req.user.role,
+      featureKey: 'hr_job_description',
+      promptText: userPrompt,
+      responseText: description,
+      meta: { jobTitle, companyName, targetWordCount, wordCount }
+    });
+
+    res.send({
+      status: true,
+      description,
+      wordCount,
+      minWords: 500,
+      maxWords: 1500
+    });
   } catch (error) {
     sendAiError(res, error);
   }
