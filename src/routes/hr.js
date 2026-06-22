@@ -7,9 +7,12 @@ const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('../middleware/roles');
 const { Database, sendDatabaseError } = require('../db');
 const { isValidUuid, extractUuidFromSlug, toArray, maskEmail, maskMobile, asyncHandler } = require('../utils/helpers');
-const { resolveStructuredLocation } = require('../utils/geography');
 const { mapApplicationFromRow, mapJobFromRow } = require('../utils/mappers');
 const { notifyUser } = require('../services/notificationOrchestrator');
+const {
+  buildStructuredLocationLabel,
+  resolveStructuredLocationPayload
+} = require('../services/geography');
 const {
   createHrJob,
   updateHrJob,
@@ -148,6 +151,9 @@ const HR_PROFILE_SEED_FIELD_PAIRS = [
   ['stateName', 'state_name'],
   ['districtId', 'district_id'],
   ['districtName', 'district_name'],
+  ['cityId', 'city_id'],
+  ['cityName', 'city_name'],
+  ['pincode', 'pincode'],
   ['about', 'about'],
   ['logoUrl', 'logo_url']
 ];
@@ -193,8 +199,11 @@ const COMPANY_PROFILE_SELECT = [
   'location',
   'state_id',
   'district_id',
+  'city_id',
   'state_name',
   'district_name',
+  'city_name',
+  'pincode',
   'sector_id',
   'sector_name',
   'industry_type',
@@ -210,7 +219,12 @@ const COMPANY_PROFILE_SELECT = [
 
 const normalizeCompanyRow = (row = {}, jobs = []) => {
   const openJobsCount = jobs.filter((job) => String(job.status || '').toLowerCase() === JOB_STATUSES.OPEN).length;
-  const location = String(row.location || [row.district_name, row.state_name].filter(Boolean).join(', ')).trim();
+  const location = String(row.location || buildStructuredLocationLabel({
+    cityName: row.city_name || row.city,
+    districtName: row.district_name,
+    stateName: row.state_name,
+    pincode: row.pincode
+  })).trim();
   return {
     id: row.id || '',
     companyKey: row.company_key || normalizeCompanyKey(row.company_name),
@@ -221,8 +235,11 @@ const normalizeCompanyRow = (row = {}, jobs = []) => {
     location,
     stateId: row.state_id || '',
     districtId: row.district_id || '',
+    cityId: row.city_id || '',
     stateName: row.state_name || '',
     districtName: row.district_name || '',
+    cityName: row.city_name || row.city || '',
+    pincode: row.pincode || '',
     sectorId: row.sector_id || '',
     sectorName: row.sector_name || row.industry_type || '',
     industryType: row.industry_type || row.sector_name || '',
@@ -238,9 +255,28 @@ const normalizeCompanyRow = (row = {}, jobs = []) => {
   };
 };
 
-const buildCompanyPayloadFromRequest = ({ body = {}, targetUserId, companyKeyParam = '', existing = null }) => {
+const buildCompanyPayloadFromRequest = async ({ body = {}, targetUserId, companyKeyParam = '', existing = null }) => {
+  const structuredLocation = await resolveStructuredLocationPayload({
+    body: {
+      ...body,
+      stateId: body.stateId ?? body.state_id ?? existing?.state_id,
+      stateName: body.stateName ?? body.state_name ?? existing?.state_name,
+      districtId: body.districtId ?? body.district_id ?? existing?.district_id,
+      districtName: body.districtName ?? body.district_name ?? existing?.district_name,
+      cityId: body.cityId ?? body.city_id ?? existing?.city_id,
+      cityName: body.cityName ?? body.city_name ?? body.city ?? existing?.city_name ?? existing?.city,
+      pincode: body.pincode ?? body.pinCode ?? body.pin_code ?? existing?.pincode
+    },
+    userId: targetUserId
+  });
   const companyName = String(body.companyName || body.company_name || existing?.company_name || companyKeyParam || '').trim();
   const companyKey = normalizeCompanyKey(companyKeyParam || companyName);
+  const location = body.location
+    ?? body.companyLocation
+    ?? structuredLocation.location
+    ?? existing?.location
+    ?? null;
+
   return {
     company_key: companyKey,
     company_slug: toCompanySlug(companyName || companyKey),
@@ -248,11 +284,20 @@ const buildCompanyPayloadFromRequest = ({ body = {}, targetUserId, companyKeyPar
     hr_user_id: targetUserId,
     logo_url: body.logoUrl ?? body.logo_url ?? existing?.logo_url ?? null,
     website_url: body.websiteUrl ?? body.website_url ?? body.companyWebsite ?? existing?.website_url ?? null,
-    location: body.location ?? body.companyLocation ?? existing?.location ?? null,
-    state_id: isValidUuid(body.stateId ?? body.state_id) ? (body.stateId ?? body.state_id) : null,
-    district_id: isValidUuid(body.districtId ?? body.district_id) ? (body.districtId ?? body.district_id) : null,
-    state_name: body.stateName ?? body.state_name ?? existing?.state_name ?? null,
-    district_name: body.districtName ?? body.district_name ?? existing?.district_name ?? null,
+    location,
+    state_id: isValidUuid(structuredLocation.state_id ?? body.stateId ?? body.state_id)
+      ? (structuredLocation.state_id ?? body.stateId ?? body.state_id)
+      : null,
+    district_id: isValidUuid(structuredLocation.district_id ?? body.districtId ?? body.district_id)
+      ? (structuredLocation.district_id ?? body.districtId ?? body.district_id)
+      : null,
+    city_id: isValidUuid(structuredLocation.city_id ?? body.cityId ?? body.city_id)
+      ? (structuredLocation.city_id ?? body.cityId ?? body.city_id)
+      : null,
+    state_name: structuredLocation.state_name ?? body.stateName ?? body.state_name ?? existing?.state_name ?? null,
+    district_name: structuredLocation.district_name ?? body.districtName ?? body.district_name ?? existing?.district_name ?? null,
+    city_name: structuredLocation.city_name ?? body.cityName ?? body.city_name ?? body.city ?? existing?.city_name ?? existing?.city ?? null,
+    pincode: structuredLocation.pincode ?? body.pincode ?? body.pinCode ?? body.pin_code ?? existing?.pincode ?? null,
     sector_id: isValidUuid(body.sectorId ?? body.sector_id) ? (body.sectorId ?? body.sector_id) : null,
     sector_name: body.sectorName ?? body.sector_name ?? body.industryType ?? existing?.sector_name ?? null,
     industry_type: body.industryType ?? body.industry_type ?? body.sectorName ?? existing?.industry_type ?? null,
@@ -289,8 +334,11 @@ const syncHrPrimaryCompanyDirectory = async ({ targetUserId, profile = {} }) => 
     location: profile.location || existing?.location || null,
     state_id: profile.state_id || existing?.state_id || null,
     district_id: profile.district_id || existing?.district_id || null,
+    city_id: profile.city_id || existing?.city_id || null,
     state_name: profile.state_name || existing?.state_name || null,
     district_name: profile.district_name || existing?.district_name || null,
+    city_name: profile.city_name || existing?.city_name || existing?.city || null,
+    pincode: profile.pincode || existing?.pincode || null,
     sector_id: profile.sector_id || existing?.sector_id || null,
     sector_name: profile.sector_name || existing?.sector_name || profile.industry_type || null,
     industry_type: profile.industry_type || existing?.industry_type || profile.sector_name || null,
@@ -522,14 +570,15 @@ router.put('/profile', asyncHandler(async (req, res) => {
     return;
   }
 
-  const incomingLocation = String(req.body?.location || '').trim();
-  const geo = resolveStructuredLocation({
-    stateName: req.body?.stateName,
-    districtName: req.body?.districtName,
-    location: incomingLocation
+  const structuredLocation = await resolveStructuredLocationPayload({
+    body: req.body || {},
+    userId: targetUserId
   });
-  const stateName = geo.stateName;
-  const districtName = geo.districtName;
+  const incomingLocation = String(req.body?.location || structuredLocation.location || '').trim();
+  const stateName = structuredLocation.state_name || req.body?.stateName || req.body?.state_name || '';
+  const districtName = structuredLocation.district_name || req.body?.districtName || req.body?.district_name || '';
+  const cityName = structuredLocation.city_name || req.body?.cityName || req.body?.city_name || req.body?.city || '';
+  const pincode = structuredLocation.pincode || req.body?.pincode || req.body?.pinCode || req.body?.pin_code || '';
 
   if (!incomingLocation || !stateName || !districtName) {
     res.status(400).send({
@@ -548,10 +597,13 @@ router.put('/profile', asyncHandler(async (req, res) => {
     founded_year: req.body?.foundedYear,
     company_type: req.body?.companyType,
     location: incomingLocation,
-    state_id: isValidUuid(req.body?.stateId) ? req.body.stateId : null,
-    district_id: isValidUuid(req.body?.districtId) ? req.body.districtId : null,
+    state_id: isValidUuid(structuredLocation.state_id || req.body?.stateId) ? (structuredLocation.state_id || req.body.stateId) : null,
+    district_id: isValidUuid(structuredLocation.district_id || req.body?.districtId) ? (structuredLocation.district_id || req.body.districtId) : null,
+    city_id: isValidUuid(structuredLocation.city_id || req.body?.cityId) ? (structuredLocation.city_id || req.body.cityId) : null,
     state_name: stateName || null,
     district_name: districtName || null,
+    city_name: cityName || null,
+    pincode: pincode || null,
     sector_id: isValidUuid(req.body?.sectorId) ? req.body.sectorId : null,
     sector_name: req.body?.sectorName || req.body?.industryType || null,
     about: req.body?.about,
@@ -676,7 +728,7 @@ router.put('/companies/:companyKey', asyncHandler(async (req, res) => {
     return;
   }
 
-  const payload = buildCompanyPayloadFromRequest({
+  const payload = await buildCompanyPayloadFromRequest({
     body: req.body || {},
     targetUserId,
     companyKeyParam: lookupKey,
@@ -1333,8 +1385,10 @@ const fetchHrProfileCompanyName = async (targetUserId) => {
 
 const fetchHrDashboardJobs = async (targetUserId, fallbackCompanyName = '') => {
   const selectAttempts = [
-    'id, job_title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key',
-    'id, title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key',
+    'id, job_title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, city_id, state_name, district_name, city_name, pincode, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key',
+    'id, title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, city_id, state_name, district_name, city_name, pincode, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key',
+    'id, job_title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, pincode, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key',
+    'id, title, company_name, job_location, job_locations, company_logo, employment_type, status, approval_status, category, sector_id, sector_name, state_id, district_id, state_name, district_name, city_name, pincode, applications_count, views_count, created_at, updated_at, seo_slug, company_slug, company_key',
     'id, title, job_location, status, approval_status, category, applications_count, views_count, created_at, updated_at',
     'id, title, status, created_at, updated_at',
     'id, title, status'
@@ -1383,9 +1437,11 @@ const fetchHrDashboardJobs = async (targetUserId, fallbackCompanyName = '') => {
       && !isMissingColumnError(response.error, 'sector_name')
       && !isMissingColumnError(response.error, 'state_id')
       && !isMissingColumnError(response.error, 'district_id')
+      && !isMissingColumnError(response.error, 'city_id')
       && !isMissingColumnError(response.error, 'state_name')
       && !isMissingColumnError(response.error, 'district_name')
       && !isMissingColumnError(response.error, 'city_name')
+      && !isMissingColumnError(response.error, 'pincode')
       && !isMissingColumnError(response.error, 'applications_count')
       && !isMissingColumnError(response.error, 'views_count')
       && !isMissingColumnError(response.error, 'seo_slug')

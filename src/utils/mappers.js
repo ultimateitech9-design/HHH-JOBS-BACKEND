@@ -156,6 +156,7 @@ const mapJobFromRow = (row) => ({
   sectorName: row.sector_name || row.category || '',
   stateId: row.state_id || null,
   districtId: row.district_id || null,
+  cityId: row.city_id || null,
   stateName: row.state_name || '',
   districtName: row.district_name || '',
   cityName: row.city_name || row.district_name || '',

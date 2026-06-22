@@ -1,6 +1,10 @@
 const { Database } = require('../db');
 const { mapJobFromRow } = require('../utils/mappers');
-const { createNotification } = require('./notifications');
+const { notifyJobMatch } = require('./notificationOrchestrator');
+const {
+  computeLocationScore,
+  isProfileInJobLocationAudience
+} = require('./geography');
 
 const STOPWORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'from', 'if', 'in', 'into', 'is', 'it',
@@ -106,6 +110,13 @@ const buildProfileVector = ({
   addWeightedTokens(vector, [profile.headline, profile.target_role || profile.targetRole], 3.3);
   addWeightedTokens(vector, [profile.profile_summary || profile.profileSummary, profile.career_objective || profile.careerObjective], 1.8);
   addWeightedTokens(vector, [profile.location, profile.current_address || profile.currentAddress, profile.graduation_details || profile.graduationDetails], 1.2);
+  addWeightedTokens(vector, [
+    profile.preferred_work_location || profile.preferredWorkLocation,
+    profile.city_name || profile.cityName,
+    profile.district_name || profile.districtName,
+    profile.state_name || profile.stateName,
+    profile.pincode || profile.current_pincode || profile.currentPincode
+  ], 1.2);
 
   applicationJobs.forEach((job) => {
     addWeightedTokens(vector, job.skills, 2.7);
@@ -131,7 +142,14 @@ const buildJobVector = (job = {}) => {
   addWeightedTokens(vector, job.skills, 5);
   addWeightedTokens(vector, [job.description], 2.3);
   addWeightedTokens(vector, [job.category, job.experience_level, job.employment_type], 1.6);
-  addWeightedTokens(vector, [job.job_location, job.company_name], 1.2);
+  addWeightedTokens(vector, [
+    job.job_location,
+    job.city_name || job.cityName,
+    job.district_name || job.districtName,
+    job.state_name || job.stateName,
+    job.pincode,
+    job.company_name
+  ], 1.2);
   return vector;
 };
 
@@ -243,7 +261,7 @@ const buildRecommendationExplanation = ({
   gapAnalysis = {},
   collaborative = {},
   trend = {},
-  profileSkillSet = new Set()
+  location = {}
 }) => {
   const matchedSkills = (gapAnalysis.matchedSkills || []).slice(0, 3);
   const reasons = [];
@@ -252,8 +270,8 @@ const buildRecommendationExplanation = ({
     reasons.push(`You match on ${matchedSkills.join(', ')}.`);
   }
 
-  if (job.job_location && Array.from(profileSkillSet).some((token) => normalizeToken(job.job_location).includes(token))) {
-    reasons.push(`This role lines up with your location preferences.`);
+  if (location.reason) {
+    reasons.push(location.reason);
   }
 
   if (collaborative.summary) {
@@ -309,12 +327,14 @@ const rankJobsForStudent = ({
         currentSkillSet: profileSkillSet
       });
       const trend = computeTrendScore(job);
+      const location = computeLocationScore({ profile, job });
       const overallScore = Math.max(
         0,
-        (vectorSimilarityScore * 0.52)
-        + (skillAlignmentScore * 0.2)
-        + (collaborative.score * 0.18)
-        + (trend.score * 0.1)
+        (vectorSimilarityScore * 0.42)
+        + (skillAlignmentScore * 0.22)
+        + (location.score * 0.18)
+        + (collaborative.score * 0.1)
+        + (trend.score * 0.08)
       );
       const matchPercent = Math.max(0, Math.min(99, Math.round(overallScore)));
       const explanation = buildRecommendationExplanation({
@@ -322,7 +342,7 @@ const rankJobsForStudent = ({
         gapAnalysis,
         collaborative,
         trend,
-        profileSkillSet
+        location
       });
 
       return {
@@ -330,16 +350,22 @@ const rankJobsForStudent = ({
         matchPercent,
         vectorSimilarityScore: Number(vectorSimilarityScore.toFixed(2)),
         skillAlignmentScore: Number(skillAlignmentScore.toFixed(2)),
+        locationScore: Number(location.score.toFixed(2)),
         collaborativeScore: Number(collaborative.score.toFixed(2)),
         trendScore: Number(trend.score.toFixed(2)),
         whyThisJob: explanation.whyThisJob,
         explanation: explanation.explanation,
         gapAnalysis,
+        location,
         collaborative,
         trend
       };
     })
-    .sort((left, right) => right.matchPercent - left.matchPercent || right.trendScore - left.trendScore)
+    .sort((left, right) =>
+      right.matchPercent - left.matchPercent
+      || right.locationScore - left.locationScore
+      || right.trendScore - left.trendScore
+    )
     .slice(0, Math.max(1, limit))
     .map((recommendation, index) => ({
       ...recommendation,
@@ -374,7 +400,7 @@ const loadRecommendationContext = async (userId) => {
     Database.from('saved_jobs').select('job_id, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(40),
     Database.from('student_job_views').select('job_id, viewed_at').eq('user_id', userId).order('viewed_at', { ascending: false }).limit(60),
     Database.from('jobs').select('*').eq('status', 'open').neq('approval_status', 'rejected').order('is_featured', { ascending: false }).order('created_at', { ascending: false }).limit(200),
-    Database.from('student_profiles').select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, graduation_details, is_discoverable').neq('user_id', userId).eq('is_discoverable', true).limit(200),
+    Database.from('student_profiles').select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, graduation_details, state_id, district_id, city_id, state_name, district_name, city_name, pincode, current_pincode, preferred_work_location, willing_to_relocate, is_discoverable').neq('user_id', userId).eq('is_discoverable', true).limit(200),
     Database.from('users').select('id, name, email').eq('id', userId).maybeSingle()
   ]);
 
@@ -629,8 +655,8 @@ const notifyRecommendedStudentsForJob = async (job) => {
   const [studentsResp, preferencesResp] = await Promise.all([
     Database
       .from('student_profiles')
-      .select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, profile_summary')
-      .limit(120),
+      .select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, profile_summary, state_id, district_id, city_id, state_name, district_name, city_name, pincode, current_pincode, preferred_work_location, willing_to_relocate')
+      .limit(1000),
     Database
       .from('student_recommendation_preferences')
       .select('*')
@@ -645,6 +671,10 @@ const notifyRecommendedStudentsForJob = async (job) => {
   for (const profile of studentsResp.data || []) {
     const preference = preferencesMap[profile.user_id];
     if (preference && preference.personalized_feed_enabled === false) {
+      continue;
+    }
+
+    if (!isProfileInJobLocationAudience({ profile, job, minScore: 54 })) {
       continue;
     }
 
@@ -672,16 +702,11 @@ const notifyRecommendedStudentsForJob = async (job) => {
     });
 
     notifications.push(
-      createNotification({
+      notifyJobMatch({
         userId: profile.user_id,
-        type: 'job_recommendation',
-        title: `New ${topMatch.matchPercent}% match: ${topMatch.job.jobTitle}`,
-        message: topMatch.explanation,
-        link: '/portal/student/home',
-        meta: {
-          jobId: topMatch.job.id,
-          matchPercent: topMatch.matchPercent
-        }
+        job: topMatch.job,
+        matchPercent: topMatch.matchPercent,
+        explanation: topMatch.explanation
       })
     );
   }

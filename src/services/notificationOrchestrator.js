@@ -113,8 +113,12 @@ const notifyUser = async ({
   return results;
 };
 
-const notifyJobMatch = async ({ userId, job, matchPercent, explanation, jobUrl }) => {
-  const title = `New ${matchPercent}% match: ${job.job_title || job.jobTitle}`;
+const notifyJobMatch = async ({ userId, job, matchPercent = 0, explanation, jobUrl, type = 'job_recommendation' }) => {
+  const normalizedMatchPercent = Number(matchPercent || 0);
+  const jobTitle = job.job_title || job.jobTitle || 'job';
+  const title = normalizedMatchPercent > 0
+    ? `New ${normalizedMatchPercent}% match: ${jobTitle}`
+    : `New job match: ${jobTitle}`;
   const message = explanation || `${job.company_name || job.companyName} posted a role matching your profile.`;
   const jobLink = buildStudentJobSeoLink(job);
 
@@ -122,11 +126,11 @@ const notifyJobMatch = async ({ userId, job, matchPercent, explanation, jobUrl }
     userId,
     channels: [CHANNELS.IN_APP, CHANNELS.EMAIL, CHANNELS.PUSH, CHANNELS.WHATSAPP],
     notification: {
-      type: 'job_recommendation',
+      type,
       title,
       message,
       link: jobLink,
-      meta: { jobId: job.id, matchPercent }
+      meta: { jobId: job.id, matchPercent: normalizedMatchPercent }
     },
     pushPayload: { title, body: message, url: jobLink, tag: 'job_match' },
     emailPayload: {
@@ -137,7 +141,7 @@ const notifyJobMatch = async ({ userId, job, matchPercent, explanation, jobUrl }
       jobTitle: job.job_title || job.jobTitle,
       companyName: job.company_name || job.companyName,
       location: job.job_location || job.jobLocation,
-      matchPercent,
+      matchPercent: normalizedMatchPercent,
       jobUrl: jobUrl || `https://hhh-jobs.com${jobLink}`
     }
   });

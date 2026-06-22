@@ -19,6 +19,10 @@ const {
   trackStudentJobView
 } = require('../services/recommendations');
 const {
+  listLocationOptions,
+  resolveStructuredLocationPayload
+} = require('../services/geography');
+const {
   CAMPUS_DRIVE_NOTIFICATION_LINK,
   isCampusDriveUpcoming: isActiveCampusDrive,
   isStudentEligibleForDrive
@@ -134,12 +138,6 @@ const toNullableBoolean = (value) => {
   return undefined;
 };
 
-const normalizeLookupKey = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
-const normalizePincode = (value) => {
-  if (value === undefined || value === null) return '';
-  return String(value).replace(/\D/g, '').slice(0, 6);
-};
-
 const isCandidateSubscriptionRole = (role) =>
   role === ROLES.STUDENT;
 
@@ -241,241 +239,6 @@ const upsertStudentProfileSafe = async (payload) => {
 
   return { data: null, error: lastError };
 };
-
-const readMasterRows = async (table, configure = (query) => query) => {
-  const query = configure(Database.from(table).select('*'));
-  const { data, error } = await query;
-  if (error) return { rows: [], error };
-  return { rows: Array.isArray(data) ? data : [], error: null };
-};
-
-const activeMasterRows = (rows = []) =>
-  (Array.isArray(rows) ? rows : []).filter((row) =>
-    row && row.is_active !== false && row.is_active !== 0 && row.is_active !== '0'
-  );
-
-const findMasterRowById = async (table, id) => {
-  const normalizedId = String(id || '').trim();
-  if (!normalizedId) return null;
-
-  const { data, error } = await Database
-    .from(table)
-    .select('*')
-    .eq('id', normalizedId)
-    .maybeSingle();
-
-  if (error) return null;
-  return data || null;
-};
-
-const matchesLocationScope = (row = {}, { stateId = '', districtId = '' } = {}) => {
-  if (stateId && row.state_id && row.state_id !== stateId) return false;
-  if (districtId && row.district_id && row.district_id !== districtId) return false;
-  return true;
-};
-
-const findMasterRowByName = async (table, name, scope = {}) => {
-  const key = normalizeLookupKey(name);
-  if (!key) return null;
-
-  const { rows } = await readMasterRows(table, (query) => query.ilike('name', name).limit(25));
-  return activeMasterRows(rows).find((row) =>
-    normalizeLookupKey(row.name) === key && matchesLocationScope(row, scope)
-  ) || null;
-};
-
-const insertMasterRowSafe = async (table, payload) => {
-  const workingPayload = stripUndefined(payload || {});
-  let lastError = null;
-
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const response = await Database
-      .from(table)
-      .insert(workingPayload)
-      .select('*')
-      .single();
-
-    if (!response.error) return response.data || null;
-
-    lastError = response.error;
-    const missingColumn = parseMissingColumnFromError(response.error);
-    if (!missingColumn || !(missingColumn in workingPayload)) {
-      console.warn(`[master-location] Could not insert ${table}: ${response.error.message}`);
-      return null;
-    }
-
-    delete workingPayload[missingColumn];
-  }
-
-  if (lastError) console.warn(`[master-location] Could not insert ${table}: ${lastError.message}`);
-  return null;
-};
-
-const updateMasterRowSafe = async (table, id, payload) => {
-  const workingPayload = stripUndefined(payload || {});
-  if (!id || Object.keys(workingPayload).length === 0) return null;
-  let lastError = null;
-
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const response = await Database
-      .from(table)
-      .update(workingPayload)
-      .eq('id', id)
-      .select('*')
-      .maybeSingle();
-
-    if (!response.error) return response.data || null;
-
-    lastError = response.error;
-    const missingColumn = parseMissingColumnFromError(response.error);
-    if (!missingColumn || !(missingColumn in workingPayload)) {
-      console.warn(`[master-location] Could not update ${table}: ${response.error.message}`);
-      return null;
-    }
-
-    delete workingPayload[missingColumn];
-  }
-
-  if (lastError) console.warn(`[master-location] Could not update ${table}: ${lastError.message}`);
-  return null;
-};
-
-const ensureMasterRowByName = async ({ table, id, name, scope = {}, buildPayload }) => {
-  const existingById = await findMasterRowById(table, id);
-  if (existingById) return existingById;
-
-  const cleanName = toNullableText(name);
-  if (!cleanName) return null;
-
-  const existingByName = await findMasterRowByName(table, cleanName, scope);
-  if (existingByName) return existingByName;
-
-  return insertMasterRowSafe(table, buildPayload(cleanName));
-};
-
-const ensurePincodeMasterRow = async ({ pincode, stateId, districtId, userId }) => {
-  const cleanPincode = normalizePincode(pincode);
-  if (cleanPincode.length !== 6) return null;
-
-  const { rows } = await readMasterRows('master_pincodes', (query) => {
-    let nextQuery = query.eq('pincode', cleanPincode);
-    if (stateId) nextQuery = nextQuery.eq('state_id', stateId);
-    if (districtId) nextQuery = nextQuery.eq('district_id', districtId);
-    return nextQuery;
-  });
-
-  const existing = activeMasterRows(rows)[0];
-  if (existing) return existing;
-
-  return insertMasterRowSafe('master_pincodes', {
-    pincode: cleanPincode,
-    state_id: stateId || null,
-    district_id: districtId || null,
-    created_by: userId,
-    is_active: true
-  });
-};
-
-const buildStructuredLocationLabel = ({ cityName = '', districtName = '', stateName = '' } = {}) => {
-  const parts = [cityName, districtName, stateName]
-    .map((item) => String(item || '').trim())
-    .filter(Boolean);
-  return [...new Set(parts)].join(', ');
-};
-
-const resolveStudentLocationPayload = async ({ body = {}, userId }) => {
-  const stateIdInput = toNullableText(body.stateId ?? body.state_id);
-  const stateNameInput = toNullableText(body.stateName ?? body.state_name ?? body.state);
-  const districtIdInput = toNullableText(body.districtId ?? body.district_id);
-  const districtNameInput = toNullableText(body.districtName ?? body.district_name ?? body.district);
-  const cityIdInput = toNullableText(body.cityId ?? body.city_id);
-  const cityNameInput = toNullableText(body.cityName ?? body.city_name ?? body.city);
-  const pincodeInput = normalizePincode(body.pincode ?? body.pinCode ?? body.pin_code ?? body.currentPincode ?? body.current_pincode);
-
-  if (!stateIdInput && !stateNameInput && !districtIdInput && !districtNameInput && !cityIdInput && !cityNameInput && !pincodeInput) {
-    return {};
-  }
-
-  const state = await ensureMasterRowByName({
-    table: 'master_states',
-    id: stateIdInput,
-    name: stateNameInput,
-    buildPayload: (name) => ({
-      name,
-      code: null,
-      created_by: userId,
-      is_active: true
-    })
-  });
-  const stateId = state?.id || stateIdInput || null;
-  const stateName = state?.name || stateNameInput || null;
-
-  const district = await ensureMasterRowByName({
-    table: 'master_districts',
-    id: districtIdInput,
-    name: districtNameInput,
-    scope: { stateId },
-    buildPayload: (name) => ({
-      name,
-      state_id: stateId,
-      created_by: userId,
-      is_active: true
-    })
-  });
-  const districtId = district?.id || districtIdInput || null;
-  const districtName = district?.name || districtNameInput || null;
-
-  const city = await ensureMasterRowByName({
-    table: 'master_locations',
-    id: cityIdInput,
-    name: cityNameInput,
-    scope: { stateId, districtId },
-    buildPayload: (name) => ({
-      name,
-      state_id: stateId,
-      district_id: districtId,
-      pincode: pincodeInput || null,
-      created_by: userId,
-      is_active: true
-    })
-  });
-  const cityId = city?.id || cityIdInput || null;
-  const cityName = city?.name || cityNameInput || null;
-
-  if (city?.id && pincodeInput && city.pincode !== pincodeInput) {
-    await updateMasterRowSafe('master_locations', city.id, {
-      state_id: stateId,
-      district_id: districtId,
-      pincode: pincodeInput
-    });
-  }
-
-  await ensurePincodeMasterRow({
-    pincode: pincodeInput,
-    stateId,
-    districtId,
-    userId
-  });
-
-  return stripUndefined({
-    state_id: stateId,
-    state_name: stateName,
-    district_id: districtId,
-    district_name: districtName,
-    city_id: cityId,
-    city_name: cityName,
-    pincode: pincodeInput || null,
-    location: buildStructuredLocationLabel({ cityName, districtName, stateName }) || undefined
-  });
-};
-
-const mapLocationOption = (row = {}) => ({
-  id: row.id || '',
-  name: row.name || '',
-  stateId: row.state_id || '',
-  districtId: row.district_id || '',
-  pincode: row.pincode || ''
-});
 
 const withTimeout = (promise, timeoutMs, message) =>
   new Promise((resolve, reject) => {
@@ -1750,56 +1513,17 @@ router.post('/recommendations/digest', asyncHandler(async (req, res) => {
 }));
 
 router.get('/location-options', asyncHandler(async (req, res) => {
-  const stateId = String(req.query.stateId || req.query.state_id || '').trim();
-  const districtId = String(req.query.districtId || req.query.district_id || '').trim();
+  try {
+    const locationOptions = await listLocationOptions({
+      stateId: String(req.query.stateId || req.query.state_id || '').trim(),
+      districtId: String(req.query.districtId || req.query.district_id || '').trim(),
+      cityId: String(req.query.cityId || req.query.city_id || '').trim()
+    });
 
-  const [statesResp, districtsResp, citiesResp, pincodesResp] = await Promise.all([
-    readMasterRows('master_states', (query) => query.order('name', { ascending: true })),
-    readMasterRows('master_districts', (query) => {
-      const nextQuery = stateId ? query.eq('state_id', stateId) : query.limit(0);
-      return nextQuery.order('name', { ascending: true });
-    }),
-    districtId || stateId
-      ? readMasterRows('master_locations', (query) => query.order('name', { ascending: true }))
-      : Promise.resolve({ rows: [], error: null }),
-    readMasterRows('master_pincodes', (query) => {
-      let nextQuery = query;
-      if (stateId) nextQuery = nextQuery.eq('state_id', stateId);
-      if (districtId) nextQuery = nextQuery.eq('district_id', districtId);
-      if (!stateId && !districtId) nextQuery = nextQuery.limit(0);
-      return nextQuery.order('pincode', { ascending: true });
-    })
-  ]);
-
-  const firstError = [statesResp, districtsResp, citiesResp, pincodesResp].find((response) => response.error)?.error;
-  if (firstError) {
-    sendDatabaseError(res, firstError);
-    return;
+    res.send({ status: true, locationOptions });
+  } catch (error) {
+    sendDatabaseError(res, error);
   }
-
-  const states = activeMasterRows(statesResp.rows).map(mapLocationOption);
-  const districts = activeMasterRows(districtsResp.rows).map(mapLocationOption);
-  const cities = activeMasterRows(citiesResp.rows)
-    .filter((row) => matchesLocationScope(row, { stateId, districtId }))
-    .map(mapLocationOption);
-  const pincodes = activeMasterRows(pincodesResp.rows)
-    .filter((row) => matchesLocationScope(row, { stateId, districtId }))
-    .map((row) => ({
-      id: row.id || '',
-      pincode: row.pincode || '',
-      stateId: row.state_id || '',
-      districtId: row.district_id || ''
-    }));
-
-  res.send({
-    status: true,
-    locationOptions: {
-      states,
-      districts,
-      cities,
-      pincodes
-    }
-  });
 }));
 
 router.get('/profile', asyncHandler(async (req, res) => {
@@ -1887,7 +1611,7 @@ router.put('/profile', asyncHandler(async (req, res) => {
     }
   }
 
-  const structuredLocationPayload = await resolveStudentLocationPayload({
+  const structuredLocationPayload = await resolveStructuredLocationPayload({
     body: req.body,
     userId: req.user.id
   });

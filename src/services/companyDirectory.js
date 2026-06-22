@@ -246,8 +246,11 @@ const toCompanyLikeProfile = (company = {}) => ({
   location: company.location,
   state_id: company.state_id || company.stateId,
   district_id: company.district_id || company.districtId,
+  city_id: company.city_id || company.cityId,
   state_name: company.state_name || company.stateName,
   district_name: company.district_name || company.districtName,
+  city_name: company.city_name || company.cityName || company.city,
+  pincode: company.pincode,
   sector_id: company.sector_id || company.sectorId,
   sector_name: company.sector_name || company.sectorName,
   industry_type: company.industry_type || company.industryType,
@@ -283,8 +286,11 @@ const enrichPortalJobsWithHrProfiles = ({ portalJobs = [], hrProfiles = [], comp
       job_location: pickPreferredText(job.job_location, profileLocation),
       state_id: job.state_id || profile.state_id || null,
       district_id: job.district_id || profile.district_id || null,
+      city_id: job.city_id || profile.city_id || null,
       state_name: pickPreferredText(job.state_name, profile.state_name),
       district_name: pickPreferredText(job.district_name, profile.district_name),
+      city_name: pickPreferredText(job.city_name, profile.city_name),
+      pincode: pickPreferredText(job.pincode, profile.pincode),
       sector_id: job.sector_id || profile.sector_id || null,
       sector_name: pickPreferredText(job.sector_name, profile.sector_name, profile.industry_type)
     };

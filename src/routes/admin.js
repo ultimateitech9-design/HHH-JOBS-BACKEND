@@ -830,9 +830,11 @@ router.delete('/villages/:id', asyncHandler(async (req, res) => {
 router.get('/pincodes', asyncHandler(async (req, res) => {
   const districtId = String(req.query.districtId || '').trim();
   const stateId = String(req.query.stateId || '').trim();
+  const cityId = String(req.query.cityId || '').trim();
   let query = Database.from('master_pincodes').select('*').order('pincode', { ascending: true });
   if (districtId) query = query.eq('district_id', districtId);
   if (stateId) query = query.eq('state_id', stateId);
+  if (cityId) query = query.eq('city_id', cityId);
 
   const { data, error } = await query;
   if (error) { sendDatabaseError(res, error); return; }
@@ -848,6 +850,7 @@ router.post('/pincodes', asyncHandler(async (req, res) => {
       pincode,
       village_id: req.body?.villageId || null,
       district_id: req.body?.districtId || null,
+      city_id: req.body?.cityId || null,
       state_id: req.body?.stateId || null,
       created_by: req.user.id,
       is_active: req.body?.isActive !== false

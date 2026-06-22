@@ -57,7 +57,9 @@ const isAlertMatch = (job, alert) => {
     const locationHaystack = [
       job.job_location,
       job.state_name,
-      job.district_name
+      job.district_name,
+      job.city_name,
+      job.pincode
     ].join(' ').toLowerCase();
     if (!locationHaystack.includes(locationNeedle)) return false;
   }
@@ -87,23 +89,25 @@ const notifyMatchingJobAlerts = async (job) => {
   const matched = (alerts || []).filter((alert) => isAlertMatch(job, alert));
   if (matched.length === 0) return;
 
-  const payload = matched.map((alert) => ({
-    user_id: alert.user_id,
-    type: 'job_alert',
-    title: `New job match: ${job.job_title}`,
-    message: `${job.company_name} posted a role matching your alert filters.`,
-    link: `/job/${job.id}`,
-    meta: { jobId: job.id, alertId: alert.id }
-  }));
-
-  const { data } = await Database
-    .from('notifications')
-    .insert(payload)
-    .select('*');
-
-  (data || []).forEach((notification) => {
-    pushNotificationEvent(notification.user_id, 'notification.created', { notification });
+  const { notifyJobMatch } = require('./notificationOrchestrator');
+  const byUser = new Map();
+  matched.forEach((alert) => {
+    if (!alert.user_id || byUser.has(alert.user_id)) return;
+    byUser.set(alert.user_id, alert);
   });
+
+  await Promise.allSettled(
+    [...byUser.entries()].map(([userId, alert]) =>
+      notifyJobMatch({
+        userId,
+        job,
+        type: 'job_alert',
+        matchPercent: 0,
+        explanation: `${job.company_name} posted a role matching your alert filters.`,
+        jobUrl: alert.job_url || undefined
+      })
+    )
+  );
 };
 
 const notifyUsersByRoles = async ({

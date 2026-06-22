@@ -440,6 +440,7 @@ const ensureJobFacetSchema = async (db) => {
   if (!(await tableExists(db, 'jobs'))) return;
 
   await addColumnIfMissing(db, 'jobs', 'city_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'jobs', 'city_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'jobs', 'pincode', 'VARCHAR(32) NULL');
   await addColumnIfMissing(db, 'jobs', 'company_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'jobs', 'company_key', 'VARCHAR(191) NULL');
@@ -475,6 +476,13 @@ const ensureJobFacetSchema = async (db) => {
     'jobs_status_pincode_idx',
     '(`status`(32), `pincode`, `created_at`)'
   );
+  await addIndexIfColumnsExist(
+    db,
+    'jobs',
+    'jobs_location_match_idx',
+    '(`state_id`, `district_id`, `city_id`, `city_name`(128), `pincode`, `status`(32))',
+    ['state_id', 'district_id', 'city_id', 'city_name', 'pincode', 'status']
+  );
   await addIndexIfMissing(
     db,
     'jobs',
@@ -494,12 +502,19 @@ const ensureCandidateProfileLocationSchema = async (db) => {
     await addColumnIfMissing(db, 'student_profiles', 'city_id', 'CHAR(36) NULL');
     await addColumnIfMissing(db, 'student_profiles', 'city_name', 'LONGTEXT NULL');
     await addColumnIfMissing(db, 'student_profiles', 'pincode', 'VARCHAR(32) NULL');
+    await addColumnIfMissing(db, 'student_profiles', 'current_pincode', 'VARCHAR(32) NULL');
     await addIndexIfMissing(db, 'student_profiles', 'student_profiles_user_idx', '(`user_id`)');
     await addIndexIfMissing(
       db,
       'student_profiles',
       'student_profiles_location_idx',
       '(`state_name`(128), `district_name`(128), `city_name`(128), `pincode`)'
+    );
+    await addIndexIfMissing(
+      db,
+      'student_profiles',
+      'student_profiles_structured_location_idx',
+      '(`state_id`, `district_id`, `city_id`, `pincode`)'
     );
   }
 
@@ -513,6 +528,62 @@ const ensureCandidateProfileLocationSchema = async (db) => {
       'master_locations_scope_idx',
       '(`state_id`, `district_id`, `name`(128), `pincode`)'
     );
+  }
+
+  if (await tableExists(db, 'master_states')) {
+    await addIndexIfMissing(db, 'master_states', 'master_states_name_idx', '(`name`(128))');
+  }
+
+  if (await tableExists(db, 'master_districts')) {
+    await addIndexIfMissing(db, 'master_districts', 'master_districts_state_name_idx', '(`state_id`, `name`(128))');
+  }
+
+  if (await tableExists(db, 'master_pincodes')) {
+    await addColumnIfMissing(db, 'master_pincodes', 'city_id', 'CHAR(36) NULL');
+    await addIndexIfMissing(
+      db,
+      'master_pincodes',
+      'master_pincodes_scope_city_idx',
+      '(`state_id`, `district_id`, `city_id`, `pincode`(16))'
+    );
+
+    if (await tableExists(db, 'master_locations')) {
+      await db.execute(`
+        UPDATE ${tableName('master_pincodes')} mp
+        JOIN ${tableName('master_locations')} ml
+          ON NULLIF(TRIM(ml.pincode), '') = NULLIF(TRIM(mp.pincode), '')
+         AND (mp.state_id IS NULL OR mp.state_id = '' OR ml.state_id = mp.state_id)
+         AND (mp.district_id IS NULL OR mp.district_id = '' OR ml.district_id = mp.district_id)
+        SET mp.city_id = COALESCE(NULLIF(mp.city_id, ''), ml.id),
+            mp.state_id = COALESCE(NULLIF(mp.state_id, ''), NULLIF(ml.state_id, '')),
+            mp.district_id = COALESCE(NULLIF(mp.district_id, ''), NULLIF(ml.district_id, ''))
+        WHERE (mp.city_id IS NULL OR mp.city_id = '')
+          AND NULLIF(TRIM(mp.pincode), '') IS NOT NULL
+      `);
+    }
+  }
+
+  if (
+    await tableExists(db, 'jobs')
+    && await tableExists(db, 'master_locations')
+    && await allColumnsExist(db, 'jobs', ['city_id', 'city_name', 'pincode', 'state_id', 'district_id'])
+    && await allColumnsExist(db, 'master_locations', ['id', 'name', 'pincode', 'state_id', 'district_id'])
+  ) {
+    await db.execute(`
+      UPDATE ${tableName('jobs')} j
+      JOIN ${tableName('master_locations')} ml
+        ON (
+          (NULLIF(TRIM(j.pincode), '') IS NOT NULL AND NULLIF(TRIM(ml.pincode), '') = NULLIF(TRIM(j.pincode), ''))
+          OR LOWER(TRIM(ml.name)) = LOWER(TRIM(j.city_name))
+        )
+       AND (j.state_id IS NULL OR j.state_id = '' OR ml.state_id = j.state_id)
+       AND (j.district_id IS NULL OR j.district_id = '' OR ml.district_id = j.district_id)
+      SET j.city_id = COALESCE(NULLIF(j.city_id, ''), ml.id),
+          j.city_name = COALESCE(NULLIF(j.city_name, ''), NULLIF(ml.name, '')),
+          j.state_id = COALESCE(NULLIF(j.state_id, ''), NULLIF(ml.state_id, '')),
+          j.district_id = COALESCE(NULLIF(j.district_id, ''), NULLIF(ml.district_id, ''))
+      WHERE j.city_id IS NULL OR j.city_id = ''
+    `);
   }
 };
 
@@ -542,6 +613,9 @@ const ensureCompanyDirectorySchema = async (db) => {
   await addColumnIfMissing(db, 'companies', 'website_url', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'companies', 'location', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'companies', 'city', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'city_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'companies', 'city_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'pincode', 'VARCHAR(32) NULL');
   await addColumnIfMissing(db, 'companies', 'state_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'companies', 'district_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'companies', 'state_name', 'LONGTEXT NULL');
@@ -566,8 +640,10 @@ const ensureCompanyDirectorySchema = async (db) => {
   await modifyColumnIfExists(db, 'companies', 'company_key', 'VARCHAR(191) NULL');
   await modifyColumnIfExists(db, 'companies', 'company_slug', 'VARCHAR(191) NULL');
   await modifyColumnIfExists(db, 'companies', 'hr_user_id', 'CHAR(36) NULL');
+  await db.execute(`UPDATE ${tableName('companies')} SET city_name = COALESCE(NULLIF(city_name, ''), NULLIF(city, '')) WHERE city_name IS NULL OR city_name = ''`);
 
   await addUniqueIndexIfMissing(db, 'companies', 'companies_hr_company_key_uidx', '(`hr_user_id`, `company_key`)');
+  await addIndexIfMissing(db, 'companies', 'companies_location_idx', '(`state_id`, `district_id`, `city_id`, `pincode`)');
   await addIndexIfMissing(db, 'companies', 'companies_company_key_idx', '(`company_key`)');
   await addIndexIfMissing(db, 'companies', 'companies_company_slug_idx', '(`company_slug`)');
   await addIndexIfMissing(db, 'companies', 'companies_hr_user_idx', '(`hr_user_id`)');
@@ -741,8 +817,11 @@ const ensureHrProfilePrefillSchema = async (db) => {
   await addColumnIfMissing(db, 'hr_profiles', 'location', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'state_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'district_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'city_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'state_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'district_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'city_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'pincode', 'VARCHAR(32) NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'sector_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'sector_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'about', 'LONGTEXT NULL');
@@ -765,6 +844,9 @@ const ensureHrProfilePrefillSchema = async (db) => {
       hp.state_name = COALESCE(NULLIF(hp.state_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateName')), 'null')),
       hp.district_id = COALESCE(NULLIF(hp.district_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtId')), 'null')),
       hp.district_name = COALESCE(NULLIF(hp.district_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtName')), 'null')),
+      hp.city_id = COALESCE(NULLIF(hp.city_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.cityId')), 'null')),
+      hp.city_name = COALESCE(NULLIF(hp.city_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.cityName')), 'null')),
+      hp.pincode = COALESCE(NULLIF(hp.pincode, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.pincode')), 'null')),
       hp.contact_email = COALESCE(NULLIF(hp.contact_email, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.contactEmail')), 'null'), NULLIF(u.email, '')),
       hp.contact_phone = COALESCE(NULLIF(hp.contact_phone, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.contactPhone')), 'null'), NULLIF(u.mobile, ''))
     WHERE u.req_body IS NOT NULL
@@ -778,6 +860,8 @@ const ensureHrProfilePrefillSchema = async (db) => {
         OR COALESCE(hp.location, '') = ''
         OR COALESCE(hp.state_name, '') = ''
         OR COALESCE(hp.district_name, '') = ''
+        OR COALESCE(hp.city_name, '') = ''
+        OR COALESCE(hp.pincode, '') = ''
         OR COALESCE(hp.contact_email, '') = ''
         OR COALESCE(hp.contact_phone, '') = ''
       )
@@ -892,6 +976,7 @@ const ensureHrProfilePrefillSchema = async (db) => {
   }
 
   await addUniqueIndexIfMissing(db, 'hr_profiles', 'hr_profiles_user_uidx', '(`user_id`)');
+  await addIndexIfMissing(db, 'hr_profiles', 'hr_profiles_location_idx', '(`state_id`, `district_id`, `city_id`, `pincode`)');
 };
 
 const backfillSeoSlug = async (db, table, expression) => {

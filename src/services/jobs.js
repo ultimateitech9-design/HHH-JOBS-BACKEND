@@ -16,6 +16,10 @@ const { notifyCompanySubscribersForJob } = require('./companySubscriptions');
 const { inspectJobPostingContent } = require('./jobModeration');
 const { enqueueJobPostedSideEffects } = require('./sideEffectQueue');
 const {
+  buildStructuredLocationLabel,
+  resolveStructuredLocationPayload
+} = require('./geography');
+const {
   getPlanOrThrow,
   getPlanBySlug,
   prepareJobPlanData
@@ -489,17 +493,19 @@ const applyIlikeAny = (query, columns = [], value = '') => {
   return query.or(columns.map((column) => `${column}.ilike.%${term}%`).join(','));
 };
 
-const buildJobPayload = (body = {}) => {
+const buildJobPayload = async (body = {}, { userId = null } = {}) => {
+  const structuredLocation = await resolveStructuredLocationPayload({ body, userId });
   const locations = extractLocationsFromBody(body);
-  const stateName = optionalText(body.stateName ?? body.state_name);
-  const districtName = optionalText(body.districtName ?? body.district_name);
-  const cityName = optionalText(body.cityName ?? body.city_name ?? body.city);
-  const pincode = optionalText(body.pincode ?? body.pinCode ?? body.pin_code);
+  const stateName = optionalText(structuredLocation.state_name ?? body.stateName ?? body.state_name);
+  const districtName = optionalText(structuredLocation.district_name ?? body.districtName ?? body.district_name);
+  const cityName = optionalText(structuredLocation.city_name ?? body.cityName ?? body.city_name ?? body.city);
+  const pincode = optionalText(structuredLocation.pincode ?? body.pincode ?? body.pinCode ?? body.pin_code);
+  const structuredLabel = buildStructuredLocationLabel({ cityName, districtName, stateName, pincode });
   const primaryLocation = locations[0] || buildLocationLabel({
     cityName,
     districtName,
     stateName,
-    fallback: body.jobLocation ?? body.job_location
+    fallback: structuredLabel || body.jobLocation || body.job_location
   });
   const seoSlug = optionalText(body.seoSlug ?? body.seo_slug)
     || buildSeoSlug(
@@ -526,11 +532,12 @@ const buildJobPayload = (body = {}) => {
     category: body.category ?? body.sectorName ?? body.sector_name,
     sector_id: optionalUuid(body.sectorId ?? body.sector_id),
     sector_name: optionalText(body.sectorName ?? body.sector_name ?? body.category),
-    state_id: optionalUuid(body.stateId ?? body.state_id),
-    district_id: optionalUuid(body.districtId ?? body.district_id),
+    state_id: optionalUuid(structuredLocation.state_id ?? body.stateId ?? body.state_id),
+    district_id: optionalUuid(structuredLocation.district_id ?? body.districtId ?? body.district_id),
+    city_id: optionalUuid(structuredLocation.city_id ?? body.cityId ?? body.city_id),
     state_name: stateName,
     district_name: districtName,
-    city_name: cityName || districtName,
+    city_name: cityName,
     pincode,
     is_featured: body.isFeatured ?? body.is_featured,
     description: body.description,
@@ -583,8 +590,11 @@ const COMPANY_PROFILE_SELECT = [
   'location',
   'state_id',
   'district_id',
+  'city_id',
   'state_name',
   'district_name',
+  'city_name',
+  'pincode',
   'sector_id',
   'sector_name',
   'industry_type',
@@ -599,7 +609,7 @@ const COMPANY_PROFILE_SELECT = [
 ].join(', ');
 
 const buildCompanyLocationLabel = (payload = {}) =>
-  [payload.location || payload.job_location, payload.district_name, payload.state_name, payload.pincode]
+  [payload.location || payload.job_location, payload.city_name, payload.district_name, payload.state_name, payload.pincode]
     .map((item) => String(item || '').trim())
     .filter(Boolean)
     .filter((item, index, list) => list.findIndex((value) => value.toLowerCase() === item.toLowerCase()) === index)
@@ -667,8 +677,11 @@ const buildCompanyProfilePayload = ({ userId, companyName, companyKey, companySl
     location: pick(body.companyLocation, body.company_location, body.location, existing?.location, buildCompanyLocationLabel(payload), isPrimaryCompany ? profile.location : ''),
     state_id: optionalUuid(body.companyStateId ?? body.company_state_id ?? payload.state_id ?? existing?.state_id ?? (isPrimaryCompany ? profile.state_id : null)),
     district_id: optionalUuid(body.companyDistrictId ?? body.company_district_id ?? payload.district_id ?? existing?.district_id ?? (isPrimaryCompany ? profile.district_id : null)),
+    city_id: optionalUuid(body.companyCityId ?? body.company_city_id ?? payload.city_id ?? existing?.city_id ?? (isPrimaryCompany ? profile.city_id : null)),
     state_name: pick(body.companyStateName, body.company_state_name, payload.state_name, existing?.state_name, isPrimaryCompany ? profile.state_name : ''),
-    district_name: pick(body.companyDistrictName, body.company_district_name, payload.district_name, payload.city_name, existing?.district_name, isPrimaryCompany ? profile.district_name : ''),
+    district_name: pick(body.companyDistrictName, body.company_district_name, payload.district_name, existing?.district_name, isPrimaryCompany ? profile.district_name : ''),
+    city_name: pick(body.companyCityName, body.company_city_name, payload.city_name, existing?.city_name, isPrimaryCompany ? profile.city_name : ''),
+    pincode: pick(body.companyPincode, body.company_pincode, payload.pincode, existing?.pincode, isPrimaryCompany ? profile.pincode : ''),
     sector_id: optionalUuid(body.companySectorId ?? body.company_sector_id ?? payload.sector_id ?? existing?.sector_id ?? (isPrimaryCompany ? profile.sector_id : null)),
     sector_name: pick(body.companySectorName, body.company_sector_name, payload.sector_name, payload.category, existing?.sector_name, isPrimaryCompany ? profile.sector_name : ''),
     industry_type: pick(body.companyIndustryType, body.company_industry_type, payload.sector_name, existing?.industry_type, isPrimaryCompany ? profile.industry_type : ''),
@@ -893,7 +906,7 @@ const applyJobFilters = (query, filters = {}) => {
 };
 
 const createHrJob = async (req, res) => {
-  let payload = buildJobPayload(req.body || {});
+  let payload = await buildJobPayload(req.body || {}, { userId: req.user.id });
   try {
     if (req.user.role === ROLES.HR) {
       const resolved = await ensureHrManagedCompanyForJob({
@@ -1075,7 +1088,7 @@ const updateHrJob = async (req, res) => {
   const existingJob = await assertJobOwnership(jobId, req.user, res);
   if (!existingJob) return;
 
-  let payload = buildJobPayload(req.body || {});
+  let payload = await buildJobPayload(req.body || {}, { userId: req.user.id });
   try {
     if (req.user.role === ROLES.HR) {
       const resolved = await ensureHrManagedCompanyForJob({

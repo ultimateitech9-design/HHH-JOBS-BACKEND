@@ -278,6 +278,7 @@ mountRoute('/hr', safeRequireRoute('./src/routes/hr', 'hr'));
 mountRoute('/interviews', safeRequireRoute('./src/routes/interviews', 'interviews'));
 mountRoute('/student', safeRequireRoute('./src/routes/student', 'student'));
 mountRoute('/jobs', safeRequireRoute('./src/routes/jobs', 'jobs'));
+mountRoute('/geo', safeRequireRoute('./src/routes/geo', 'geo'));
 mountRoute('/companies', safeRequireRoute('./src/routes/companies', 'companies'));
 mountRoute('/reports', safeRequireRoute('./src/routes/reports', 'reports'));
 mountRoute('/ats', safeRequireRoute('./src/routes/ats', 'ats'));
