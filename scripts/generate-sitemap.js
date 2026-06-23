@@ -1,11 +1,18 @@
 require('dotenv').config();
 
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const path = require('path');
 const mysql = require('mysql2/promise');
 
 const BASE_URL = String(process.env.SITEMAP_BASE_URL || 'https://hhh-jobs.com').replace(/\/+$/, '');
-const DEFAULT_OUTPUT_PATH = path.resolve(__dirname, '..', '..', 'HHH-JOBs-main', 'public', 'sitemap.xml');
+const FRONTEND_PUBLIC_PATH_CANDIDATES = [
+  path.resolve(__dirname, '..', '..', 'frontend-src', 'public'),
+  path.resolve(__dirname, '..', '..', 'HHH-JOBs-main', 'public')
+];
+const DEFAULT_FRONTEND_PUBLIC_PATH = FRONTEND_PUBLIC_PATH_CANDIDATES.find((candidate) => fsSync.existsSync(candidate))
+  || FRONTEND_PUBLIC_PATH_CANDIDATES[0];
+const DEFAULT_OUTPUT_PATH = path.resolve(DEFAULT_FRONTEND_PUBLIC_PATH, 'sitemap.xml');
 const OUTPUT_PATH = path.resolve(process.env.SITEMAP_OUTPUT_PATH || DEFAULT_OUTPUT_PATH);
 const MAX_ROWS = Math.max(1000, Math.min(Number(process.env.SITEMAP_MAX_DYNAMIC_ROWS || 60000), 200000));
 const TODAY = new Date().toISOString().slice(0, 10);

@@ -1,13 +1,20 @@
 require('dotenv').config();
 
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const path = require('path');
 
 const INDEXNOW_KEY = String(process.env.INDEXNOW_KEY || '9e643b2a4e3245fcaef18e7a2c5479d1').trim();
 const BASE_URL = String(process.env.SITEMAP_BASE_URL || 'https://hhh-jobs.com').replace(/\/+$/, '');
 const HOST = new URL(BASE_URL).host;
 const INDEXNOW_ENDPOINT = String(process.env.INDEXNOW_ENDPOINT || 'https://api.indexnow.org/indexnow');
-const DEFAULT_SITEMAP_PATH = path.resolve(__dirname, '..', '..', 'HHH-JOBs-main', 'public', 'sitemap.xml');
+const FRONTEND_PUBLIC_PATH_CANDIDATES = [
+  path.resolve(__dirname, '..', '..', 'frontend-src', 'public'),
+  path.resolve(__dirname, '..', '..', 'HHH-JOBs-main', 'public')
+];
+const DEFAULT_FRONTEND_PUBLIC_PATH = FRONTEND_PUBLIC_PATH_CANDIDATES.find((candidate) => fsSync.existsSync(candidate))
+  || FRONTEND_PUBLIC_PATH_CANDIDATES[0];
+const DEFAULT_SITEMAP_PATH = path.resolve(DEFAULT_FRONTEND_PUBLIC_PATH, 'sitemap.xml');
 const SITEMAP_PATH = path.resolve(process.env.SITEMAP_OUTPUT_PATH || process.env.INDEXNOW_SITEMAP_PATH || DEFAULT_SITEMAP_PATH);
 const KEY_LOCATION = String(process.env.INDEXNOW_KEY_LOCATION || `${BASE_URL}/${INDEXNOW_KEY}.txt`);
 const MAX_URLS = Math.max(1, Math.min(Number(process.env.INDEXNOW_LIMIT || 10000), 10000));
@@ -46,7 +53,7 @@ const chunk = (items = [], size = 500) => {
 };
 
 const ensureKeyFileExists = async () => {
-  const keyFilePath = path.resolve(__dirname, '..', '..', 'HHH-JOBs-main', 'public', `${INDEXNOW_KEY}.txt`);
+  const keyFilePath = path.resolve(process.env.INDEXNOW_KEY_FILE_PATH || path.resolve(DEFAULT_FRONTEND_PUBLIC_PATH, `${INDEXNOW_KEY}.txt`));
   const content = await fs.readFile(keyFilePath, 'utf8');
   if (String(content || '').trim() !== INDEXNOW_KEY) {
     throw new Error(`IndexNow key file exists but does not match INDEXNOW_KEY: ${keyFilePath}`);
