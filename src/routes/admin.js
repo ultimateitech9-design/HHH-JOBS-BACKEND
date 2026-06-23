@@ -86,6 +86,71 @@ const applyOptionalRange = (query, req, { defaultLimit = 0, maxLimit = 100 } = {
   return query.range(offset, offset + limit - 1);
 };
 
+const getPaginationFromRequest = (req, { defaultLimit = 25, maxLimit = 100 } = {}) => {
+  const page = Math.max(1, parseInt(req.query.page || '1', 10) || 1);
+  const limit = clamp(parseInt(req.query.limit || defaultLimit, 10) || defaultLimit, 1, maxLimit);
+  const offset = (page - 1) * limit;
+  return { page, limit, offset };
+};
+
+const getRowValue = (row = {}, keys = []) => {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value !== null && value !== undefined && value !== '') return value;
+  }
+  return '';
+};
+
+const enrichAdminUserRows = async (users = []) => {
+  const byId = new Map((users || []).map((user) => [user.id, { ...user }]));
+  const hrUserIds = users
+    .filter((user) => [ROLES.HR, 'company_admin'].includes(String(user.role || '').toLowerCase()))
+    .map((user) => user.id);
+  const campusUserIds = users
+    .filter((user) => String(user.role || '').toLowerCase() === ROLES.CAMPUS_CONNECT)
+    .map((user) => user.id);
+
+  const [hrProfiles, campusProfiles] = await Promise.all([
+    hrUserIds.length
+      ? Database.from('hr_profiles').select('user_id, contact_phone, contact_email').in('user_id', hrUserIds)
+      : Promise.resolve({ data: [] }),
+    campusUserIds.length
+      ? Database.from('colleges').select('user_id, contact_phone, contact_email').in('user_id', campusUserIds)
+      : Promise.resolve({ data: [] })
+  ]);
+
+  (hrProfiles.data || []).forEach((profile) => {
+    const user = byId.get(profile.user_id);
+    if (!user) return;
+    user.contactNumber = profile.contact_phone || user.mobile || '';
+    user.contactEmail = profile.contact_email || user.email || '';
+  });
+
+  (campusProfiles.data || []).forEach((profile) => {
+    const user = byId.get(profile.user_id);
+    if (!user) return;
+    user.contactNumber = profile.contact_phone || user.mobile || '';
+    user.contactEmail = profile.contact_email || user.email || '';
+  });
+
+  return users.map((user) => {
+    const enriched = byId.get(user.id) || user;
+    const contactNumber = getRowValue(enriched, ['contactNumber', 'contact_number', 'phone', 'mobile']);
+    const contactEmail = getRowValue(enriched, ['contactEmail', 'contact_email', 'email']);
+    const onboardingDate = getRowValue(enriched, ['onboardingDate', 'onboarding_date', 'created_at']);
+    return {
+      ...enriched,
+      phone: contactNumber,
+      contactNumber,
+      contact_number: contactNumber,
+      contactEmail,
+      contact_email: contactEmail,
+      onboardingDate,
+      onboarding_date: onboardingDate
+    };
+  });
+};
+
 const buildAdminAnalytics = async () => {
   const [
     userRoleCounts,
@@ -213,26 +278,31 @@ router.get('/users', asyncHandler(async (req, res) => {
   const status = String(req.query.status || '').toLowerCase();
   const search = String(req.query.search || '').trim();
   const approved = String(req.query.approved || '').toLowerCase();
+  const { page, limit, offset } = getPaginationFromRequest(req, { defaultLimit: 25, maxLimit: 100 });
 
   let query = Database
     .from('users')
-    .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at')
-    .order('created_at', { ascending: false });
+    .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at', { count: 'exact' })
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
 
   if (ADMIN_USER_FILTER_ROLES.has(role)) query = query.eq('role', role);
   if ([USER_STATUSES.ACTIVE, USER_STATUSES.BLOCKED, USER_STATUSES.BANNED].includes(status)) query = query.eq('status', status);
-  if (approved === 'true') query = query.eq('is_hr_approved', true);
-  if (approved === 'false') query = query.or('is_hr_approved.eq.false,is_hr_approved.is.null');
-  if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
-  query = applyOptionalRange(query, req, { maxLimit: 100 });
+  if (approved === 'true') query = query.eq('role', ROLES.HR).eq('is_hr_approved', true);
+  if (approved === 'false') query = query.eq('role', ROLES.HR).or('is_hr_approved.eq.false,is_hr_approved.is.null');
+  if (search) {
+    const safeSearch = search.replace(/[,().]/g, '');
+    query = query.or(`name.ilike.%${safeSearch}%,email.ilike.%${safeSearch}%,mobile.ilike.%${safeSearch}%,role.ilike.%${safeSearch}%,status.ilike.%${safeSearch}%`);
+  }
 
-  const { data, error } = await query;
+  const { data, error, count } = await query;
   if (error) {
     sendDatabaseError(res, error);
     return;
   }
 
-  res.send({ status: true, users: data || [] });
+  const users = await enrichAdminUserRows(data || []);
+  res.send({ status: true, users, total: count || 0, page, limit });
 }));
 
 router.patch('/users/:id/status', asyncHandler(async (req, res) => {
@@ -248,7 +318,7 @@ router.patch('/users/:id/status', asyncHandler(async (req, res) => {
     .from('users')
     .update({ status: newStatus })
     .eq('id', userId)
-    .select('id, name, email, role, status, is_hr_approved')
+    .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at')
     .maybeSingle();
 
   if (error) {
@@ -269,7 +339,8 @@ router.patch('/users/:id/status', asyncHandler(async (req, res) => {
     ipAddress: getClientIp(req)
   });
 
-  res.send({ status: true, user: data });
+  const [user] = await enrichAdminUserRows([data]);
+  res.send({ status: true, user: user || data });
 }));
 
 router.patch('/hr/:id/approve', asyncHandler(async (req, res) => {
@@ -295,7 +366,7 @@ router.patch('/hr/:id/approve', asyncHandler(async (req, res) => {
     .from('users')
     .update({ is_hr_approved: approved, status: USER_STATUSES.ACTIVE })
     .eq('id', userId)
-    .select('id, name, email, role, status, is_hr_approved')
+    .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at')
     .single();
 
   if (error) {
@@ -312,7 +383,8 @@ router.patch('/hr/:id/approve', asyncHandler(async (req, res) => {
     ipAddress: getClientIp(req)
   });
 
-  res.send({ status: true, user: data });
+  const [enrichedUser] = await enrichAdminUserRows([data]);
+  res.send({ status: true, user: enrichedUser || data });
 }));
 
 // =============================================
