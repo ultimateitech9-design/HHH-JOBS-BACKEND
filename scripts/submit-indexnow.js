@@ -1,8 +1,8 @@
-require('dotenv').config();
-
 const fs = require('fs/promises');
 const fsSync = require('fs');
 const path = require('path');
+
+require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 
 const INDEXNOW_KEY = String(process.env.INDEXNOW_KEY || '9e643b2a4e3245fcaef18e7a2c5479d1').trim();
 const BASE_URL = String(process.env.SITEMAP_BASE_URL || 'https://hhh-jobs.com').replace(/\/+$/, '');

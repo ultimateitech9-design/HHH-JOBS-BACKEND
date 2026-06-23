@@ -209,6 +209,7 @@ app.get('/public/settings', asyncHandler(async (_req, res) => {
 }));
 
 mountRoute('/assets', safeRequireRoute('./src/routes/assets', 'assets'));
+mountRoute('/', safeRequireRoute('./src/routes/sitemap', 'sitemap'));
 
 if (shouldUseUpstreamProxy) {
   app.use('/', createProxyMiddleware({
