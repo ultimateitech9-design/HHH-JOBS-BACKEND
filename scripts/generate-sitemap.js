@@ -43,6 +43,49 @@ const STATIC_ROUTES = [
   '/summons-notices'
 ];
 
+const HIGH_INTENT_JOB_QUERIES = [
+  { location: 'Delhi' },
+  { location: 'Noida' },
+  { location: 'Gurugram' },
+  { location: 'Mumbai' },
+  { location: 'Pune' },
+  { location: 'Bengaluru' },
+  { location: 'Hyderabad' },
+  { location: 'Chennai' },
+  { location: 'Kolkata' },
+  { location: 'Patna' },
+  { location: 'Lucknow' },
+  { location: 'Jaipur' },
+  { category: 'Fresher Jobs' },
+  { category: 'Entry Level Jobs' },
+  { category: 'Work From Home Jobs' },
+  { category: 'Part Time Jobs' },
+  { category: 'Full Time Jobs' },
+  { sector: 'Information Technology' },
+  { sector: 'Sales' },
+  { sector: 'Marketing' },
+  { sector: 'Human Resources' },
+  { sector: 'Accounts and Finance' },
+  { sector: 'Healthcare' },
+  { sector: 'Education' },
+  { sector: 'Manufacturing' },
+  { sector: 'Retail' },
+  { sector: 'Logistics' }
+];
+
+const HIGH_INTENT_GOVT_JOB_QUERIES = [
+  { state: 'Delhi' },
+  { state: 'Uttar Pradesh' },
+  { state: 'Bihar' },
+  { state: 'Rajasthan' },
+  { state: 'Maharashtra' },
+  { state: 'Karnataka' },
+  { state: 'Tamil Nadu' },
+  { state: 'Telangana' },
+  { state: 'West Bengal' },
+  { state: 'Madhya Pradesh' }
+];
+
 const clampText = (value, max = 180) => String(value || '').trim().slice(0, max);
 
 const xmlEscape = (value) => String(value || '')
@@ -205,6 +248,22 @@ const addStaticUrls = (urls, seen) => {
     addUrl(urls, seen, route, {
       changefreq: route === '/' ? 'daily' : 'weekly',
       priority: route === '/' ? '1.0' : '0.8'
+    });
+  });
+
+  HIGH_INTENT_JOB_QUERIES.forEach((query) => {
+    addUrl(urls, seen, '/jobs', {
+      query,
+      changefreq: 'daily',
+      priority: '0.74'
+    });
+  });
+
+  HIGH_INTENT_GOVT_JOB_QUERIES.forEach((query) => {
+    addUrl(urls, seen, '/govt-jobs', {
+      query,
+      changefreq: 'weekly',
+      priority: '0.7'
     });
   });
 };
