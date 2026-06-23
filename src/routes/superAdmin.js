@@ -68,7 +68,51 @@ const enrichManagedUsers = async (users = []) => {
     });
   }));
 
-  return users.map((user) => byId.get(user.id) || user);
+  const hrUserIds = users
+    .filter((user) => [ROLES.HR, 'company_admin'].includes(String(user.role || '').toLowerCase()))
+    .map((user) => user.id);
+  const campusUserIds = users
+    .filter((user) => String(user.role || '').toLowerCase() === ROLES.CAMPUS_CONNECT)
+    .map((user) => user.id);
+
+  const [hrProfiles, campusProfiles] = await Promise.all([
+    hrUserIds.length
+      ? Database.from('hr_profiles').select('user_id, contact_phone, contact_email').in('user_id', hrUserIds)
+      : Promise.resolve({ data: [] }),
+    campusUserIds.length
+      ? Database.from('colleges').select('user_id, contact_phone, contact_email').in('user_id', campusUserIds)
+      : Promise.resolve({ data: [] })
+  ]);
+
+  (hrProfiles.data || []).forEach((profile) => {
+    const user = byId.get(profile.user_id);
+    if (!user) return;
+    user.contactNumber = profile.contact_phone || user.mobile || '';
+    user.contactEmail = profile.contact_email || user.email || '';
+  });
+
+  (campusProfiles.data || []).forEach((profile) => {
+    const user = byId.get(profile.user_id);
+    if (!user) return;
+    user.contactNumber = profile.contact_phone || user.mobile || '';
+    user.contactEmail = profile.contact_email || user.email || '';
+  });
+
+  return users.map((user) => {
+    const enriched = byId.get(user.id) || user;
+    const contactNumber = enriched.contactNumber || enriched.contact_number || enriched.phone || enriched.mobile || '';
+    const contactEmail = enriched.contactEmail || enriched.contact_email || enriched.email || '';
+    return {
+      ...enriched,
+      phone: contactNumber,
+      contactNumber,
+      contact_number: contactNumber,
+      contactEmail,
+      contact_email: contactEmail,
+      onboardingDate: enriched.onboardingDate || enriched.onboarding_date || enriched.created_at || null,
+      onboarding_date: enriched.onboarding_date || enriched.onboardingDate || enriched.created_at || null
+    };
+  });
 };
 
 const isLiveCampusDriveStatus = (value = '') => !['completed', 'cancelled', 'closed', 'archived'].includes(String(value || '').toLowerCase());
@@ -545,6 +589,7 @@ const buildProfileContext = ({ user = {}, hrProfile = null, studentProfile = nul
       { label: 'Branch', value: getRowValue(profile, ['branch']) },
       { label: 'Batch Year', value: getRowValue(profile, ['batch_year']) },
       { label: 'Experience', value: getRowValue(profile, ['experience', 'experience_level']) },
+      { label: 'Contact Phone', value: getRowValue(user, ['mobile', 'phone']) },
       { label: 'Skills', value: getRowValue(profile, ['skills']) },
       { label: 'Resume URL', value: getRowValue(profile, ['resume_url']) }
     ]
@@ -932,6 +977,8 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         sp.location AS student_location,
         sp.identity_verified,
         c.name AS campus_name,
+        c.contact_email AS campus_contact_email,
+        c.contact_phone AS campus_contact_phone,
         c.city AS campus_city,
         c.state AS campus_state,
         company_counts.managed_companies,
@@ -1061,6 +1108,8 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         sp.location AS student_location,
         sp.identity_verified,
         c.name AS campus_name,
+        c.contact_email AS campus_contact_email,
+        c.contact_phone AS campus_contact_phone,
         c.city AS campus_city,
         c.state AS campus_state,
         company_counts.managed_companies,
@@ -1201,6 +1250,8 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         sp.location AS student_location,
         sp.identity_verified,
         c.name AS campus_name,
+        c.contact_email AS campus_contact_email,
+        c.contact_phone AS campus_contact_phone,
         c.city AS campus_city,
         c.state AS campus_state,
         company_counts.managed_companies,
@@ -1349,12 +1400,25 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       || row.student_location
       || [row.campus_city, row.campus_state].filter(Boolean).join(', ')
       || '-';
+    const contactNumber = row.hr_contact_phone
+      || row.campus_contact_phone
+      || row.mobile
+      || '-';
+    const contactEmail = row.hr_contact_email
+      || row.campus_contact_email
+      || row.email
+      || '-';
 
     return {
       id: row.id,
       name: row.name || '-',
       email: row.email || '-',
-      phone: row.hr_contact_phone || row.mobile || '-',
+      phone: contactNumber,
+      mobile: row.mobile || '',
+      contactNumber,
+      contact_number: contactNumber,
+      contactEmail,
+      contact_email: contactEmail,
       role: normalizedRole || 'user',
       status: row.status || 'active',
       contextType,
@@ -1380,6 +1444,8 @@ router.get('/command-search', asyncHandler(async (req, res) => {
         designation: row.employee_designation || '-',
         accessScope: row.employee_access_scope || '-'
       } : null,
+      onboardingDate: row.created_at || null,
+      onboarding_date: row.created_at || null,
       createdAt: row.created_at || null,
       lastActiveAt: row.last_login_at || null,
       profile: {
@@ -1508,6 +1574,14 @@ router.get('/users/:id/support-context', asyncHandler(async (req, res) => {
   const studentProfile = firstRow(studentProfileRows);
   const campusProfile = firstRow(campusProfileRows);
   const profile = buildProfileContext({ user, hrProfile, studentProfile, campusProfile });
+  const supportContactNumber = getRowValue(hrProfile || {}, ['contact_phone', 'phone', 'mobile'])
+    || getRowValue(campusProfile || {}, ['contact_phone', 'phone', 'mobile'])
+    || getRowValue(user, ['mobile', 'phone'])
+    || '-';
+  const supportContactEmail = getRowValue(hrProfile || {}, ['contact_email', 'hr_email', 'email'])
+    || getRowValue(campusProfile || {}, ['contact_email', 'email'])
+    || user.email
+    || '-';
   const paymentRows = [
     ...(recentRolePurchases || []).map((row) => ({ ...row, source: 'role_plan_purchase' })),
     ...(recentJobPlanPurchases || []).map((row) => ({ ...row, source: 'job_plan_purchase' })),
@@ -1570,9 +1644,16 @@ router.get('/users/:id/support-context', asyncHandler(async (req, res) => {
         id: user.id,
         name: user.name || '-',
         email: user.email || '-',
-        phone: user.mobile || '-',
+        phone: supportContactNumber,
+        mobile: user.mobile || '',
+        contactNumber: supportContactNumber,
+        contact_number: supportContactNumber,
+        contactEmail: supportContactEmail,
+        contact_email: supportContactEmail,
         role,
         status: user.status || USER_STATUSES.ACTIVE,
+        onboardingDate: user.created_at || null,
+        onboarding_date: user.created_at || null,
         createdAt: user.created_at || null,
         updatedAt: null,
         lastActiveAt: user.last_login_at || null
