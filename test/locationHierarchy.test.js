@@ -37,6 +37,7 @@ test('uses postal spelling for Chattarpur Delhi locality aliases', () => {
 test('infers South West Delhi district for known Delhi localities without pincode', () => {
   const result = normalizeIndianLocationHierarchy({
     stateName: 'Delhi',
+    districtName: 'GF',
     cityName: 'Gitorni',
     locationText: 'Gitorni, Delhi'
   });

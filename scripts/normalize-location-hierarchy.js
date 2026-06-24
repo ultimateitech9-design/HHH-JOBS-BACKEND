@@ -417,13 +417,25 @@ const deactivateLocalityCities = async (db, hierarchy, ids, columnsByTable, dryR
 };
 
 const normalizeMasterPincode = async (db, hierarchy, ids, columnsByTable, dryRun, summary) => {
-  await executeUpdate(db, 'master_pincodes', {
+  const payload = {
+    pincode: hierarchy.pincode,
     state_id: ids.stateId,
     district_id: ids.districtId,
     city_id: ids.cityId,
     locality_name: hierarchy.localityList,
     is_active: 1
-  }, "REGEXP_REPLACE(COALESCE(`pincode`, ''), '[^0-9]', '') = ?", [hierarchy.pincode], columnsByTable, dryRun, summary);
+  };
+  const [rows] = await db.execute(
+    "SELECT id FROM master_pincodes WHERE REGEXP_REPLACE(COALESCE(`pincode`, ''), '[^0-9]', '') = ?",
+    [hierarchy.pincode]
+  );
+
+  if (!rows.length) {
+    await executeInsert(db, 'master_pincodes', payload, columnsByTable, dryRun, summary);
+    return;
+  }
+
+  await executeUpdate(db, 'master_pincodes', payload, "REGEXP_REPLACE(COALESCE(`pincode`, ''), '[^0-9]', '') = ?", [hierarchy.pincode], columnsByTable, dryRun, summary);
 };
 
 const collectCandidatePincodes = async (db, columnsByTable, options) => {

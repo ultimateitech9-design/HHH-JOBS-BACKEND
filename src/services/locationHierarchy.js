@@ -160,7 +160,7 @@ const normalizeIndianLocationHierarchy = ({
 
   return {
     stateName: 'Delhi',
-    districtName: districtFromDistrict || (cityIsDistrict ? districtFromCity : cleanDistrictName) || localityDistrictName || null,
+    districtName: districtFromDistrict || (cityIsDistrict ? districtFromCity : '') || localityDistrictName || cleanDistrictName || null,
     cityName: 'Delhi',
     localityName: localityFromInputs || (cityIsLocality ? detectDelhiLocalityName(cleanCityName) : cleanLocalityName) || null,
     pincode: cleanPincode || null
