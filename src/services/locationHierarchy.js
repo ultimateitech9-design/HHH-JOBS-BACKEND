@@ -5,6 +5,81 @@ const normalizeCompactKey = (value = '') => normalizeKey(value).replace(/[^a-z0-
 
 const normalizePincode = (value = '') => cleanText(value).replace(/\D/g, '').slice(0, 6);
 
+const INDIA_STATES_AND_UNION_TERRITORIES = Object.freeze([
+  'Andaman and Nicobar Islands',
+  'Andhra Pradesh',
+  'Arunachal Pradesh',
+  'Assam',
+  'Bihar',
+  'Chandigarh',
+  'Chhattisgarh',
+  'Dadra and Nagar Haveli and Daman and Diu',
+  'Delhi',
+  'Goa',
+  'Gujarat',
+  'Haryana',
+  'Himachal Pradesh',
+  'Jammu and Kashmir',
+  'Jharkhand',
+  'Karnataka',
+  'Kerala',
+  'Ladakh',
+  'Lakshadweep',
+  'Madhya Pradesh',
+  'Maharashtra',
+  'Manipur',
+  'Meghalaya',
+  'Mizoram',
+  'Nagaland',
+  'Odisha',
+  'Puducherry',
+  'Punjab',
+  'Rajasthan',
+  'Sikkim',
+  'Tamil Nadu',
+  'Telangana',
+  'Tripura',
+  'Uttar Pradesh',
+  'Uttarakhand',
+  'West Bengal'
+]);
+
+const INDIA_REGION_BY_COMPACT_KEY = new Map([
+  ...INDIA_STATES_AND_UNION_TERRITORIES.map((name) => [normalizeCompactKey(name), name]),
+  ['andaman', 'Andaman and Nicobar Islands'],
+  ['andamanandnicobar', 'Andaman and Nicobar Islands'],
+  ['andamanandnicobarisland', 'Andaman and Nicobar Islands'],
+  ['ap', 'Andhra Pradesh'],
+  ['ar', 'Arunachal Pradesh'],
+  ['ct', 'Chhattisgarh'],
+  ['cg', 'Chhattisgarh'],
+  ['dadraandnagarhaveli', 'Dadra and Nagar Haveli and Daman and Diu'],
+  ['damananddiu', 'Dadra and Nagar Haveli and Daman and Diu'],
+  ['dadraandnagarhavelianddamananddiu', 'Dadra and Nagar Haveli and Daman and Diu'],
+  ['dnhanddd', 'Dadra and Nagar Haveli and Daman and Diu'],
+  ['nctdelhi', 'Delhi'],
+  ['nctofdelhi', 'Delhi'],
+  ['nationalcapitalterritoryofdelhi', 'Delhi'],
+  ['jammuandkashmir', 'Jammu and Kashmir'],
+  ['jammukashmir', 'Jammu and Kashmir'],
+  ['jandk', 'Jammu and Kashmir'],
+  ['jk', 'Jammu and Kashmir'],
+  ['orissa', 'Odisha'],
+  ['odisha', 'Odisha'],
+  ['pondicherry', 'Puducherry'],
+  ['puducherry', 'Puducherry'],
+  ['tamilnadu', 'Tamil Nadu'],
+  ['telengana', 'Telangana'],
+  ['uttaranchal', 'Uttarakhand'],
+  ['uttrakhand', 'Uttarakhand']
+]);
+
+const canonicalizeIndianRegionName = (value = '') => (
+  INDIA_REGION_BY_COMPACT_KEY.get(normalizeCompactKey(value)) || ''
+);
+
+const isValidIndianRegionName = (value = '') => Boolean(canonicalizeIndianRegionName(value));
+
 const ADDRESS_NOISE_COMPACT_KEYS = new Set([
   'b',
   'bsmt',
@@ -202,7 +277,7 @@ const normalizeIndianLocationHierarchy = ({
   pincode = '',
   locationText = ''
 } = {}) => {
-  const cleanStateName = cleanText(stateName);
+  const cleanStateName = canonicalizeIndianRegionName(stateName) || cleanText(stateName);
   const cleanDistrictName = cleanText(districtName);
   const cleanCityName = cleanText(cityName);
   const cleanLocalityName = cleanText(localityName);
@@ -262,9 +337,11 @@ module.exports = {
   DELHI_DISTRICT_BY_COMPACT_KEY,
   DELHI_LOCALITY_BY_COMPACT_KEY,
   DELHI_LOCALITY_DISTRICT_BY_COMPACT_KEY,
+  INDIA_STATES_AND_UNION_TERRITORIES,
   buildHierarchyLabel,
   canonicalizeDelhiDistrictName,
   canonicalizeDelhiLocalityName,
+  canonicalizeIndianRegionName,
   cleanText,
   detectDelhiLocalityName,
   getDelhiDistrictForLocalityName,
@@ -273,6 +350,7 @@ module.exports = {
   isDelhiPincode,
   isDelhiStateName,
   isValidAdministrativeDistrictName,
+  isValidIndianRegionName,
   normalizeIndianLocationHierarchy,
   normalizeKey,
   normalizePincode,

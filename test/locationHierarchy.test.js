@@ -2,11 +2,23 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  INDIA_STATES_AND_UNION_TERRITORIES,
   buildHierarchyLabel,
+  canonicalizeIndianRegionName,
   isAddressNoiseLocationName,
   isValidAdministrativeDistrictName,
+  isValidIndianRegionName,
   normalizeIndianLocationHierarchy
 } = require('../src/services/locationHierarchy');
+
+test('keeps India state and union territory catalog at official 36 regions', () => {
+  assert.equal(INDIA_STATES_AND_UNION_TERRITORIES.length, 36);
+  assert.equal(canonicalizeIndianRegionName('Orissa'), 'Odisha');
+  assert.equal(canonicalizeIndianRegionName('Pondicherry'), 'Puducherry');
+  assert.equal(canonicalizeIndianRegionName('NCT of Delhi'), 'Delhi');
+  assert.equal(canonicalizeIndianRegionName('Daman and Diu'), 'Dadra and Nagar Haveli and Daman and Diu');
+  assert.equal(isValidIndianRegionName('Basement'), false);
+});
 
 test('normalizes Delhi locality under city and full district name', () => {
   const result = normalizeIndianLocationHierarchy({

@@ -13,8 +13,11 @@ const { applyToJob } = require('../services/applications');
 const { buildCompanyBrandIndex, resolveCompanyBrand } = require('../services/companyBranding');
 const { getPool } = require('../mysqlDatabaseAdapter');
 const {
+  INDIA_STATES_AND_UNION_TERRITORIES,
+  canonicalizeIndianRegionName,
   isAddressNoiseLocationName,
   isValidAdministrativeDistrictName,
+  isValidIndianRegionName,
   sanitizeAdministrativeDistrictName
 } = require('../services/locationHierarchy');
 const {
@@ -593,7 +596,7 @@ const getLocationTree = async () => {
   const cityNameToId = new Map();
 
   const ensureState = ({ id, name, code } = {}) => {
-    const label = cleanFacetName(name);
+    const label = cleanFacetName(canonicalizeIndianRegionName(name));
     if (!label) return null;
     const stateKey = normalizeLocationTreeKey(label);
     const resolvedId = String(stateNameToId.get(stateKey) || (id && states.has(String(id)) ? id : '') || id || makeSyntheticLocationId('state', label));
@@ -727,6 +730,7 @@ const getLocationTree = async () => {
   };
 
   (statesResult[0] || []).forEach((row) => ensureState(row));
+  INDIA_STATES_AND_UNION_TERRITORIES.forEach((name) => ensureState({ name }));
   (districtsResult[0] || []).forEach((row) => ensureDistrict({
     id: row.id,
     name: row.name,
@@ -874,7 +878,7 @@ const getLocationTree = async () => {
       return acc;
     }, {}),
     totals: {
-      states: stateItems.length,
+      states: INDIA_STATES_AND_UNION_TERRITORIES.length,
       districts: districtItems.length,
       cities: cityItems.length,
       localities: localityItems.length,
@@ -1035,7 +1039,17 @@ router.get('/meta/states', automationProtection, publicJobsReadLimiter, setCatal
     return;
   }
 
-  res.send({ status: true, states: data || [] });
+  const statesByName = new Map();
+  for (const row of data || []) {
+    if (!isValidIndianRegionName(row.name)) continue;
+    const name = canonicalizeIndianRegionName(row.name);
+    if (!statesByName.has(name)) statesByName.set(name, { ...row, name });
+  }
+
+  res.send({
+    status: true,
+    states: [...statesByName.values()].sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')))
+  });
 }));
 
 router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {

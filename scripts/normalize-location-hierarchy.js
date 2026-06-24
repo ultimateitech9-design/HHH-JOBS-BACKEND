@@ -5,14 +5,17 @@ const path = require('path');
 const mysql = require('mysql2/promise');
 const config = require('../src/config');
 const {
+  INDIA_STATES_AND_UNION_TERRITORIES,
   buildHierarchyLabel,
   canonicalizeDelhiDistrictName,
+  canonicalizeIndianRegionName,
   cleanText,
   detectDelhiLocalityName,
   isAddressNoiseLocationName,
   isDelhiPincode,
   isDelhiStateName,
   isValidAdministrativeDistrictName,
+  isValidIndianRegionName,
   normalizeIndianLocationHierarchy,
   normalizeKey,
   normalizePincode,
@@ -290,10 +293,35 @@ const ensureState = async (db, hierarchy, columnsByTable, dryRun, summary) => {
 
 const updateReferenceIds = async (db, fromId, toId, tableColumn, payload, columnsByTable, dryRun, summary) => {
   if (!fromId || !toId || fromId === toId) return;
-  for (const table of ['master_locations', 'master_pincodes', 'jobs', 'companies', 'hr_profiles', 'student_profiles', 'colleges']) {
+  for (const table of ['master_districts', 'master_locations', 'master_pincodes', 'jobs', 'companies', 'hr_profiles', 'student_profiles', 'colleges']) {
     const columns = columnsByTable[table] || new Set();
     if (!columns.has(tableColumn)) continue;
     await executeUpdate(db, table, { [tableColumn]: toId, ...payload }, `${quoteId(tableColumn)} = ?`, [fromId], columnsByTable, dryRun, summary);
+  }
+};
+
+const seedCanonicalIndiaStates = async (db, columnsByTable, dryRun, summary) => {
+  const stateColumns = columnsByTable.master_states || new Set();
+  if (!stateColumns.has('name')) return;
+
+  const [rows] = await db.execute('SELECT id, name FROM master_states');
+  const stateByCanonicalName = new Map();
+  for (const row of rows) {
+    const canonicalName = canonicalizeIndianRegionName(row.name);
+    if (canonicalName && !stateByCanonicalName.has(canonicalName)) {
+      stateByCanonicalName.set(canonicalName, row);
+    }
+  }
+
+  for (const name of INDIA_STATES_AND_UNION_TERRITORIES) {
+    const existing = stateByCanonicalName.get(name);
+    if (existing) {
+      await executeUpdate(db, 'master_states', { name, is_active: 1 }, 'id = ?', [existing.id], columnsByTable, dryRun, summary);
+      continue;
+    }
+
+    await executeInsert(db, 'master_states', { name, is_active: 1 }, columnsByTable, dryRun, summary);
+    summary.seededStateRows += 1;
   }
 };
 
@@ -627,6 +655,63 @@ const cleanupInvalidMasterDistricts = async (db, columnsByTable, dryRun, summary
   }
 };
 
+const cleanupInvalidMasterStates = async (db, columnsByTable, dryRun, summary) => {
+  const stateColumns = columnsByTable.master_states || new Set();
+  if (!stateColumns.has('id') || !stateColumns.has('name') || !stateColumns.has('is_active')) return;
+
+  const [rows] = await db.execute(`
+    SELECT id, name
+    FROM master_states
+    WHERE is_active = 1
+      AND NULLIF(TRIM(name), '') IS NOT NULL
+    ORDER BY name ASC
+  `);
+
+  const canonicalIdByName = new Map();
+  for (const row of rows) {
+    const canonicalName = canonicalizeIndianRegionName(row.name);
+    if (!canonicalName) continue;
+    const existingId = canonicalIdByName.get(canonicalName);
+    if (!existingId || normalizeKey(row.name) === normalizeKey(canonicalName)) {
+      canonicalIdByName.set(canonicalName, row.id);
+    }
+  }
+
+  for (const row of rows) {
+    const canonicalName = canonicalizeIndianRegionName(row.name);
+    const isValid = isValidIndianRegionName(row.name);
+
+    if (isValid && canonicalName) {
+      const canonicalId = canonicalIdByName.get(canonicalName) || row.id;
+      if (canonicalId && canonicalId !== row.id) {
+        await updateReferenceIds(db, row.id, canonicalId, 'state_id', {
+          state_name: canonicalName
+        }, columnsByTable, dryRun, summary);
+        await executeUpdate(db, 'master_states', { is_active: 0 }, 'id = ?', [row.id], columnsByTable, dryRun, summary);
+        summary.invalidStateRows += 1;
+        continue;
+      }
+
+      if (normalizeKey(row.name) !== normalizeKey(canonicalName)) {
+        await executeUpdate(db, 'master_states', { name: canonicalName, is_active: 1 }, 'id = ?', [row.id], columnsByTable, dryRun, summary);
+        summary.canonicalizedStateRows += 1;
+      }
+      continue;
+    }
+
+    for (const table of ['master_districts', 'master_locations', 'master_pincodes', 'jobs', 'companies', 'hr_profiles', 'student_profiles', 'colleges']) {
+      const columns = columnsByTable[table] || new Set();
+      if (!columns.has('state_id')) continue;
+      const payload = { state_id: null };
+      if (columns.has('state_name')) payload.state_name = null;
+      await executeUpdate(db, table, payload, 'state_id = ?', [row.id], columnsByTable, dryRun, summary);
+    }
+
+    await executeUpdate(db, 'master_states', { is_active: 0 }, 'id = ?', [row.id], columnsByTable, dryRun, summary);
+    summary.invalidStateRows += 1;
+  }
+};
+
 const main = async () => {
   const options = parseArgs();
   const dryRun = !options.apply;
@@ -644,6 +729,9 @@ const main = async () => {
     plannedUpdates: 0,
     heuristicRows: 0,
     textPincodeCandidates: 0,
+    seededStateRows: 0,
+    invalidStateRows: 0,
+    canonicalizedStateRows: 0,
     invalidDistrictRows: 0,
     canonicalizedDistrictRows: 0
   };
@@ -652,6 +740,7 @@ const main = async () => {
   const cache = await readCache();
   try {
     const columnsByTable = await ensureLocationSchema(db, dryRun, summary);
+    await seedCanonicalIndiaStates(db, columnsByTable, dryRun, summary);
     const pincodes = await collectCandidatePincodes(db, columnsByTable, options, summary);
 
     for (const pincode of pincodes) {
@@ -681,6 +770,7 @@ const main = async () => {
     }
 
     await normalizeHeuristicDelhiRows(db, columnsByTable, dryRun, summary);
+    await cleanupInvalidMasterStates(db, columnsByTable, dryRun, summary);
     await cleanupInvalidMasterDistricts(db, columnsByTable, dryRun, summary);
     if (summary.apiCalls > 0) await writeCache(cache);
 
