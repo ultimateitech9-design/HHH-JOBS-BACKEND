@@ -465,6 +465,409 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
   };
 };
 
+const normalizeLocationTreeKey = (value = '') => cleanFacetName(value).toLowerCase();
+
+const makeSyntheticLocationId = (prefix, ...parts) => (
+  `${prefix}:${parts.map((part) => normalizeLocationTreeKey(part)).filter(Boolean).join(':')}`
+);
+
+const addUniqueId = (targetSet, id) => {
+  if (id) targetSet.add(String(id));
+};
+
+const splitLocalityNames = (value = '') => cleanFacetName(value)
+  .split(',')
+  .map((item) => cleanFacetName(item))
+  .filter(Boolean)
+  .filter((item, index, list) => list.findIndex((entry) => normalizeLocationTreeKey(entry) === normalizeLocationTreeKey(item)) === index);
+
+const getLocationTree = async () => {
+  const db = getPool();
+  const [
+    statesResult,
+    districtsResult,
+    citiesResult,
+    pincodeResult,
+    jobCountsResult
+  ] = await Promise.all([
+    db.execute(`
+      SELECT id, name, code
+      FROM master_states
+      WHERE is_active = 1
+        AND NULLIF(TRIM(name), '') IS NOT NULL
+      ORDER BY name ASC
+      LIMIT 200
+    `),
+    db.execute(`
+      SELECT
+        md.id,
+        md.state_id,
+        md.name,
+        ms.name AS state_name
+      FROM master_districts md
+      LEFT JOIN master_states ms ON ms.id = md.state_id
+      WHERE md.is_active = 1
+        AND NULLIF(TRIM(md.name), '') IS NOT NULL
+      ORDER BY ms.name ASC, md.name ASC
+      LIMIT 3000
+    `),
+    db.execute(`
+      SELECT
+        ml.id,
+        ml.state_id,
+        ml.district_id,
+        ml.name,
+        ml.pincode,
+        ms.name AS state_name,
+        md.name AS district_name
+      FROM master_locations ml
+      LEFT JOIN master_states ms ON ms.id = ml.state_id
+      LEFT JOIN master_districts md ON md.id = ml.district_id
+      WHERE ml.is_active = 1
+        AND NULLIF(TRIM(ml.name), '') IS NOT NULL
+      ORDER BY ms.name ASC, md.name ASC, ml.name ASC
+      LIMIT 8000
+    `),
+    db.execute(`
+      SELECT
+        mp.id,
+        mp.state_id,
+        mp.district_id,
+        mp.city_id,
+        mp.pincode,
+        mp.locality_name,
+        ms.name AS state_name,
+        md.name AS district_name,
+        ml.name AS city_name
+      FROM master_pincodes mp
+      LEFT JOIN master_states ms ON ms.id = mp.state_id
+      LEFT JOIN master_districts md ON md.id = mp.district_id
+      LEFT JOIN master_locations ml ON ml.id = mp.city_id
+      WHERE mp.is_active = 1
+        AND (
+          NULLIF(TRIM(mp.pincode), '') IS NOT NULL
+          OR NULLIF(TRIM(mp.locality_name), '') IS NOT NULL
+        )
+      ORDER BY ms.name ASC, md.name ASC, ml.name ASC, mp.pincode ASC
+      LIMIT 12000
+    `),
+    db.execute(`
+      SELECT
+        state_id,
+        district_id,
+        city_id,
+        state_name,
+        district_name,
+        city_name,
+        locality_name,
+        pincode,
+        COUNT(*) AS count
+      FROM jobs
+      ${OPEN_JOBS_WHERE}
+      GROUP BY
+        state_id,
+        district_id,
+        city_id,
+        state_name,
+        district_name,
+        city_name,
+        locality_name,
+        pincode
+      LIMIT 8000
+    `)
+  ]);
+
+  const states = new Map();
+  const districts = new Map();
+  const cities = new Map();
+  const localities = new Map();
+  const pincodeKeys = new Set();
+
+  const stateNameToId = new Map();
+  const districtNameToId = new Map();
+  const cityNameToId = new Map();
+
+  const ensureState = ({ id, name, code } = {}) => {
+    const label = cleanFacetName(name);
+    if (!label) return null;
+    const resolvedId = String(id || makeSyntheticLocationId('state', label));
+    const existing = states.get(resolvedId) || {
+      id: resolvedId,
+      name: label,
+      code: cleanFacetName(code),
+      type: 'state',
+      districtIds: new Set(),
+      cityIds: new Set(),
+      localityIds: new Set(),
+      pincodeKeys: new Set(),
+      jobCount: 0
+    };
+    existing.name = existing.name || label;
+    if (code && !existing.code) existing.code = cleanFacetName(code);
+    states.set(resolvedId, existing);
+    stateNameToId.set(normalizeLocationTreeKey(label), resolvedId);
+    return existing;
+  };
+
+  const ensureDistrict = ({ id, name, stateId, stateName } = {}) => {
+    const label = cleanFacetName(name);
+    if (!label) return null;
+    const parentState = states.get(stateId) || ensureState({ id: stateId, name: stateName });
+    const resolvedStateId = parentState?.id || '';
+    const resolvedId = String(id || makeSyntheticLocationId('district', resolvedStateId, label));
+    const existing = districts.get(resolvedId) || {
+      id: resolvedId,
+      name: label,
+      type: 'district',
+      stateId: resolvedStateId,
+      stateName: parentState?.name || cleanFacetName(stateName),
+      cityIds: new Set(),
+      localityIds: new Set(),
+      pincodeKeys: new Set(),
+      jobCount: 0
+    };
+    if (!existing.stateId) existing.stateId = resolvedStateId;
+    if (!existing.stateName) existing.stateName = parentState?.name || cleanFacetName(stateName);
+    districts.set(resolvedId, existing);
+    if (parentState) addUniqueId(parentState.districtIds, resolvedId);
+    districtNameToId.set(`${resolvedStateId}|${normalizeLocationTreeKey(label)}`, resolvedId);
+    districtNameToId.set(normalizeLocationTreeKey(label), resolvedId);
+    return existing;
+  };
+
+  const ensureCity = ({ id, name, stateId, stateName, districtId, districtName, pincode } = {}) => {
+    const label = cleanFacetName(name);
+    if (!label) return null;
+    const parentDistrict = districts.get(districtId) || ensureDistrict({ id: districtId, name: districtName, stateId, stateName });
+    const parentState = states.get(stateId) || states.get(parentDistrict?.stateId) || ensureState({ id: stateId, name: stateName });
+    const resolvedStateId = parentState?.id || parentDistrict?.stateId || '';
+    const resolvedDistrictId = parentDistrict?.id || '';
+    const resolvedId = String(id || makeSyntheticLocationId('city', resolvedStateId, resolvedDistrictId, label));
+    const existing = cities.get(resolvedId) || {
+      id: resolvedId,
+      name: label,
+      type: 'city',
+      stateId: resolvedStateId,
+      stateName: parentState?.name || parentDistrict?.stateName || cleanFacetName(stateName),
+      districtId: resolvedDistrictId,
+      districtName: parentDistrict?.name || cleanFacetName(districtName),
+      localityIds: new Set(),
+      pincodeKeys: new Set(),
+      jobCount: 0
+    };
+    if (!existing.stateId) existing.stateId = resolvedStateId;
+    if (!existing.districtId) existing.districtId = resolvedDistrictId;
+    if (!existing.stateName) existing.stateName = parentState?.name || cleanFacetName(stateName);
+    if (!existing.districtName) existing.districtName = parentDistrict?.name || cleanFacetName(districtName);
+    if (pincode) existing.pincode = cleanFacetName(pincode);
+    cities.set(resolvedId, existing);
+    if (parentDistrict) addUniqueId(parentDistrict.cityIds, resolvedId);
+    if (parentState) addUniqueId(parentState.cityIds, resolvedId);
+    cityNameToId.set(`${resolvedDistrictId}|${normalizeLocationTreeKey(label)}`, resolvedId);
+    cityNameToId.set(`${resolvedStateId}|${normalizeLocationTreeKey(label)}`, resolvedId);
+    cityNameToId.set(normalizeLocationTreeKey(label), resolvedId);
+    return existing;
+  };
+
+  const ensureLocality = ({ name, pincode, stateId, stateName, districtId, districtName, cityId, cityName } = {}) => {
+    const label = cleanFacetName(name || pincode);
+    const cleanPincode = cleanFacetName(pincode);
+    if (!label && !cleanPincode) return null;
+    const parentCity = cities.get(cityId) || ensureCity({ id: cityId, name: cityName || districtName, stateId, stateName, districtId, districtName, pincode });
+    const parentDistrict = districts.get(districtId) || districts.get(parentCity?.districtId);
+    const parentState = states.get(stateId) || states.get(parentCity?.stateId) || states.get(parentDistrict?.stateId);
+    const resolvedCityId = parentCity?.id || '';
+    const resolvedDistrictId = parentDistrict?.id || parentCity?.districtId || '';
+    const resolvedStateId = parentState?.id || parentCity?.stateId || parentDistrict?.stateId || '';
+    const resolvedId = makeSyntheticLocationId('locality', resolvedStateId, resolvedDistrictId, resolvedCityId, label, cleanPincode);
+    const existing = localities.get(resolvedId) || {
+      id: resolvedId,
+      name: label || cleanPincode,
+      type: 'locality',
+      pincode: cleanPincode,
+      stateId: resolvedStateId,
+      stateName: parentState?.name || cleanFacetName(stateName),
+      districtId: resolvedDistrictId,
+      districtName: parentDistrict?.name || parentCity?.districtName || cleanFacetName(districtName),
+      cityId: resolvedCityId,
+      cityName: parentCity?.name || cleanFacetName(cityName),
+      jobCount: 0
+    };
+    localities.set(resolvedId, existing);
+    if (cleanPincode) pincodeKeys.add(cleanPincode);
+    if (parentCity) {
+      addUniqueId(parentCity.localityIds, resolvedId);
+      if (cleanPincode) parentCity.pincodeKeys.add(cleanPincode);
+    }
+    if (parentDistrict) {
+      addUniqueId(parentDistrict.localityIds, resolvedId);
+      if (cleanPincode) parentDistrict.pincodeKeys.add(cleanPincode);
+    }
+    if (parentState) {
+      addUniqueId(parentState.localityIds, resolvedId);
+      if (cleanPincode) parentState.pincodeKeys.add(cleanPincode);
+    }
+    return existing;
+  };
+
+  (statesResult[0] || []).forEach((row) => ensureState(row));
+  (districtsResult[0] || []).forEach((row) => ensureDistrict({
+    id: row.id,
+    name: row.name,
+    stateId: row.state_id,
+    stateName: row.state_name
+  }));
+  (citiesResult[0] || []).forEach((row) => ensureCity({
+    id: row.id,
+    name: row.name,
+    stateId: row.state_id,
+    stateName: row.state_name,
+    districtId: row.district_id,
+    districtName: row.district_name,
+    pincode: row.pincode
+  }));
+  (pincodeResult[0] || []).forEach((row) => {
+    const names = splitLocalityNames(row.locality_name);
+    const base = {
+      pincode: row.pincode,
+      stateId: row.state_id,
+      stateName: row.state_name,
+      districtId: row.district_id,
+      districtName: row.district_name,
+      cityId: row.city_id,
+      cityName: row.city_name
+    };
+    if (names.length > 0) {
+      names.forEach((name) => ensureLocality({ ...base, name }));
+      return;
+    }
+    ensureLocality({ ...base, name: row.city_name || row.district_name || row.pincode });
+  });
+
+  (jobCountsResult[0] || []).forEach((row) => {
+    const count = Number(row.count || 0);
+    const stateId = row.state_id || stateNameToId.get(normalizeLocationTreeKey(row.state_name));
+    const districtId = row.district_id
+      || districtNameToId.get(`${stateId || ''}|${normalizeLocationTreeKey(row.district_name)}`)
+      || districtNameToId.get(normalizeLocationTreeKey(row.district_name));
+    const cityId = row.city_id
+      || cityNameToId.get(`${districtId || ''}|${normalizeLocationTreeKey(row.city_name)}`)
+      || cityNameToId.get(`${stateId || ''}|${normalizeLocationTreeKey(row.city_name)}`)
+      || cityNameToId.get(normalizeLocationTreeKey(row.city_name));
+    const state = stateId ? states.get(stateId) : null;
+    const district = districtId ? districts.get(districtId) : null;
+    const city = cityId ? cities.get(cityId) : null;
+    if (state) state.jobCount += count;
+    if (district) district.jobCount += count;
+    if (city) city.jobCount += count;
+
+    const jobPincode = cleanFacetName(row.pincode);
+    const localityName = cleanFacetName(row.locality_name);
+    if (city && (jobPincode || localityName)) {
+      const matchedLocality = [...city.localityIds]
+        .map((id) => localities.get(id))
+        .find((item) => (
+          item
+          && (!jobPincode || item.pincode === jobPincode)
+          && (!localityName || normalizeLocationTreeKey(item.name) === normalizeLocationTreeKey(localityName))
+        ));
+      if (matchedLocality) matchedLocality.jobCount += count;
+    }
+  });
+
+  const toArray = (map, project) => [...map.values()]
+    .map(project)
+    .sort((left, right) => {
+      if ((right.jobCount || 0) !== (left.jobCount || 0)) return (right.jobCount || 0) - (left.jobCount || 0);
+      return String(left.name || '').localeCompare(String(right.name || ''));
+    });
+
+  const stateItems = toArray(states, (item) => ({
+    id: item.id,
+    name: item.name,
+    code: item.code,
+    type: item.type,
+    districtCount: item.districtIds.size,
+    cityCount: item.cityIds.size,
+    localityCount: item.localityIds.size,
+    pincodeCount: item.pincodeKeys.size,
+    jobCount: item.jobCount
+  }));
+
+  const districtItems = toArray(districts, (item) => ({
+    id: item.id,
+    name: item.name,
+    type: item.type,
+    stateId: item.stateId,
+    stateName: item.stateName,
+    cityCount: item.cityIds.size,
+    localityCount: item.localityIds.size,
+    pincodeCount: item.pincodeKeys.size,
+    jobCount: item.jobCount
+  }));
+
+  const cityItems = toArray(cities, (item) => ({
+    id: item.id,
+    name: item.name,
+    type: item.type,
+    stateId: item.stateId,
+    stateName: item.stateName,
+    districtId: item.districtId,
+    districtName: item.districtName,
+    localityCount: item.localityIds.size,
+    pincodeCount: item.pincodeKeys.size,
+    pincode: item.pincode || '',
+    jobCount: item.jobCount
+  }));
+
+  const localityItems = toArray(localities, (item) => ({
+    id: item.id,
+    name: item.name,
+    type: item.type,
+    pincode: item.pincode,
+    stateId: item.stateId,
+    stateName: item.stateName,
+    districtId: item.districtId,
+    districtName: item.districtName,
+    cityId: item.cityId,
+    cityName: item.cityName,
+    jobCount: item.jobCount
+  }));
+
+  return {
+    states: stateItems,
+    districts: districtItems,
+    cities: cityItems,
+    localities: localityItems,
+    districtsByState: districtItems.reduce((acc, item) => {
+      const key = item.stateId || 'unmapped';
+      acc[key] = acc[key] || [];
+      acc[key].push(item);
+      return acc;
+    }, {}),
+    citiesByDistrict: cityItems.reduce((acc, item) => {
+      const key = item.districtId || 'unmapped';
+      acc[key] = acc[key] || [];
+      acc[key].push(item);
+      return acc;
+    }, {}),
+    localitiesByCity: localityItems.reduce((acc, item) => {
+      const key = item.cityId || 'unmapped';
+      acc[key] = acc[key] || [];
+      acc[key].push(item);
+      return acc;
+    }, {}),
+    totals: {
+      states: stateItems.length,
+      districts: districtItems.length,
+      cities: cityItems.length,
+      localities: localityItems.length,
+      pincodes: pincodeKeys.size,
+      openJobs: stateItems.reduce((sum, item) => sum + Number(item.jobCount || 0), 0)
+    }
+  };
+};
+
 router.get('/meta/categories', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!Database) {
     res.send({ status: true, categories: [] });
@@ -642,6 +1045,27 @@ router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCa
   }
 
   res.send({ status: true, districts: data || [] });
+}));
+
+router.get('/meta/location-tree', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (_req, res) => {
+  if (!Database) {
+    res.send({
+      status: true,
+      locationTree: {
+        states: [],
+        districts: [],
+        cities: [],
+        localities: [],
+        districtsByState: {},
+        citiesByDistrict: {},
+        localitiesByCity: {},
+        totals: { states: 0, districts: 0, cities: 0, localities: 0, pincodes: 0, openJobs: 0 }
+      }
+    });
+    return;
+  }
+
+  res.send({ status: true, locationTree: await getLocationTree() });
 }));
 
 router.get('/meta/homepage-facets', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
