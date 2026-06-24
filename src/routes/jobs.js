@@ -590,7 +590,8 @@ const getLocationTree = async () => {
   const ensureState = ({ id, name, code } = {}) => {
     const label = cleanFacetName(name);
     if (!label) return null;
-    const resolvedId = String(id || makeSyntheticLocationId('state', label));
+    const stateKey = normalizeLocationTreeKey(label);
+    const resolvedId = String(stateNameToId.get(stateKey) || (id && states.has(String(id)) ? id : '') || id || makeSyntheticLocationId('state', label));
     const existing = states.get(resolvedId) || {
       id: resolvedId,
       name: label,
@@ -605,7 +606,7 @@ const getLocationTree = async () => {
     existing.name = existing.name || label;
     if (code && !existing.code) existing.code = cleanFacetName(code);
     states.set(resolvedId, existing);
-    stateNameToId.set(normalizeLocationTreeKey(label), resolvedId);
+    stateNameToId.set(stateKey, resolvedId);
     return existing;
   };
 
@@ -614,7 +615,8 @@ const getLocationTree = async () => {
     if (!label) return null;
     const parentState = states.get(stateId) || ensureState({ id: stateId, name: stateName });
     const resolvedStateId = parentState?.id || '';
-    const resolvedId = String(id || makeSyntheticLocationId('district', resolvedStateId, label));
+    const districtKey = `${resolvedStateId}|${normalizeLocationTreeKey(label)}`;
+    const resolvedId = String(districtNameToId.get(districtKey) || (id && districts.has(String(id)) ? id : '') || id || makeSyntheticLocationId('district', resolvedStateId, label));
     const existing = districts.get(resolvedId) || {
       id: resolvedId,
       name: label,
@@ -630,7 +632,7 @@ const getLocationTree = async () => {
     if (!existing.stateName) existing.stateName = parentState?.name || cleanFacetName(stateName);
     districts.set(resolvedId, existing);
     if (parentState) addUniqueId(parentState.districtIds, resolvedId);
-    districtNameToId.set(`${resolvedStateId}|${normalizeLocationTreeKey(label)}`, resolvedId);
+    districtNameToId.set(districtKey, resolvedId);
     districtNameToId.set(normalizeLocationTreeKey(label), resolvedId);
     return existing;
   };
@@ -642,7 +644,16 @@ const getLocationTree = async () => {
     const parentState = states.get(stateId) || states.get(parentDistrict?.stateId) || ensureState({ id: stateId, name: stateName });
     const resolvedStateId = parentState?.id || parentDistrict?.stateId || '';
     const resolvedDistrictId = parentDistrict?.id || '';
-    const resolvedId = String(id || makeSyntheticLocationId('city', resolvedStateId, resolvedDistrictId, label));
+    const cityKey = `${resolvedDistrictId}|${normalizeLocationTreeKey(label)}`;
+    const stateCityKey = `${resolvedStateId}|${normalizeLocationTreeKey(label)}`;
+    const existingStateScopedCityId = resolvedDistrictId ? '' : cityNameToId.get(stateCityKey);
+    const resolvedId = String(
+      cityNameToId.get(cityKey)
+      || existingStateScopedCityId
+      || (id && cities.has(String(id)) ? id : '')
+      || id
+      || makeSyntheticLocationId('city', resolvedStateId, resolvedDistrictId, label)
+    );
     const existing = cities.get(resolvedId) || {
       id: resolvedId,
       name: label,
@@ -663,8 +674,8 @@ const getLocationTree = async () => {
     cities.set(resolvedId, existing);
     if (parentDistrict) addUniqueId(parentDistrict.cityIds, resolvedId);
     if (parentState) addUniqueId(parentState.cityIds, resolvedId);
-    cityNameToId.set(`${resolvedDistrictId}|${normalizeLocationTreeKey(label)}`, resolvedId);
-    cityNameToId.set(`${resolvedStateId}|${normalizeLocationTreeKey(label)}`, resolvedId);
+    cityNameToId.set(cityKey, resolvedId);
+    if (!resolvedDistrictId) cityNameToId.set(stateCityKey, resolvedId);
     cityNameToId.set(normalizeLocationTreeKey(label), resolvedId);
     return existing;
   };
