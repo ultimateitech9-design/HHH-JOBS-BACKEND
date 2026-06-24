@@ -67,6 +67,20 @@ test('rejects address floor tokens as Delhi districts', () => {
   assert.equal(isValidAdministrativeDistrictName({ stateName: 'Delhi', districtName: 'South West Delhi' }), true);
 });
 
+test('prefers detected Delhi locality district over generic New Delhi city', () => {
+  const result = normalizeIndianLocationHierarchy({
+    stateName: 'Delhi',
+    cityName: 'New Delhi',
+    localityName: 'Ghitorni',
+    pincode: '110030',
+    locationText: 'Basement, 672, White House, Behind MCD School, MG Road, Ghitorni, New Delhi, Delhi 110030'
+  });
+
+  assert.equal(result.districtName, 'South West Delhi');
+  assert.equal(result.cityName, 'Delhi');
+  assert.equal(result.localityName, 'Ghitorni');
+});
+
 test('builds non-duplicated locality city district label', () => {
   assert.equal(
     buildHierarchyLabel({

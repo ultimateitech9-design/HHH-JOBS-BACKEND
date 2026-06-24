@@ -105,6 +105,25 @@ const config = {
     Boolean(process.env.OPENSEARCH_URL || process.env.OPEN_SEARCH_URL || process.env.ELASTICSEARCH_URL || process.env.SEARCH_URL)
   ),
 
+  // -- Location intelligence ---------------------------------------------------
+  mapmyIndiaEnabled: parseBoolean(process.env.MAPMYINDIA_ENABLED ?? process.env.MAPPLS_ENABLED, false),
+  mapmyIndiaClientId: normalizeText(process.env.MAPMYINDIA_CLIENT_ID || process.env.MAPPLS_CLIENT_ID),
+  mapmyIndiaClientSecret: process.env.MAPMYINDIA_CLIENT_SECRET || process.env.MAPPLS_CLIENT_SECRET || '',
+  mapmyIndiaAccessToken: normalizeText(process.env.MAPMYINDIA_ACCESS_TOKEN || process.env.MAPPLS_ACCESS_TOKEN),
+  mapmyIndiaTokenUrl: normalizeUrl(
+    process.env.MAPMYINDIA_TOKEN_URL
+    || process.env.MAPPLS_TOKEN_URL
+    || 'https://outpost.mappls.com/api/security/oauth/token'
+  ),
+  mapmyIndiaAddressStandardizationUrl: normalizeUrl(
+    process.env.MAPMYINDIA_ADDRESS_STANDARDIZATION_URL
+    || process.env.MAPPLS_ADDRESS_STANDARDIZATION_URL
+    || 'https://atlas.mapmyindia.com/api/places/woodpecker'
+  ),
+  mapmyIndiaTimeoutMs: Number(process.env.MAPMYINDIA_TIMEOUT_MS || process.env.MAPPLS_TIMEOUT_MS) > 0
+    ? Number(process.env.MAPMYINDIA_TIMEOUT_MS || process.env.MAPPLS_TIMEOUT_MS)
+    : 8000,
+
   // -- Database ----------------------------------------------------------------
   dbProvider,
   isMysqlProvider: dbProvider === 'mysql',
