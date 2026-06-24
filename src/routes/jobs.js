@@ -428,22 +428,22 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
 
   return {
     roles: mergeFacetItems({
-      activeRows: [],
-      allRows: normalizeFacetRows(masterCategories[0]).map((row) => ({ ...row, sourceRank: 0 })),
+      activeRows: normalizeFacetRows(activeRoles[0]),
+      allRows: [...normalizeFacetRows(allJobRoles[0]), ...normalizeFacetRows(masterCategories[0]).map((row) => ({ ...row, sourceRank: 0 }))],
       fallbackNames: DEFAULT_ROLE_NAMES,
       limit: roleLimit,
       kind: 'role'
     }),
     sectors: mergeFacetItems({
-      activeRows: [],
-      allRows: normalizeFacetRows(masterSectors[0]).map((row) => ({ ...row, sourceRank: 0 })),
+      activeRows: normalizeFacetRows(activeSectors[0]),
+      allRows: [...normalizeFacetRows(allJobSectors[0]), ...normalizeFacetRows(masterSectors[0]).map((row) => ({ ...row, sourceRank: 0 }))],
       fallbackNames: [],
       limit: sectorLimit,
       kind: 'sector'
     }),
     cities: mergeFacetItems({
-      activeRows: [],
-      allRows: normalizeFacetRows(masterDistricts[0]).map((row) => ({ ...row, sourceRank: 0 })),
+      activeRows: normalizeFacetRows(activeCities[0]),
+      allRows: [...normalizeFacetRows(allJobCities[0]), ...normalizeFacetRows(masterDistricts[0]).map((row) => ({ ...row, sourceRank: 0 }))],
       fallbackNames: DEFAULT_CITY_NAMES,
       limit: cityLimit,
       kind: 'city'
