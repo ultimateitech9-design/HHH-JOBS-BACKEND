@@ -34,6 +34,18 @@ test('uses postal spelling for Chattarpur Delhi locality aliases', () => {
   assert.equal(result.localityName, 'Chattarpur');
 });
 
+test('infers South West Delhi district for known Delhi localities without pincode', () => {
+  const result = normalizeIndianLocationHierarchy({
+    stateName: 'Delhi',
+    cityName: 'Gitorni',
+    locationText: 'Gitorni, Delhi'
+  });
+
+  assert.equal(result.districtName, 'South West Delhi');
+  assert.equal(result.cityName, 'Delhi');
+  assert.equal(result.localityName, 'Ghitorni');
+});
+
 test('builds non-duplicated locality city district label', () => {
   assert.equal(
     buildHierarchyLabel({

@@ -59,6 +59,10 @@ const DELHI_LOCALITY_BY_COMPACT_KEY = new Map([
   ['tbhospital', 'T B Hospital']
 ]);
 
+const DELHI_LOCALITY_DISTRICT_BY_COMPACT_KEY = new Map(
+  [...DELHI_LOCALITY_BY_COMPACT_KEY.keys()].map((key) => [key, 'South West Delhi'])
+);
+
 const isDelhiStateName = (value = '') => {
   const key = normalizeKey(value).replace(/[^\w\s]+/g, ' ').replace(/\s+/g, ' ').trim();
   return DELHI_STATE_KEYS.has(key);
@@ -103,6 +107,11 @@ const detectDelhiLocalityName = (...values) => {
   return '';
 };
 
+const getDelhiDistrictForLocalityName = (value = '') => {
+  const compactKey = normalizeCompactKey(value);
+  return DELHI_LOCALITY_DISTRICT_BY_COMPACT_KEY.get(compactKey) || '';
+};
+
 const isDelhiLocation = ({ stateName = '', districtName = '', cityName = '', localityName = '', pincode = '', locationText = '' } = {}) => (
   isDelhiStateName(stateName)
   || isDelhiPincode(pincode)
@@ -145,12 +154,13 @@ const normalizeIndianLocationHierarchy = ({
   const districtFromDistrict = canonicalizeDelhiDistrictName(cleanDistrictName);
   const districtFromCity = canonicalizeDelhiDistrictName(cleanCityName);
   const localityFromInputs = detectDelhiLocalityName(cleanLocalityName, cleanCityName, locationText);
+  const localityDistrictName = getDelhiDistrictForLocalityName(localityFromInputs || cleanLocalityName || cleanCityName);
   const cityIsDistrict = Boolean(districtFromCity);
   const cityIsLocality = Boolean(detectDelhiLocalityName(cleanCityName));
 
   return {
     stateName: 'Delhi',
-    districtName: districtFromDistrict || (cityIsDistrict ? districtFromCity : cleanDistrictName) || null,
+    districtName: districtFromDistrict || (cityIsDistrict ? districtFromCity : cleanDistrictName) || localityDistrictName || null,
     cityName: 'Delhi',
     localityName: localityFromInputs || (cityIsLocality ? detectDelhiLocalityName(cleanCityName) : cleanLocalityName) || null,
     pincode: cleanPincode || null
@@ -174,11 +184,13 @@ const buildHierarchyLabel = ({ localityName = '', cityName = '', districtName = 
 module.exports = {
   DELHI_DISTRICT_BY_COMPACT_KEY,
   DELHI_LOCALITY_BY_COMPACT_KEY,
+  DELHI_LOCALITY_DISTRICT_BY_COMPACT_KEY,
   buildHierarchyLabel,
   canonicalizeDelhiDistrictName,
   canonicalizeDelhiLocalityName,
   cleanText,
   detectDelhiLocalityName,
+  getDelhiDistrictForLocalityName,
   isDelhiLocation,
   isDelhiPincode,
   isDelhiStateName,
