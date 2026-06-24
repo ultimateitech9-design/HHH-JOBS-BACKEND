@@ -21,6 +21,8 @@ const {
 
 const POSTAL_API_BASE_URL = 'https://api.postalpincode.in/pincode';
 const CACHE_PATH = path.resolve(__dirname, '..', 'data', 'location-normalization', 'india-post-cache.json');
+const PINCODE_TEXT_PATTERN = /\b[1-9][0-9]{5}\b/g;
+const PINCODE_TEXT_REGEXP_SQL = '(^|[^0-9])[1-9][0-9]{5}([^0-9]|$)';
 
 const quoteId = (name) => {
   if (!/^[A-Za-z0-9_]+$/.test(String(name))) throw new Error(`Unsafe SQL identifier: ${name}`);
@@ -40,7 +42,8 @@ const parseArgs = () => {
     allStates: args.get('all-states') === 'true',
     state: cleanText(args.get('state') || 'Delhi'),
     pincode: normalizePincode(args.get('pincode') || ''),
-    limit: Math.max(0, Number(args.get('limit') || 0))
+    limit: Math.max(0, Number(args.get('limit') || 0)),
+    scanLimit: Math.max(0, Number(args.get('scan-limit') || 0))
   };
 };
 
@@ -177,6 +180,14 @@ const uniqueTexts = (values = []) => {
   return result;
 };
 
+const extractPincodesFromText = (value = '') => {
+  const text = cleanText(value);
+  if (!text) return [];
+  return [...text.matchAll(PINCODE_TEXT_PATTERN)]
+    .map((match) => normalizePincode(match[0]))
+    .filter((pincode) => /^[1-9][0-9]{5}$/.test(pincode));
+};
+
 const resolvePostalHierarchy = (pincode, apiData) => {
   const wrapper = Array.isArray(apiData) ? apiData[0] : apiData;
   const offices = Array.isArray(wrapper?.PostOffice) ? wrapper.PostOffice : [];
@@ -252,12 +263,16 @@ const executeInsert = async (db, table, payload, columnsByTable, dryRun, summary
 };
 
 const findState = async (db, stateName) => {
-  const [rows] = await db.execute('SELECT id, name FROM master_states WHERE LOWER(TRIM(name)) IN (?, ?, ?, ?) ORDER BY created_at ASC LIMIT 1', [
-    normalizeKey(stateName),
-    'delhi',
-    'nct of delhi',
-    'national capital territory of delhi'
-  ]);
+  const stateKey = normalizeKey(stateName);
+  if (!stateKey) return null;
+  const aliases = isDelhiStateName(stateName)
+    ? ['delhi', 'nct of delhi', 'national capital territory of delhi']
+    : [stateKey];
+  const placeholders = aliases.map(() => '?').join(', ');
+  const [rows] = await db.execute(
+    `SELECT id, name FROM master_states WHERE LOWER(TRIM(name)) IN (${placeholders}) ORDER BY created_at ASC LIMIT 1`,
+    aliases
+  );
   return rows[0] || null;
 };
 
@@ -286,7 +301,7 @@ const ensureDistrict = async (db, stateId, hierarchy, columnsByTable, dryRun, su
   if (!stateId || !hierarchy.districtName) return null;
   const [rows] = await db.execute('SELECT id, name, is_active FROM master_districts WHERE state_id = ?', [stateId]);
   const matches = rows.filter((row) => {
-    const canonical = canonicalizeDelhiDistrictName(row.name);
+    const canonical = isDelhiStateName(hierarchy.stateName) ? canonicalizeDelhiDistrictName(row.name) : '';
     return normalizeKey(canonical || row.name) === normalizeKey(hierarchy.districtName);
   });
   let district = matches.find((row) => normalizeKey(row.name) === normalizeKey(hierarchy.districtName)) || matches[0] || null;
@@ -373,7 +388,7 @@ const normalizeRowsByPincode = async (db, table, hierarchy, ids, columnsByTable,
   const columns = columnsByTable[table] || new Set();
   if (!columns.has('pincode')) return;
 
-  const textColumns = ['job_location', 'location', 'city', 'city_name', 'district_name', 'state_name', 'locality_name']
+  const textColumns = ['job_location', 'location', 'address', 'company_address', 'current_address', 'city', 'city_name', 'district_name', 'state_name', 'state', 'locality_name']
     .filter((column) => columns.has(column));
   const selectColumns = ['id', 'pincode', ...textColumns].filter((column, index, list) => list.indexOf(column) === index);
   const textSql = textColumns.length
@@ -447,53 +462,81 @@ const normalizeMasterPincode = async (db, hierarchy, ids, columnsByTable, dryRun
   await executeUpdate(db, 'master_pincodes', payload, "REGEXP_REPLACE(COALESCE(`pincode`, ''), '[^0-9]', '') = ?", [hierarchy.pincode], columnsByTable, dryRun, summary);
 };
 
-const collectCandidatePincodes = async (db, columnsByTable, options) => {
+const collectCandidatePincodes = async (db, columnsByTable, options, summary) => {
   if (options.pincode) return [options.pincode];
 
-  const pincodes = new Set();
+  const columnPincodes = new Set();
+  const textPincodes = new Set();
   const tables = {
     master_pincodes: ['pincode'],
-    jobs: ['pincode', 'state_name', 'district_name', 'city_name', 'locality_name', 'job_location'],
-    companies: ['pincode', 'state_name', 'district_name', 'city_name', 'locality_name', 'location'],
-    hr_profiles: ['pincode', 'state_name', 'district_name', 'city_name', 'locality_name', 'location'],
-    student_profiles: ['pincode', 'state_name', 'district_name', 'city_name', 'locality_name', 'location'],
-    colleges: ['pincode', 'state_name', 'district_name', 'city_name', 'locality_name', 'city', 'state']
+    jobs: ['pincode', 'state_name', 'district_name', 'city_name', 'locality_name', 'job_location', 'location', 'address'],
+    companies: ['pincode', 'state_name', 'district_name', 'city_name', 'locality_name', 'location', 'address', 'company_address'],
+    hr_profiles: ['pincode', 'state_name', 'district_name', 'city_name', 'locality_name', 'location', 'address', 'company_address'],
+    student_profiles: ['pincode', 'state_name', 'district_name', 'city_name', 'locality_name', 'location', 'address', 'current_address'],
+    colleges: ['pincode', 'state_name', 'district_name', 'city_name', 'locality_name', 'city', 'state', 'address', 'location']
   };
 
   for (const [table, desiredColumns] of Object.entries(tables)) {
     const columns = columnsByTable[table] || new Set();
-    if (!columns.has('pincode')) continue;
     const textColumns = desiredColumns.filter((column) => columns.has(column) && column !== 'pincode');
     const textSql = textColumns.length
       ? `LOWER(CONCAT_WS(' ', ${textColumns.map((column) => `COALESCE(${quoteId(column)}, '')`).join(', ')}))`
       : "''";
     const stateCondition = options.allStates
-      ? '1 = 1'
+      ? { sql: '1 = 1', params: [] }
       : options.state.toLowerCase() === 'delhi'
-        ? `(REGEXP_REPLACE(COALESCE(${quoteId('pincode')}, ''), '[^0-9]', '') LIKE '110%' OR ${textSql} LIKE '%delhi%')`
-        : `${textSql} LIKE ?`;
-    const params = options.allStates || options.state.toLowerCase() === 'delhi' ? [] : [`%${options.state.toLowerCase()}%`];
-    const [rows] = await db.execute(
-      `SELECT DISTINCT REGEXP_REPLACE(COALESCE(${quoteId('pincode')}, ''), '[^0-9]', '') AS pincode
-       FROM ${quoteId(table)}
-       WHERE REGEXP_REPLACE(COALESCE(${quoteId('pincode')}, ''), '[^0-9]', '') REGEXP '^[0-9]{6}$'
-         AND ${stateCondition}`,
-      params
-    );
-    rows.forEach((row) => {
-      const pincode = normalizePincode(row.pincode);
-      if (pincode.length === 6) pincodes.add(pincode);
-    });
+        ? {
+            sql: columns.has('pincode')
+              ? `(REGEXP_REPLACE(COALESCE(${quoteId('pincode')}, ''), '[^0-9]', '') LIKE '110%' OR ${textSql} LIKE '%delhi%' OR ${textSql} REGEXP '(^|[^0-9])110[0-9]{3}([^0-9]|$)')`
+              : `(${textSql} LIKE '%delhi%' OR ${textSql} REGEXP '(^|[^0-9])110[0-9]{3}([^0-9]|$)')`,
+            params: []
+          }
+        : { sql: `${textSql} LIKE ?`, params: [`%${options.state.toLowerCase()}%`] };
+
+    if (columns.has('pincode')) {
+      const [rows] = await db.execute(
+        `SELECT DISTINCT REGEXP_REPLACE(COALESCE(${quoteId('pincode')}, ''), '[^0-9]', '') AS pincode
+         FROM ${quoteId(table)}
+         WHERE REGEXP_REPLACE(COALESCE(${quoteId('pincode')}, ''), '[^0-9]', '') REGEXP '^[1-9][0-9]{5}$'
+           AND ${stateCondition.sql}`,
+        stateCondition.params
+      );
+      rows.forEach((row) => {
+        const pincode = normalizePincode(row.pincode);
+        if (/^[1-9][0-9]{5}$/.test(pincode)) columnPincodes.add(pincode);
+      });
+    }
+
+    if (textColumns.length) {
+      const scanLimitSql = options.scanLimit ? ` LIMIT ${options.scanLimit}` : '';
+      const [textRows] = await db.execute(
+        `SELECT ${textColumns.map(quoteId).join(', ')}
+         FROM ${quoteId(table)}
+         WHERE ${textSql} REGEXP ?
+           AND ${stateCondition.sql}${scanLimitSql}`,
+        [PINCODE_TEXT_REGEXP_SQL, ...stateCondition.params]
+      );
+
+      for (const row of textRows) {
+        const beforeCount = textPincodes.size;
+        const text = textColumns.map((column) => row[column]).filter(Boolean).join(' ');
+        for (const pincode of extractPincodesFromText(text)) textPincodes.add(pincode);
+        summary.textPincodeCandidates += textPincodes.size - beforeCount;
+      }
+    }
   }
 
-  const sorted = [...pincodes].sort();
+  const sorted = [
+    ...[...columnPincodes].sort(),
+    ...[...textPincodes].filter((pincode) => !columnPincodes.has(pincode)).sort()
+  ];
   return options.limit ? sorted.slice(0, options.limit) : sorted;
 };
 
 const normalizeHeuristicDelhiRows = async (db, columnsByTable, dryRun, summary) => {
   for (const table of ['jobs', 'companies', 'hr_profiles', 'student_profiles', 'colleges']) {
     const columns = columnsByTable[table] || new Set();
-    const textColumns = ['job_location', 'location', 'city', 'city_name', 'district_name', 'state_name', 'locality_name']
+    const textColumns = ['job_location', 'location', 'address', 'company_address', 'current_address', 'city', 'city_name', 'district_name', 'state_name', 'state', 'locality_name']
       .filter((column) => columns.has(column));
     if (!columns.has('id') || !textColumns.length) continue;
 
@@ -600,6 +643,7 @@ const main = async () => {
     plannedInserts: 0,
     plannedUpdates: 0,
     heuristicRows: 0,
+    textPincodeCandidates: 0,
     invalidDistrictRows: 0,
     canonicalizedDistrictRows: 0
   };
@@ -608,7 +652,7 @@ const main = async () => {
   const cache = await readCache();
   try {
     const columnsByTable = await ensureLocationSchema(db, dryRun, summary);
-    const pincodes = await collectCandidatePincodes(db, columnsByTable, options);
+    const pincodes = await collectCandidatePincodes(db, columnsByTable, options, summary);
 
     for (const pincode of pincodes) {
       const apiData = await fetchPincodeData(pincode, { refresh: options.refresh, cache, summary });
