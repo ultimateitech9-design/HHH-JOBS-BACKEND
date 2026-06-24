@@ -112,6 +112,7 @@ const buildProfileVector = ({
   addWeightedTokens(vector, [profile.location, profile.current_address || profile.currentAddress, profile.graduation_details || profile.graduationDetails], 1.2);
   addWeightedTokens(vector, [
     profile.preferred_work_location || profile.preferredWorkLocation,
+    profile.locality_name || profile.localityName,
     profile.city_name || profile.cityName,
     profile.district_name || profile.districtName,
     profile.state_name || profile.stateName,
@@ -144,6 +145,7 @@ const buildJobVector = (job = {}) => {
   addWeightedTokens(vector, [job.category, job.experience_level, job.employment_type], 1.6);
   addWeightedTokens(vector, [
     job.job_location,
+    job.locality_name || job.localityName,
     job.city_name || job.cityName,
     job.district_name || job.districtName,
     job.state_name || job.stateName,
@@ -400,7 +402,7 @@ const loadRecommendationContext = async (userId) => {
     Database.from('saved_jobs').select('job_id, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(40),
     Database.from('student_job_views').select('job_id, viewed_at').eq('user_id', userId).order('viewed_at', { ascending: false }).limit(60),
     Database.from('jobs').select('*').eq('status', 'open').neq('approval_status', 'rejected').order('is_featured', { ascending: false }).order('created_at', { ascending: false }).limit(200),
-    Database.from('student_profiles').select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, graduation_details, state_id, district_id, city_id, state_name, district_name, city_name, pincode, current_pincode, preferred_work_location, willing_to_relocate, is_discoverable').neq('user_id', userId).eq('is_discoverable', true).limit(200),
+    Database.from('student_profiles').select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, graduation_details, state_id, district_id, city_id, state_name, district_name, city_name, locality_name, pincode, current_pincode, preferred_work_location, willing_to_relocate, is_discoverable').neq('user_id', userId).eq('is_discoverable', true).limit(200),
     Database.from('users').select('id, name, email').eq('id', userId).maybeSingle()
   ]);
 
@@ -655,7 +657,7 @@ const notifyRecommendedStudentsForJob = async (job) => {
   const [studentsResp, preferencesResp] = await Promise.all([
     Database
       .from('student_profiles')
-      .select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, profile_summary, state_id, district_id, city_id, state_name, district_name, city_name, pincode, current_pincode, preferred_work_location, willing_to_relocate')
+      .select('user_id, skills, technical_skills, tools_technologies, headline, target_role, location, profile_summary, state_id, district_id, city_id, state_name, district_name, city_name, locality_name, pincode, current_pincode, preferred_work_location, willing_to_relocate')
       .limit(1000),
     Database
       .from('student_recommendation_preferences')

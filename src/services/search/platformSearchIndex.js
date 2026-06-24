@@ -20,6 +20,7 @@ const PLATFORM_SEARCH_ENTITIES = {
       'title^6',
       'companyName^5',
       'location^4',
+      'localityName^5',
       'cityName^4',
       'districtName^4',
       'stateName^3',
@@ -73,6 +74,8 @@ const PLATFORM_SEARCH_ENTITIES = {
       'industryType^4',
       'sectorName^4',
       'location^4',
+      'localityName^4',
+      'cityName^4',
       'stateName^3',
       'districtName^3',
       'about^2',
@@ -207,6 +210,9 @@ const addLocationFilters = ({ must, filters = {} }) => {
     || filters.city
     || filters.cityName
     || filters.city_name
+    || filters.locality
+    || filters.localityName
+    || filters.locality_name
     || filters.district
     || filters.districtName
     || filters.district_name
@@ -219,7 +225,7 @@ const addLocationFilters = ({ must, filters = {} }) => {
   if (!location) return;
   must.push(buildPhraseMatch({
     query: location,
-    fields: ['location^5', 'cityName^4', 'districtName^4', 'stateName^4', 'city^4', 'state^4', 'pincode^5', 'searchText'],
+    fields: ['location^5', 'localityName^5', 'cityName^4', 'districtName^4', 'stateName^4', 'city^4', 'state^4', 'pincode^5', 'searchText'],
     boost: 1.4
   }));
 };
@@ -427,6 +433,9 @@ const hasPlatformSearchIntent = (filters = {}) => [
   filters.city,
   filters.cityName,
   filters.city_name,
+  filters.locality,
+  filters.localityName,
+  filters.locality_name,
   filters.district,
   filters.districtName,
   filters.district_name,
@@ -451,7 +460,7 @@ const buildPlatformSearchDocument = (entity, row = {}) => {
   if (entity === 'jobs') {
     const skills = normalizeList(row.skills);
     const title = row.job_title || row.title;
-    const location = compactSearchText(row.job_location || row.location, row.city_name, row.district_name, row.state_name, row.pincode);
+    const location = compactSearchText(row.job_location || row.location, row.locality_name, row.city_name, row.district_name, row.state_name, row.pincode);
     const searchText = compactSearchText(
       id,
       title,
@@ -473,6 +482,7 @@ const buildPlatformSearchDocument = (entity, row = {}) => {
       jobTitle: title || '',
       companyName: row.company_name || '',
       location,
+      localityName: row.locality_name || '',
       cityName: row.city_name || '',
       districtName: row.district_name || '',
       stateName: row.state_name || '',
@@ -541,6 +551,8 @@ const buildPlatformSearchDocument = (entity, row = {}) => {
       row.industry_type,
       row.sector_name,
       row.location,
+      row.locality_name,
+      row.city_name,
       row.state_name,
       row.district_name,
       row.about
@@ -554,6 +566,8 @@ const buildPlatformSearchDocument = (entity, row = {}) => {
       industryType: row.industry_type || '',
       sectorName: row.sector_name || row.industry_type || '',
       location: row.location || '',
+      localityName: row.locality_name || '',
+      cityName: row.city_name || '',
       stateName: row.state_name || '',
       districtName: row.district_name || '',
       about: row.about || '',

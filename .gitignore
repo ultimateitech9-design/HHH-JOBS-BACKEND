@@ -38,6 +38,7 @@ backups/
 uploads/
 .uploads
 temp_hash.txt
+data/location-normalization/*.json
 
 # Editor directories and OS files
 .vscode/*

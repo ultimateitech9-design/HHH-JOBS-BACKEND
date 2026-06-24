@@ -1,5 +1,6 @@
 const { ROLES } = require('../constants');
 const { resolveStructuredLocation } = require('../utils/geography');
+const { normalizeIndianLocationHierarchy } = require('./locationHierarchy');
 
 const PROFILE_TABLE_BY_ROLE = {
   [ROLES.STUDENT]: 'student_profiles',
@@ -271,6 +272,15 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
     });
     const stateName = toOptionalText(geo.stateName);
     const districtName = toOptionalText(geo.districtName);
+    const localityName = toOptionalText(reqBody?.localityName ?? reqBody?.locality_name ?? reqBody?.areaName ?? reqBody?.area_name);
+    const hierarchy = normalizeIndianLocationHierarchy({
+      stateName,
+      districtName,
+      cityName: reqBody?.cityName ?? reqBody?.city_name,
+      localityName,
+      pincode: reqBody?.pincode ?? reqBody?.pinCode ?? reqBody?.pin_code,
+      locationText: reqBody?.location
+    });
     return {
       ...basePayload,
       company_name: toOptionalText(reqBody?.companyName ?? reqBody?.company_name),
@@ -279,11 +289,19 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
       industry_type: sectorName,
       founded_year: toOptionalText(reqBody?.foundedYear ?? reqBody?.founded_year),
       company_type: toOptionalText(reqBody?.companyType ?? reqBody?.company_type),
-      location: toOptionalText(reqBody?.location) || buildStructuredLocation({ districtName, stateName, fallback: reqBody?.location }),
+      location: toOptionalText(reqBody?.location) || buildStructuredLocation({
+        districtName: hierarchy.districtName || districtName,
+        stateName: hierarchy.stateName || stateName,
+        fallback: reqBody?.location
+      }),
       state_id: toOptionalUuid(reqBody?.stateId ?? reqBody?.state_id),
       district_id: toOptionalUuid(reqBody?.districtId ?? reqBody?.district_id),
-      state_name: stateName,
-      district_name: districtName,
+      city_id: toOptionalUuid(reqBody?.cityId ?? reqBody?.city_id),
+      state_name: hierarchy.stateName || stateName,
+      district_name: hierarchy.districtName || districtName,
+      city_name: hierarchy.cityName || toOptionalText(reqBody?.cityName ?? reqBody?.city_name),
+      pincode: hierarchy.pincode || toOptionalText(reqBody?.pincode ?? reqBody?.pinCode ?? reqBody?.pin_code),
+      locality_name: hierarchy.localityName || localityName,
       sector_id: toOptionalUuid(reqBody?.sectorId ?? reqBody?.sector_id),
       sector_name: sectorName,
       about: toOptionalText(reqBody?.about),
@@ -300,15 +318,28 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
     });
     const stateName = toOptionalText(geo.stateName);
     const districtName = toOptionalText(geo.districtName);
+    const localityName = toOptionalText(reqBody?.localityName ?? reqBody?.locality_name ?? reqBody?.areaName ?? reqBody?.area_name);
+    const hierarchy = normalizeIndianLocationHierarchy({
+      stateName,
+      districtName,
+      cityName: reqBody?.cityName ?? reqBody?.city_name,
+      localityName,
+      pincode: reqBody?.pincode ?? reqBody?.pinCode ?? reqBody?.pin_code,
+      locationText: reqBody?.location
+    });
     return {
       ...basePayload,
       name: fallbackName,
-      city: districtName,
-      state: stateName,
+      city: hierarchy.cityName || districtName,
+      state: hierarchy.stateName || stateName,
       state_id: toOptionalUuid(reqBody?.stateId ?? reqBody?.state_id),
       district_id: toOptionalUuid(reqBody?.districtId ?? reqBody?.district_id),
-      state_name: stateName,
-      district_name: districtName,
+      state_name: hierarchy.stateName || stateName,
+      district_name: hierarchy.districtName || districtName,
+      city_id: toOptionalUuid(reqBody?.cityId ?? reqBody?.city_id),
+      city_name: hierarchy.cityName || toOptionalText(reqBody?.cityName ?? reqBody?.city_name),
+      locality_name: hierarchy.localityName || localityName,
+      pincode: hierarchy.pincode || toOptionalText(reqBody?.pincode ?? reqBody?.pinCode ?? reqBody?.pin_code),
       sector_id: toOptionalUuid(reqBody?.sectorId ?? reqBody?.sector_id),
       sector_name: toOptionalText(reqBody?.sectorName ?? reqBody?.sector_name),
       affiliation: toOptionalText(reqBody?.affiliation),
@@ -323,6 +354,14 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
   }
 
   if (profileRole === ROLES.STUDENT) {
+    const hierarchy = normalizeIndianLocationHierarchy({
+      stateName: reqBody?.stateName ?? reqBody?.state_name,
+      districtName: reqBody?.districtName ?? reqBody?.district_name,
+      cityName: reqBody?.cityName ?? reqBody?.city_name,
+      localityName: reqBody?.localityName ?? reqBody?.locality_name ?? reqBody?.areaName ?? reqBody?.area_name,
+      pincode: reqBody?.pincode ?? reqBody?.pinCode ?? reqBody?.pin_code,
+      locationText: reqBody?.location ?? reqBody?.preferredWorkLocation ?? reqBody?.preferred_work_location
+    });
     const studentPayload = {
       ...basePayload,
       date_of_birth: toOptionalText(reqBody?.dateOfBirth ?? reqBody?.date_of_birth)
@@ -337,12 +376,34 @@ const buildRoleProfilePayload = ({ role, userId, reqBody = {} }) => {
     }
 
     if (hasAnyKey(reqBody, ['stateName', 'state_name'])) {
-      studentPayload.state_name = toOptionalText(reqBody?.stateName ?? reqBody?.state_name);
+      studentPayload.state_name = hierarchy.stateName || toOptionalText(reqBody?.stateName ?? reqBody?.state_name);
     }
 
     if (hasAnyKey(reqBody, ['districtName', 'district_name'])) {
-      studentPayload.district_name = toOptionalText(reqBody?.districtName ?? reqBody?.district_name);
+      studentPayload.district_name = hierarchy.districtName || toOptionalText(reqBody?.districtName ?? reqBody?.district_name);
     }
+
+    if (hasAnyKey(reqBody, ['cityId', 'city_id'])) {
+      studentPayload.city_id = toOptionalUuid(reqBody?.cityId ?? reqBody?.city_id);
+    }
+
+    if (hasAnyKey(reqBody, ['cityName', 'city_name'])) {
+      studentPayload.city_name = hierarchy.cityName || toOptionalText(reqBody?.cityName ?? reqBody?.city_name);
+    }
+
+    if (hasAnyKey(reqBody, ['localityName', 'locality_name', 'areaName', 'area_name'])) {
+      studentPayload.locality_name = hierarchy.localityName || toOptionalText(reqBody?.localityName ?? reqBody?.locality_name ?? reqBody?.areaName ?? reqBody?.area_name);
+    }
+
+    if (hasAnyKey(reqBody, ['pincode', 'pinCode', 'pin_code'])) {
+      studentPayload.pincode = hierarchy.pincode || toOptionalText(reqBody?.pincode ?? reqBody?.pinCode ?? reqBody?.pin_code);
+    }
+
+    if (hierarchy.stateName && !studentPayload.state_name) studentPayload.state_name = hierarchy.stateName;
+    if (hierarchy.districtName && !studentPayload.district_name) studentPayload.district_name = hierarchy.districtName;
+    if (hierarchy.cityName && !studentPayload.city_name) studentPayload.city_name = hierarchy.cityName;
+    if (hierarchy.localityName && !studentPayload.locality_name) studentPayload.locality_name = hierarchy.localityName;
+    if (hierarchy.pincode && !studentPayload.pincode) studentPayload.pincode = hierarchy.pincode;
 
     return studentPayload;
   }

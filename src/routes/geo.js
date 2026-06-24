@@ -104,7 +104,8 @@ router.get('/resolve', asyncHandler(async (req, res) => {
         districtId: graph.district?.id || graph.pincodeRow?.district_id || graph.city?.district_id || '',
         districtName: graph.district?.name || '',
         cityId: graph.city?.id || graph.pincodeRow?.city_id || '',
-        cityName: graph.city?.name || ''
+        cityName: graph.city?.name || '',
+        localityName: graph.pincodeRow?.locality_name || ''
       }
     });
   } catch (error) {

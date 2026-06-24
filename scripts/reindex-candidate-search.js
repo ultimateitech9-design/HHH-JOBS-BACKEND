@@ -53,6 +53,7 @@ const ensureCandidateIndex = async () => {
         stateName: { type: 'text', fields: { keyword: { type: 'keyword', normalizer: 'lowercase_keyword' } } },
         districtName: { type: 'text', fields: { keyword: { type: 'keyword', normalizer: 'lowercase_keyword' } } },
         cityName: { type: 'text', fields: { keyword: { type: 'keyword', normalizer: 'lowercase_keyword' } } },
+        localityName: { type: 'text', fields: { keyword: { type: 'keyword', normalizer: 'lowercase_keyword' } } },
         pincode: { type: 'keyword' },
         preferredWorkLocation: { type: 'text' },
         skills: { type: 'text', fields: { keyword: { type: 'keyword', normalizer: 'lowercase_keyword' } } },

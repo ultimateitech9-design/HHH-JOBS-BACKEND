@@ -1,5 +1,9 @@
 const { Database } = require('../db');
 const { isValidUuid, stripUndefined } = require('../utils/helpers');
+const {
+  buildHierarchyLabel,
+  normalizeIndianLocationHierarchy
+} = require('./locationHierarchy');
 
 const normalizeText = (value = '') => String(value ?? '').trim();
 const normalizeLookupKey = (value = '') => normalizeText(value).replace(/\s+/g, ' ').toLowerCase();
@@ -56,7 +60,8 @@ const mapPincodeOption = (row = {}) => ({
   pincode: row.pincode || '',
   stateId: row.state_id || row.stateId || '',
   districtId: row.district_id || row.districtId || '',
-  cityId: row.city_id || row.cityId || ''
+  cityId: row.city_id || row.cityId || '',
+  localityName: row.locality_name || row.localityName || ''
 });
 
 const distinctByKey = (items = [], getKey = (item) => item.id) => {
@@ -243,14 +248,17 @@ const loadLocationGraphFromPincode = async ({ pincode = '', stateId = '', distri
   return { pincodeRow, city, district, state };
 };
 
-const ensurePincodeMasterRow = async ({ pincode, stateId, districtId, cityId, userId }) => {
+const ensurePincodeMasterRow = async ({ pincode, stateId, districtId, cityId, localityName, userId }) => {
   const cleanPincode = normalizePincode(pincode);
   if (cleanPincode.length !== 6) return null;
 
   const existing = (await loadPincodeRows({ pincode: cleanPincode, stateId, districtId, cityId })).rows[0];
   if (existing) {
-    if (cityId && !existing.city_id) {
-      await updateMasterRowSafe('master_pincodes', existing.id, { city_id: cityId });
+    const updateDoc = {};
+    if (cityId && !existing.city_id) updateDoc.city_id = cityId;
+    if (localityName && !existing.locality_name) updateDoc.locality_name = localityName;
+    if (Object.keys(updateDoc).length > 0) {
+      await updateMasterRowSafe('master_pincodes', existing.id, updateDoc);
     }
     return existing;
   }
@@ -260,32 +268,76 @@ const ensurePincodeMasterRow = async ({ pincode, stateId, districtId, cityId, us
     state_id: stateId || null,
     district_id: districtId || null,
     city_id: cityId || null,
+    locality_name: localityName || null,
     created_by: userId,
     is_active: true
   });
 };
 
-const buildStructuredLocationLabel = ({ cityName = '', districtName = '', stateName = '', pincode = '' } = {}) => {
-  const parts = [cityName, districtName, stateName, pincode]
-    .map((item) => normalizeText(item))
-    .filter(Boolean);
-  return [...new Set(parts)].join(', ');
-};
+const buildStructuredLocationLabel = ({ localityName = '', cityName = '', districtName = '', stateName = '', pincode = '' } = {}) =>
+  buildHierarchyLabel({ localityName, cityName, districtName, stateName, pincode });
 
 const resolveStructuredLocationPayload = async ({ body = {}, userId = null, allowCreate = true } = {}) => {
   const pincodeInput = normalizePincode(body.pincode ?? body.pinCode ?? body.pin_code ?? body.currentPincode ?? body.current_pincode);
   const linked = pincodeInput ? await loadLocationGraphFromPincode({ pincode: pincodeInput }) : {};
 
-  const stateIdInput = toNullableText(body.stateId ?? body.state_id) || linked.state?.id || linked.city?.state_id || linked.pincodeRow?.state_id || null;
-  const stateNameInput = toNullableText(body.stateName ?? body.state_name ?? body.state) || linked.state?.name || null;
-  const districtIdInput = toNullableText(body.districtId ?? body.district_id) || linked.district?.id || linked.city?.district_id || linked.pincodeRow?.district_id || null;
-  const districtNameInput = toNullableText(body.districtName ?? body.district_name ?? body.district ?? body.otherDistrictName)
+  let stateIdInput = toNullableText(body.stateId ?? body.state_id) || linked.state?.id || linked.city?.state_id || linked.pincodeRow?.state_id || null;
+  let stateNameInput = toNullableText(body.stateName ?? body.state_name ?? body.state) || linked.state?.name || null;
+  let districtIdInput = toNullableText(body.districtId ?? body.district_id) || linked.district?.id || linked.city?.district_id || linked.pincodeRow?.district_id || null;
+  let districtNameInput = toNullableText(body.districtName ?? body.district_name ?? body.district ?? body.otherDistrictName)
     || linked.district?.name
     || null;
-  const cityIdInput = toNullableText(body.cityId ?? body.city_id) || linked.city?.id || linked.pincodeRow?.city_id || null;
-  const cityNameInput = toNullableText(body.cityName ?? body.city_name ?? body.city ?? body.otherCityName)
+  let cityIdInput = toNullableText(body.cityId ?? body.city_id) || linked.city?.id || linked.pincodeRow?.city_id || null;
+  let cityNameInput = toNullableText(body.cityName ?? body.city_name ?? body.city ?? body.otherCityName)
     || linked.city?.name
     || null;
+  let localityNameInput = toNullableText(
+    body.localityName
+    ?? body.locality_name
+    ?? body.areaName
+    ?? body.area_name
+    ?? body.locationName
+    ?? body.location_name
+  ) || linked.pincodeRow?.locality_name || null;
+  const locationTextInput = toNullableText(
+    body.jobLocation
+    ?? body.job_location
+    ?? body.companyLocation
+    ?? body.company_location
+    ?? body.location
+    ?? body.address
+    ?? body.currentAddress
+    ?? body.current_address
+  );
+
+  const normalizedHierarchy = normalizeIndianLocationHierarchy({
+    stateName: stateNameInput,
+    districtName: districtNameInput,
+    cityName: cityNameInput,
+    localityName: localityNameInput,
+    pincode: pincodeInput,
+    locationText: locationTextInput
+  });
+
+  if (normalizedHierarchy.stateName) {
+    if (stateNameInput && normalizeLookupKey(stateNameInput) !== normalizeLookupKey(normalizedHierarchy.stateName)) {
+      stateIdInput = null;
+    }
+    stateNameInput = normalizedHierarchy.stateName;
+  }
+  if (normalizedHierarchy.districtName) {
+    if (districtNameInput && normalizeLookupKey(districtNameInput) !== normalizeLookupKey(normalizedHierarchy.districtName)) {
+      districtIdInput = null;
+    }
+    districtNameInput = normalizedHierarchy.districtName;
+  }
+  if (normalizedHierarchy.cityName) {
+    if (cityNameInput && normalizeLookupKey(cityNameInput) !== normalizeLookupKey(normalizedHierarchy.cityName)) {
+      cityIdInput = null;
+    }
+    cityNameInput = normalizedHierarchy.cityName;
+  }
+  if (normalizedHierarchy.localityName) localityNameInput = normalizedHierarchy.localityName;
 
   if (!stateIdInput && !stateNameInput && !districtIdInput && !districtNameInput && !cityIdInput && !cityNameInput && !pincodeInput) {
     return {};
@@ -353,6 +405,7 @@ const resolveStructuredLocationPayload = async ({ body = {}, userId = null, allo
     stateId,
     districtId,
     cityId,
+    localityName: localityNameInput,
     userId
   });
 
@@ -363,8 +416,15 @@ const resolveStructuredLocationPayload = async ({ body = {}, userId = null, allo
     district_name: districtName,
     city_id: cityId,
     city_name: cityName,
+    locality_name: localityNameInput,
     pincode: pincodeInput || null,
-    location: buildStructuredLocationLabel({ cityName, districtName, stateName, pincode: pincodeInput }) || undefined
+    location: buildStructuredLocationLabel({
+      localityName: localityNameInput,
+      cityName,
+      districtName,
+      stateName,
+      pincode: pincodeInput
+    }) || undefined
   });
 };
 
@@ -458,6 +518,7 @@ const isPanIndiaLocation = (job = {}) => {
   const text = normalizeLocationText([
     job.job_location,
     job.location,
+    job.locality_name,
     job.city_name,
     job.district_name,
     job.state_name
@@ -468,6 +529,7 @@ const isPanIndiaLocation = (job = {}) => {
 const getJobLocationScope = (job = {}) => {
   if (isPanIndiaLocation(job)) return 'pan_india';
   if (normalizePincode(job.pincode).length === 6) return 'pincode';
+  if (normalizeText(job.locality_id || job.locality_name || job.localityName)) return 'locality';
   if (normalizeText(job.city_id || job.city_name || job.cityName)) return 'city';
   if (normalizeText(job.district_id || job.district_name || job.districtName)) return 'district';
   if (normalizeText(job.state_id || job.state_name || job.stateName)) return 'state';
@@ -492,6 +554,15 @@ const computeLocationScore = ({ profile = {}, job = {} } = {}) => {
 
   if (profilePincode && jobPincode && profilePincode === jobPincode) {
     return { score: 100, scope: 'pincode', reason: `Exact pincode match: ${jobPincode}.` };
+  }
+
+  const sameLocality = sameText(profile.locality_name || profile.localityName, job.locality_name || job.localityName)
+    || (
+      normalizeLocationText(profile.location).includes(normalizeLocationText(job.locality_name || job.localityName))
+      && normalizeLocationText(job.locality_name || job.localityName)
+    );
+  if (sameLocality) {
+    return { score: 94, scope: 'locality', reason: `Locality match: ${job.locality_name || job.localityName}.` };
   }
 
   const sameCity = (profile.city_id && job.city_id && profile.city_id === job.city_id)

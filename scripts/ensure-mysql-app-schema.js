@@ -441,6 +441,7 @@ const ensureJobFacetSchema = async (db) => {
 
   await addColumnIfMissing(db, 'jobs', 'city_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'jobs', 'city_id', 'CHAR(36) NULL');
+  await addColumnIfMissing(db, 'jobs', 'locality_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'jobs', 'pincode', 'VARCHAR(32) NULL');
   await addColumnIfMissing(db, 'jobs', 'company_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'jobs', 'company_key', 'VARCHAR(191) NULL');
@@ -501,6 +502,7 @@ const ensureCandidateProfileLocationSchema = async (db) => {
   if (await tableExists(db, 'student_profiles')) {
     await addColumnIfMissing(db, 'student_profiles', 'city_id', 'CHAR(36) NULL');
     await addColumnIfMissing(db, 'student_profiles', 'city_name', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'student_profiles', 'locality_name', 'LONGTEXT NULL');
     await addColumnIfMissing(db, 'student_profiles', 'pincode', 'VARCHAR(32) NULL');
     await addColumnIfMissing(db, 'student_profiles', 'current_pincode', 'VARCHAR(32) NULL');
     await addIndexIfMissing(db, 'student_profiles', 'student_profiles_user_idx', '(`user_id`)');
@@ -540,6 +542,7 @@ const ensureCandidateProfileLocationSchema = async (db) => {
 
   if (await tableExists(db, 'master_pincodes')) {
     await addColumnIfMissing(db, 'master_pincodes', 'city_id', 'CHAR(36) NULL');
+    await addColumnIfMissing(db, 'master_pincodes', 'locality_name', 'LONGTEXT NULL');
     await addIndexIfMissing(
       db,
       'master_pincodes',
@@ -615,6 +618,7 @@ const ensureCompanyDirectorySchema = async (db) => {
   await addColumnIfMissing(db, 'companies', 'city', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'companies', 'city_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'companies', 'city_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'companies', 'locality_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'companies', 'pincode', 'VARCHAR(32) NULL');
   await addColumnIfMissing(db, 'companies', 'state_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'companies', 'district_id', 'CHAR(36) NULL');
@@ -821,6 +825,7 @@ const ensureHrProfilePrefillSchema = async (db) => {
   await addColumnIfMissing(db, 'hr_profiles', 'state_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'district_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'city_name', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'hr_profiles', 'locality_name', 'LONGTEXT NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'pincode', 'VARCHAR(32) NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'sector_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'hr_profiles', 'sector_name', 'LONGTEXT NULL');
@@ -870,8 +875,12 @@ const ensureHrProfilePrefillSchema = async (db) => {
   if (await tableExists(db, 'colleges')) {
     await addColumnIfMissing(db, 'colleges', 'state_id', 'CHAR(36) NULL');
     await addColumnIfMissing(db, 'colleges', 'district_id', 'CHAR(36) NULL');
+    await addColumnIfMissing(db, 'colleges', 'city_id', 'CHAR(36) NULL');
     await addColumnIfMissing(db, 'colleges', 'state_name', 'LONGTEXT NULL');
     await addColumnIfMissing(db, 'colleges', 'district_name', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'city_name', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'locality_name', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'colleges', 'pincode', 'VARCHAR(32) NULL');
     await addColumnIfMissing(db, 'colleges', 'affiliation', 'LONGTEXT NULL');
     await addColumnIfMissing(db, 'colleges', 'established_year', 'INT NULL');
     await addColumnIfMissing(db, 'colleges', 'website', 'LONGTEXT NULL');
@@ -890,8 +899,12 @@ const ensureHrProfilePrefillSchema = async (db) => {
         c.state = COALESCE(NULLIF(c.state, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.state')), 'null'), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateName')), 'null')),
         c.state_id = COALESCE(NULLIF(c.state_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateId')), 'null')),
         c.district_id = COALESCE(NULLIF(c.district_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtId')), 'null')),
+        c.city_id = COALESCE(NULLIF(c.city_id, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.cityId')), 'null')),
         c.state_name = COALESCE(NULLIF(c.state_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.stateName')), 'null'), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.state')), 'null')),
         c.district_name = COALESCE(NULLIF(c.district_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.districtName')), 'null'), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.city')), 'null')),
+        c.city_name = COALESCE(NULLIF(c.city_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.cityName')), 'null')),
+        c.locality_name = COALESCE(NULLIF(c.locality_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.localityName')), 'null'), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.areaName')), 'null')),
+        c.pincode = COALESCE(NULLIF(c.pincode, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.pincode')), 'null')),
         c.affiliation = COALESCE(NULLIF(c.affiliation, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(u.req_body, '$.affiliation')), 'null')),
         c.established_year = COALESCE(
           c.established_year,

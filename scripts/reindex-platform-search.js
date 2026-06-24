@@ -104,9 +104,9 @@ const INDEX_PROPERTIES = {
 const textField = () => ({ type: 'text', fields: { keyword: { type: 'keyword', normalizer: 'lowercase_keyword' } } });
 
 const ENTITY_TEXT_FIELDS = {
-  jobs: ['title', 'jobTitle', 'companyName', 'location', 'cityName', 'districtName', 'stateName', 'pincode', 'sectorName', 'skills', 'description', 'postedBy', 'experienceLevel'],
+  jobs: ['title', 'jobTitle', 'companyName', 'location', 'localityName', 'cityName', 'districtName', 'stateName', 'pincode', 'sectorName', 'skills', 'description', 'postedBy', 'experienceLevel'],
   users: ['displayId', 'name', 'email', 'mobile', 'company', 'department', 'employeeCode', 'salesCode', 'assignedStates'],
-  companies: ['companyName', 'ownerName', 'ownerEmail', 'website', 'industryType', 'sectorName', 'location', 'stateName', 'districtName', 'about'],
+  companies: ['companyName', 'ownerName', 'ownerEmail', 'website', 'industryType', 'sectorName', 'location', 'localityName', 'cityName', 'stateName', 'districtName', 'about'],
   campuses: ['name', 'ownerName', 'ownerEmail', 'city', 'state', 'districtName', 'affiliation', 'website'],
   applications: ['applicantName', 'applicantEmail', 'jobTitle', 'companyName', 'coverLetter'],
   supportTickets: ['ticketNumber', 'title', 'requesterName', 'requesterEmail', 'assigneeName', 'description'],

@@ -114,6 +114,7 @@ const mapPublicUser = (row = {}) => {
     stateName: row.state_name ?? row.stateName ?? row.state,
     districtId: row.district_id ?? row.districtId,
     districtName: row.district_name ?? row.districtName ?? row.city,
+    localityName: row.locality_name ?? row.localityName ?? null,
     ...(role === 'hr' ? {
       hrEmployerId,
       employeeCode: row.employee_code ?? row.employeeCode ?? hrEmployerId
@@ -160,6 +161,7 @@ const mapJobFromRow = (row) => ({
   stateName: row.state_name || '',
   districtName: row.district_name || '',
   cityName: row.city_name || row.district_name || '',
+  localityName: row.locality_name || '',
   pincode: row.pincode || '',
   isPaid: row.is_paid,
   isFeatured: row.is_featured,

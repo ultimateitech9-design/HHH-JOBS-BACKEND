@@ -482,10 +482,11 @@ const optionalText = (value) => {
   return text || null;
 };
 
-const buildLocationLabel = ({ cityName = '', districtName = '', stateName = '', fallback = '' } = {}) => {
-  const structured = [cityName || districtName, stateName]
+const buildLocationLabel = ({ localityName = '', cityName = '', districtName = '', stateName = '', fallback = '' } = {}) => {
+  const structured = [localityName, cityName || districtName, stateName]
     .map((item) => String(item || '').trim())
     .filter(Boolean)
+    .filter((item, index, list) => list.findIndex((value) => value.toLowerCase() === item.toLowerCase()) === index)
     .join(', ');
   return structured || optionalText(fallback) || undefined;
 };
@@ -507,9 +508,11 @@ const buildJobPayload = async (body = {}, { userId = null } = {}) => {
   const stateName = optionalText(structuredLocation.state_name ?? body.stateName ?? body.state_name);
   const districtName = optionalText(structuredLocation.district_name ?? body.districtName ?? body.district_name);
   const cityName = optionalText(structuredLocation.city_name ?? body.cityName ?? body.city_name ?? body.city);
+  const localityName = optionalText(structuredLocation.locality_name ?? body.localityName ?? body.locality_name ?? body.areaName ?? body.area_name);
   const pincode = optionalText(structuredLocation.pincode ?? body.pincode ?? body.pinCode ?? body.pin_code);
-  const structuredLabel = buildStructuredLocationLabel({ cityName, districtName, stateName, pincode });
+  const structuredLabel = buildStructuredLocationLabel({ localityName, cityName, districtName, stateName, pincode });
   const primaryLocation = locations[0] || buildLocationLabel({
+    localityName,
     cityName,
     districtName,
     stateName,
@@ -546,6 +549,7 @@ const buildJobPayload = async (body = {}, { userId = null } = {}) => {
     state_name: stateName,
     district_name: districtName,
     city_name: cityName,
+    locality_name: localityName,
     pincode,
     is_featured: body.isFeatured ?? body.is_featured,
     description: body.description,
@@ -606,6 +610,7 @@ const COMPANY_PROFILE_SELECT = [
   'state_name',
   'district_name',
   'city_name',
+  'locality_name',
   'pincode',
   'sector_id',
   'sector_name',
@@ -621,7 +626,7 @@ const COMPANY_PROFILE_SELECT = [
 ].join(', ');
 
 const buildCompanyLocationLabel = (payload = {}) =>
-  [payload.location || payload.job_location, payload.city_name, payload.district_name, payload.state_name, payload.pincode]
+  [payload.location || payload.job_location, payload.locality_name, payload.city_name, payload.district_name, payload.state_name, payload.pincode]
     .map((item) => String(item || '').trim())
     .filter(Boolean)
     .filter((item, index, list) => list.findIndex((value) => value.toLowerCase() === item.toLowerCase()) === index)
@@ -693,6 +698,7 @@ const buildCompanyProfilePayload = ({ userId, companyName, companyKey, companySl
     state_name: pick(body.companyStateName, body.company_state_name, payload.state_name, existing?.state_name, isPrimaryCompany ? profile.state_name : ''),
     district_name: pick(body.companyDistrictName, body.company_district_name, payload.district_name, existing?.district_name, isPrimaryCompany ? profile.district_name : ''),
     city_name: pick(body.companyCityName, body.company_city_name, payload.city_name, existing?.city_name, isPrimaryCompany ? profile.city_name : ''),
+    locality_name: pick(body.companyLocalityName, body.company_locality_name, body.localityName, body.locality_name, payload.locality_name, existing?.locality_name, isPrimaryCompany ? profile.locality_name : ''),
     pincode: pick(body.companyPincode, body.company_pincode, payload.pincode, existing?.pincode, isPrimaryCompany ? profile.pincode : ''),
     sector_id: optionalUuid(body.companySectorId ?? body.company_sector_id ?? payload.sector_id ?? existing?.sector_id ?? (isPrimaryCompany ? profile.sector_id : null)),
     sector_name: pick(body.companySectorName, body.company_sector_name, payload.sector_name, payload.category, existing?.sector_name, isPrimaryCompany ? profile.sector_name : ''),
@@ -881,25 +887,25 @@ const applyJobFilters = (query, filters = {}) => {
   } = filters;
 
   if (search) {
-    query = applyIlikeAny(query, ['job_title', 'company_name', 'description', 'sector_name', 'category', 'city_name', 'district_name', 'pincode'], search);
+    query = applyIlikeAny(query, ['job_title', 'company_name', 'description', 'sector_name', 'category', 'locality_name', 'city_name', 'district_name', 'pincode'], search);
   }
   if (location) {
-    query = applyIlikeAny(query, ['job_location', 'state_name', 'district_name', 'city_name', 'pincode'], location);
+    query = applyIlikeAny(query, ['job_location', 'state_name', 'district_name', 'city_name', 'locality_name', 'pincode'], location);
   }
   if (state || stateName) {
     query = applyIlikeAny(query, ['state_name', 'job_location'], stateName || state);
   }
   if (district || districtName) {
-    query = applyIlikeAny(query, ['district_name', 'city_name', 'job_location'], districtName || district);
+    query = applyIlikeAny(query, ['district_name', 'city_name', 'locality_name', 'job_location'], districtName || district);
   }
   if (city || cityName) {
-    query = applyIlikeAny(query, ['city_name', 'district_name', 'job_location'], cityName || city);
+    query = applyIlikeAny(query, ['city_name', 'locality_name', 'district_name', 'job_location'], cityName || city);
   }
   if (pincode) {
     query = applyIlikeAny(query, ['pincode', 'job_location'], pincode);
   }
   if (companyLocation) {
-    query = applyIlikeAny(query, ['job_location', 'state_name', 'district_name', 'city_name', 'pincode'], companyLocation);
+    query = applyIlikeAny(query, ['job_location', 'state_name', 'district_name', 'city_name', 'locality_name', 'pincode'], companyLocation);
   }
   if (employmentType) query = query.eq('employment_type', employmentType);
   if (experienceLevel) query = query.eq('experience_level', experienceLevel);
