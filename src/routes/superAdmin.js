@@ -806,6 +806,22 @@ router.get('/command-search', asyncHandler(async (req, res) => {
   const isEmailLookup = isEmailSearchText(search);
   const emailSearchOperator = isExactEmailSearchText(search) ? '=' : 'LIKE';
   const emailSearchValue = emailSearchOperator === '=' ? normalizedSearch : `%${normalizedSearch}%`;
+  const isBroadOneCharacterSearch = search.length > 0
+    && search.length < 2
+    && !searchDigits
+    && !isEmailLookup
+    && !roleFilters.length
+    && !statusFilters.length;
+
+  if (isBroadOneCharacterSearch) {
+    res.send({
+      status: true,
+      results: [],
+      minQueryLength: 2,
+      message: 'Type at least 2 characters, or choose a record/status filter.'
+    });
+    return;
+  }
 
   if (search) {
     if (isEmailLookup) {

@@ -525,6 +525,80 @@ router.get('/meta/sectors', automationProtection, publicJobsReadLimiter, setCata
   res.send({ status: true, sectors: data || [] });
 }));
 
+router.post(
+  '/meta/sectors',
+  browserWriteProtection,
+  requireAuth,
+  requireActiveUser,
+  requireRole(ROLES.HR, ROLES.CAMPUS_CONNECT, ROLES.DATAENTRY, ROLES.ADMIN, ROLES.SUPER_ADMIN),
+  asyncHandler(async (req, res) => {
+    if (!Database) {
+      res.status(503).send({ status: false, message: 'Sector backend is not configured' });
+      return;
+    }
+
+    const name = String(req.body?.name || '').replace(/\s+/g, ' ').trim();
+    if (!name) {
+      res.status(400).send({ status: false, message: 'Sector name is required' });
+      return;
+    }
+    if (name.length > 120) {
+      res.status(400).send({ status: false, message: 'Sector name must be 120 characters or fewer' });
+      return;
+    }
+
+    const { data: matchingRows, error: lookupError } = await Database
+      .from('master_sectors')
+      .select('id, name, is_active')
+      .ilike('name', name)
+      .limit(10);
+
+    if (lookupError) {
+      sendDatabaseError(res, lookupError);
+      return;
+    }
+
+    const existing = (matchingRows || []).find((sector) => (
+      String(sector.name || '').trim().toLowerCase() === name.toLowerCase()
+    ));
+
+    if (existing) {
+      if (existing.is_active === false) {
+        const { data: activatedSector, error: activateError } = await Database
+          .from('master_sectors')
+          .update({ is_active: true })
+          .eq('id', existing.id)
+          .select('id, name, is_active')
+          .maybeSingle();
+
+        if (activateError) {
+          sendDatabaseError(res, activateError);
+          return;
+        }
+
+        res.send({ status: true, sector: activatedSector || { ...existing, is_active: true }, reused: true });
+        return;
+      }
+
+      res.send({ status: true, sector: existing, reused: true });
+      return;
+    }
+
+    const { data: sector, error } = await Database
+      .from('master_sectors')
+      .insert({ name, created_by: req.user.id, is_active: true })
+      .select('id, name, is_active')
+      .single();
+
+    if (error) {
+      sendDatabaseError(res, error);
+      return;
+    }
+
+    res.status(201).send({ status: true, sector });
+  })
+);
+
 router.get('/meta/states', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
   if (!Database) {
     res.send({ status: true, states: [] });

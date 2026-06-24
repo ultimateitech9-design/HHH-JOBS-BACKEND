@@ -1203,28 +1203,51 @@ const ensureIndexesForExistingTables = async (db) => {
     await addIndexIfMissing(db, 'users', 'users_role_status_idx', '(`role`(64), `status`(32), `created_at`)');
     await addIndexIfMissing(db, 'users', 'users_email_idx', '(`email`(191))');
     await addIndexIfMissing(db, 'users', 'users_mobile_idx', '(`mobile`(64))');
+    await addIndexIfColumnsExist(db, 'users', 'users_last_login_idx', '(`last_login_at`, `created_at`)', ['last_login_at', 'created_at']);
     await addIndexIfColumnsExist(db, 'users', 'users_created_id_idx', '(`created_at`, `id`)', ['created_at', 'id']);
     await addFullTextIndexIfColumnsExist(db, 'users', 'users_search_ftx', '(`name`, `email`, `mobile`)', ['name', 'email', 'mobile']);
+  }
+  if (await tableExists(db, 'master_sectors')) {
+    await addIndexIfColumnsExist(db, 'master_sectors', 'master_sectors_name_idx', '(`name`(191), `is_active`)', ['name', 'is_active']);
   }
   if (await tableExists(db, 'jobs')) {
     await addIndexIfColumnsExist(db, 'jobs', 'jobs_status_approval_created_idx', '(`status`(32), `approval_status`(32), `created_at`)', ['status', 'approval_status', 'created_at']);
     await addIndexIfColumnsExist(db, 'jobs', 'jobs_created_id_idx', '(`created_at`, `id`)', ['created_at', 'id']);
     await addIndexIfColumnsExist(db, 'jobs', 'jobs_company_created_idx', '(`company_name`(191), `created_at`)', ['company_name', 'created_at']);
+    await addIndexIfColumnsExist(db, 'jobs', 'jobs_created_by_status_idx', '(`created_by`, `status`(32), `created_at`)', ['created_by', 'status', 'created_at']);
     await addFullTextIndexIfColumnsExist(db, 'jobs', 'jobs_search_ftx', '(`job_title`, `company_name`, `description`, `sector_name`, `category`, `city_name`, `district_name`, `pincode`)', ['job_title', 'company_name', 'description', 'sector_name', 'category', 'city_name', 'district_name', 'pincode']);
   }
   if (await tableExists(db, 'hr_profiles')) {
+    await addIndexIfColumnsExist(db, 'hr_profiles', 'hr_profiles_user_idx', '(`user_id`)', ['user_id']);
     await addIndexIfColumnsExist(db, 'hr_profiles', 'hr_profiles_company_created_idx', '(`company_name`(191), `created_at`)', ['company_name', 'created_at']);
     await addIndexIfColumnsExist(db, 'hr_profiles', 'hr_profiles_created_id_idx', '(`created_at`, `id`)', ['created_at', 'id']);
     await addFullTextIndexIfColumnsExist(db, 'hr_profiles', 'hr_profiles_search_ftx', '(`company_name`, `location`, `industry_type`, `sector_name`, `about`)', ['company_name', 'location', 'industry_type', 'sector_name', 'about']);
   }
   if (await tableExists(db, 'colleges')) {
+    await addIndexIfColumnsExist(db, 'colleges', 'colleges_user_idx', '(`user_id`)', ['user_id']);
     await addIndexIfColumnsExist(db, 'colleges', 'colleges_created_id_idx', '(`created_at`, `id`)', ['created_at', 'id']);
     await addFullTextIndexIfColumnsExist(db, 'colleges', 'colleges_search_ftx', '(`name`, `city`, `state`, `affiliation`)', ['name', 'city', 'state', 'affiliation']);
+  }
+  if (await tableExists(db, 'employee_profiles')) {
+    await addIndexIfColumnsExist(db, 'employee_profiles', 'employee_profiles_search_idx', '(`user_id`, `employee_code`(64), `work_email`(191))', ['user_id', 'employee_code', 'work_email']);
   }
   if (await tableExists(db, 'applications')) {
     await addIndexIfColumnsExist(db, 'applications', 'applications_status_created_idx', '(`status`(32), `created_at`)', ['status', 'created_at']);
     await addIndexIfColumnsExist(db, 'applications', 'applications_job_created_idx', '(`job_id`, `created_at`)', ['job_id', 'created_at']);
+    await addIndexIfColumnsExist(db, 'applications', 'applications_applicant_created_idx', '(`applicant_id`, `created_at`)', ['applicant_id', 'created_at']);
     await addFullTextIndexIfColumnsExist(db, 'applications', 'applications_search_ftx', '(`applicant_name`, `applicant_email`, `cover_letter`)', ['applicant_name', 'applicant_email', 'cover_letter']);
+  }
+  if (await tableExists(db, 'companies')) {
+    await addIndexIfColumnsExist(db, 'companies', 'companies_hr_company_idx', '(`hr_user_id`, `company_name`(191))', ['hr_user_id', 'company_name']);
+    await addFullTextIndexIfColumnsExist(db, 'companies', 'companies_search_ftx', '(`company_name`, `company_key`, `website_url`, `location`, `state_name`, `district_name`)', ['company_name', 'company_key', 'website_url', 'location', 'state_name', 'district_name']);
+  }
+  if (await tableExists(db, 'sales_customers')) {
+    await addIndexIfColumnsExist(db, 'sales_customers', 'sales_customers_user_idx', '(`user_id`)', ['user_id']);
+    await addFullTextIndexIfColumnsExist(db, 'sales_customers', 'sales_customers_search_ftx', '(`company_name`, `contact_name`, `email`, `phone`, `audience_role`)', ['company_name', 'contact_name', 'email', 'phone', 'audience_role']);
+  }
+  if (await tableExists(db, 'sales_leads')) {
+    await addIndexIfColumnsExist(db, 'sales_leads', 'sales_leads_user_idx', '(`user_id`)', ['user_id']);
+    await addFullTextIndexIfColumnsExist(db, 'sales_leads', 'sales_leads_search_ftx', '(`company_name`, `contact_name`, `contact_email`, `contact_phone`, `target_role`)', ['company_name', 'contact_name', 'contact_email', 'contact_phone', 'target_role']);
   }
   if (await tableExists(db, 'platform_settings')) {
     await addUniqueIndexIfMissing(db, 'platform_settings', 'platform_settings_key_uidx', '(`key`(191))');
