@@ -373,9 +373,15 @@ const normalizeRowsByPincode = async (db, table, hierarchy, ids, columnsByTable,
   const textColumns = ['job_location', 'location', 'city', 'city_name', 'district_name', 'state_name', 'locality_name']
     .filter((column) => columns.has(column));
   const selectColumns = ['id', 'pincode', ...textColumns].filter((column, index, list) => list.indexOf(column) === index);
+  const textSql = textColumns.length
+    ? `CONCAT_WS(' ', ${textColumns.map((column) => `COALESCE(${quoteId(column)}, '')`).join(', ')})`
+    : "''";
   const [rows] = await db.execute(
-    `SELECT ${selectColumns.map(quoteId).join(', ')} FROM ${quoteId(table)} WHERE REGEXP_REPLACE(COALESCE(${quoteId('pincode')}, ''), '[^0-9]', '') = ?`,
-    [hierarchy.pincode]
+    `SELECT ${selectColumns.map(quoteId).join(', ')}
+     FROM ${quoteId(table)}
+     WHERE REGEXP_REPLACE(COALESCE(${quoteId('pincode')}, ''), '[^0-9]', '') = ?
+        OR ${textSql} REGEXP ?`,
+    [hierarchy.pincode, `(^|[^0-9])${hierarchy.pincode}([^0-9]|$)`]
   );
 
   for (const row of rows) {
