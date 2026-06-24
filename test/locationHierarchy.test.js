@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 
 const {
   buildHierarchyLabel,
+  isAddressNoiseLocationName,
+  isValidAdministrativeDistrictName,
   normalizeIndianLocationHierarchy
 } = require('../src/services/locationHierarchy');
 
@@ -45,6 +47,24 @@ test('infers South West Delhi district for known Delhi localities without pincod
   assert.equal(result.districtName, 'South West Delhi');
   assert.equal(result.cityName, 'Delhi');
   assert.equal(result.localityName, 'Ghitorni');
+});
+
+test('rejects address floor tokens as Delhi districts', () => {
+  const result = normalizeIndianLocationHierarchy({
+    stateName: 'Delhi',
+    districtName: 'Basement',
+    cityName: 'GF',
+    locationText: 'Basement, 672, White House, Behind MCD School, MG Road, Ghitorni, New Delhi 110030'
+  });
+
+  assert.equal(result.stateName, 'Delhi');
+  assert.equal(result.districtName, 'South West Delhi');
+  assert.equal(result.cityName, 'Delhi');
+  assert.equal(result.localityName, 'Ghitorni');
+  assert.equal(isAddressNoiseLocationName('GF'), true);
+  assert.equal(isAddressNoiseLocationName('Basement'), true);
+  assert.equal(isValidAdministrativeDistrictName({ stateName: 'Delhi', districtName: 'Basement' }), false);
+  assert.equal(isValidAdministrativeDistrictName({ stateName: 'Delhi', districtName: 'South West Delhi' }), true);
 });
 
 test('builds non-duplicated locality city district label', () => {

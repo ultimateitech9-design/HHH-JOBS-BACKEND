@@ -13,6 +13,11 @@ const { applyToJob } = require('../services/applications');
 const { buildCompanyBrandIndex, resolveCompanyBrand } = require('../services/companyBranding');
 const { getPool } = require('../mysqlDatabaseAdapter');
 const {
+  isAddressNoiseLocationName,
+  isValidAdministrativeDistrictName,
+  sanitizeAdministrativeDistrictName
+} = require('../services/locationHierarchy');
+const {
   hasPlatformSearchIntent,
   reorderRowsBySearchIds,
   searchPlatformEntityIds
@@ -611,8 +616,8 @@ const getLocationTree = async () => {
   };
 
   const ensureDistrict = ({ id, name, stateId, stateName } = {}) => {
-    const label = cleanFacetName(name);
-    if (!label) return null;
+    const label = cleanFacetName(sanitizeAdministrativeDistrictName({ stateName, districtName: name }));
+    if (!label || !isValidAdministrativeDistrictName({ stateName, districtName: label })) return null;
     const parentState = states.get(stateId) || ensureState({ id: stateId, name: stateName });
     const resolvedStateId = parentState?.id || '';
     const districtKey = `${resolvedStateId}|${normalizeLocationTreeKey(label)}`;
@@ -639,7 +644,7 @@ const getLocationTree = async () => {
 
   const ensureCity = ({ id, name, stateId, stateName, districtId, districtName, pincode } = {}) => {
     const label = cleanFacetName(name);
-    if (!label) return null;
+    if (!label || isAddressNoiseLocationName(label)) return null;
     const parentDistrict = districts.get(districtId) || ensureDistrict({ id: districtId, name: districtName, stateId, stateName });
     const parentState = states.get(stateId) || states.get(parentDistrict?.stateId) || ensureState({ id: stateId, name: stateName });
     const resolvedStateId = parentState?.id || parentDistrict?.stateId || '';

@@ -9,11 +9,14 @@ const {
   canonicalizeDelhiDistrictName,
   cleanText,
   detectDelhiLocalityName,
+  isAddressNoiseLocationName,
   isDelhiPincode,
   isDelhiStateName,
+  isValidAdministrativeDistrictName,
   normalizeIndianLocationHierarchy,
   normalizeKey,
-  normalizePincode
+  normalizePincode,
+  sanitizeAdministrativeDistrictName
 } = require('../src/services/locationHierarchy');
 
 const POSTAL_API_BASE_URL = 'https://api.postalpincode.in/pincode';
@@ -520,6 +523,67 @@ const normalizeHeuristicDelhiRows = async (db, columnsByTable, dryRun, summary) 
   }
 };
 
+const cleanupInvalidMasterDistricts = async (db, columnsByTable, dryRun, summary) => {
+  const districtColumns = columnsByTable.master_districts || new Set();
+  if (!districtColumns.has('id') || !districtColumns.has('name') || !districtColumns.has('is_active')) return;
+
+  const [rows] = await db.execute(`
+    SELECT md.id, md.name, md.state_id, ms.name AS state_name
+    FROM master_districts md
+    LEFT JOIN master_states ms ON ms.id = md.state_id
+    WHERE md.is_active = 1
+      AND NULLIF(TRIM(md.name), '') IS NOT NULL
+  `);
+
+  for (const row of rows) {
+    const canonicalName = sanitizeAdministrativeDistrictName({
+      stateName: row.state_name,
+      districtName: row.name
+    });
+    const isValid = isValidAdministrativeDistrictName({
+      stateName: row.state_name,
+      districtName: canonicalName || row.name
+    });
+
+    if (isValid && canonicalName && normalizeKey(canonicalName) !== normalizeKey(row.name)) {
+      const [canonicalRows] = await db.execute(
+        'SELECT id FROM master_districts WHERE state_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) ORDER BY created_at ASC LIMIT 1',
+        [row.state_id, canonicalName]
+      );
+      const canonicalId = canonicalRows[0]?.id || null;
+      if (canonicalId && canonicalId !== row.id) {
+        await updateReferenceIds(db, row.id, canonicalId, 'district_id', {
+          district_name: canonicalName,
+          state_id: row.state_id,
+          state_name: row.state_name
+        }, columnsByTable, dryRun, summary);
+        await executeUpdate(db, 'master_districts', { is_active: 0 }, 'id = ?', [row.id], columnsByTable, dryRun, summary);
+        summary.invalidDistrictRows += 1;
+        continue;
+      }
+
+      await executeUpdate(db, 'master_districts', { name: canonicalName }, 'id = ?', [row.id], columnsByTable, dryRun, summary);
+      summary.canonicalizedDistrictRows += 1;
+      continue;
+    }
+
+    if (isValid) continue;
+
+    for (const table of ['jobs', 'companies', 'hr_profiles', 'student_profiles', 'colleges']) {
+      const columns = columnsByTable[table] || new Set();
+      if (!columns.has('district_id')) continue;
+      const payload = {
+        district_id: null
+      };
+      if (columns.has('district_name') && isAddressNoiseLocationName(row.name)) payload.district_name = null;
+      await executeUpdate(db, table, payload, 'district_id = ?', [row.id], columnsByTable, dryRun, summary);
+    }
+
+    await executeUpdate(db, 'master_districts', { is_active: 0 }, 'id = ?', [row.id], columnsByTable, dryRun, summary);
+    summary.invalidDistrictRows += 1;
+  }
+};
+
 const main = async () => {
   const options = parseArgs();
   const dryRun = !options.apply;
@@ -535,7 +599,9 @@ const main = async () => {
     updatedRows: 0,
     plannedInserts: 0,
     plannedUpdates: 0,
-    heuristicRows: 0
+    heuristicRows: 0,
+    invalidDistrictRows: 0,
+    canonicalizedDistrictRows: 0
   };
 
   const db = await mysql.createConnection(getConnectionOptions());
@@ -571,6 +637,7 @@ const main = async () => {
     }
 
     await normalizeHeuristicDelhiRows(db, columnsByTable, dryRun, summary);
+    await cleanupInvalidMasterDistricts(db, columnsByTable, dryRun, summary);
     if (summary.apiCalls > 0) await writeCache(cache);
 
     console.log(JSON.stringify(summary, null, 2));

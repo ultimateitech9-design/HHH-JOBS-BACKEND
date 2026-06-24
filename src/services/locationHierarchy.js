@@ -5,6 +5,50 @@ const normalizeCompactKey = (value = '') => normalizeKey(value).replace(/[^a-z0-
 
 const normalizePincode = (value = '') => cleanText(value).replace(/\D/g, '').slice(0, 6);
 
+const ADDRESS_NOISE_COMPACT_KEYS = new Set([
+  'b',
+  'bsmt',
+  'basement',
+  'gf',
+  'gfloor',
+  'groundfloor',
+  'lgf',
+  'ugf',
+  'ff',
+  'firstfloor',
+  '1stfloor',
+  'sf',
+  'secondfloor',
+  '2ndfloor',
+  'tf',
+  'thirdfloor',
+  '3rdfloor',
+  'floor',
+  'whitehouse',
+  'mcdschool',
+  'behindmcdschool'
+]);
+
+const ADDRESS_NOISE_WORDS = new Set([
+  'address',
+  'apartment',
+  'basement',
+  'behind',
+  'bldg',
+  'building',
+  'floor',
+  'gate',
+  'house',
+  'landmark',
+  'near',
+  'plot',
+  'road',
+  'school',
+  'shop',
+  'street',
+  'tower'
+]);
+
 const DELHI_STATE_KEYS = new Set([
   'delhi',
   'nct delhi',
@@ -70,10 +114,40 @@ const isDelhiStateName = (value = '') => {
 
 const isDelhiPincode = (value = '') => /^110\d{3}$/.test(normalizePincode(value));
 
+const isAddressNoiseLocationName = (value = '') => {
+  const label = cleanText(value);
+  if (!label) return true;
+  if (label.length > 80 || label.includes(',') || normalizePincode(label) === label) return true;
+
+  const compactKey = normalizeCompactKey(label);
+  if (!compactKey || ADDRESS_NOISE_COMPACT_KEYS.has(compactKey)) return true;
+
+  const words = normalizeKey(label)
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.some((word) => ADDRESS_NOISE_WORDS.has(word));
+};
+
 const canonicalizeDelhiDistrictName = (value = '') => {
   const compactKey = normalizeCompactKey(value);
   if (!compactKey || compactKey === 'delhi' || compactKey === 'nctdelhi') return '';
   return DELHI_DISTRICT_BY_COMPACT_KEY.get(compactKey) || '';
+};
+
+const isValidAdministrativeDistrictName = ({ stateName = '', districtName = '' } = {}) => {
+  const label = cleanText(districtName);
+  if (!label || isAddressNoiseLocationName(label)) return false;
+  if (isDelhiStateName(stateName) || isDelhiPincode(label)) {
+    return Boolean(canonicalizeDelhiDistrictName(label));
+  }
+  return true;
+};
+
+const sanitizeAdministrativeDistrictName = ({ stateName = '', districtName = '' } = {}) => {
+  const label = cleanText(districtName);
+  if (!label || isAddressNoiseLocationName(label)) return '';
+  return canonicalizeDelhiDistrictName(label) || label;
 };
 
 const canonicalizeDelhiLocalityName = (value = '') => {
@@ -133,36 +207,39 @@ const normalizeIndianLocationHierarchy = ({
   const cleanCityName = cleanText(cityName);
   const cleanLocalityName = cleanText(localityName);
   const cleanPincode = normalizePincode(pincode);
+  const usableDistrictName = sanitizeAdministrativeDistrictName({ stateName: cleanStateName, districtName: cleanDistrictName });
+  const usableCityName = isAddressNoiseLocationName(cleanCityName) ? '' : cleanCityName;
+  const usableLocalityName = isAddressNoiseLocationName(cleanLocalityName) ? '' : cleanLocalityName;
 
   if (!isDelhiLocation({
     stateName: cleanStateName,
-    districtName: cleanDistrictName,
-    cityName: cleanCityName,
-    localityName: cleanLocalityName,
+    districtName: usableDistrictName,
+    cityName: usableCityName,
+    localityName: usableLocalityName,
     pincode: cleanPincode,
     locationText
   })) {
     return {
       stateName: cleanStateName || null,
-      districtName: cleanDistrictName || null,
-      cityName: cleanCityName || null,
-      localityName: cleanLocalityName || null,
+      districtName: usableDistrictName || null,
+      cityName: usableCityName || null,
+      localityName: usableLocalityName || null,
       pincode: cleanPincode || null
     };
   }
 
-  const districtFromDistrict = canonicalizeDelhiDistrictName(cleanDistrictName);
-  const districtFromCity = canonicalizeDelhiDistrictName(cleanCityName);
-  const localityFromInputs = detectDelhiLocalityName(cleanLocalityName, cleanCityName, locationText);
+  const districtFromDistrict = canonicalizeDelhiDistrictName(usableDistrictName);
+  const districtFromCity = canonicalizeDelhiDistrictName(usableCityName);
+  const localityFromInputs = detectDelhiLocalityName(usableLocalityName, usableCityName, locationText);
   const localityDistrictName = getDelhiDistrictForLocalityName(localityFromInputs || cleanLocalityName || cleanCityName);
   const cityIsDistrict = Boolean(districtFromCity);
-  const cityIsLocality = Boolean(detectDelhiLocalityName(cleanCityName));
+  const cityIsLocality = Boolean(detectDelhiLocalityName(usableCityName));
 
   return {
     stateName: 'Delhi',
-    districtName: districtFromDistrict || (cityIsDistrict ? districtFromCity : '') || localityDistrictName || cleanDistrictName || null,
+    districtName: districtFromDistrict || (cityIsDistrict ? districtFromCity : '') || localityDistrictName || null,
     cityName: 'Delhi',
-    localityName: localityFromInputs || (cityIsLocality ? detectDelhiLocalityName(cleanCityName) : cleanLocalityName) || null,
+    localityName: localityFromInputs || (cityIsLocality ? detectDelhiLocalityName(usableCityName) : usableLocalityName) || null,
     pincode: cleanPincode || null
   };
 };
@@ -191,10 +268,13 @@ module.exports = {
   cleanText,
   detectDelhiLocalityName,
   getDelhiDistrictForLocalityName,
+  isAddressNoiseLocationName,
   isDelhiLocation,
   isDelhiPincode,
   isDelhiStateName,
+  isValidAdministrativeDistrictName,
   normalizeIndianLocationHierarchy,
   normalizeKey,
-  normalizePincode
+  normalizePincode,
+  sanitizeAdministrativeDistrictName
 };

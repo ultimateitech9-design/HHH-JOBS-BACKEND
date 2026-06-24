@@ -2,6 +2,7 @@ const { Database } = require('../db');
 const { isValidUuid, stripUndefined } = require('../utils/helpers');
 const {
   buildHierarchyLabel,
+  isAddressNoiseLocationName,
   normalizeIndianLocationHierarchy
 } = require('./locationHierarchy');
 
@@ -325,19 +326,21 @@ const resolveStructuredLocationPayload = async ({ body = {}, userId = null, allo
     }
     stateNameInput = normalizedHierarchy.stateName;
   }
-  if (normalizedHierarchy.districtName) {
+  if (normalizedHierarchy.districtName || districtNameInput) {
     if (districtNameInput && normalizeLookupKey(districtNameInput) !== normalizeLookupKey(normalizedHierarchy.districtName)) {
       districtIdInput = null;
     }
-    districtNameInput = normalizedHierarchy.districtName;
+    districtNameInput = normalizedHierarchy.districtName || null;
   }
-  if (normalizedHierarchy.cityName) {
+  if (normalizedHierarchy.cityName || cityNameInput) {
     if (cityNameInput && normalizeLookupKey(cityNameInput) !== normalizeLookupKey(normalizedHierarchy.cityName)) {
       cityIdInput = null;
     }
-    cityNameInput = normalizedHierarchy.cityName;
+    cityNameInput = normalizedHierarchy.cityName || null;
   }
-  if (normalizedHierarchy.localityName) localityNameInput = normalizedHierarchy.localityName;
+  if (normalizedHierarchy.localityName || localityNameInput) {
+    localityNameInput = normalizedHierarchy.localityName || (isAddressNoiseLocationName(localityNameInput) ? null : localityNameInput);
+  }
 
   if (!stateIdInput && !stateNameInput && !districtIdInput && !districtNameInput && !cityIdInput && !cityNameInput && !pincodeInput) {
     return {};
