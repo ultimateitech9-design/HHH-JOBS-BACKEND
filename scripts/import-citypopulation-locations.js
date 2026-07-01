@@ -53,6 +53,7 @@ const parseArgs = (argv = process.argv.slice(2)) => {
 
   return {
     apply: args.get('apply') === 'true',
+    prune: args.get('prune') === 'true',
     sourcePath: path.resolve(args.get('source') || process.env.CITYPOPULATION_LOCATION_CSV || DEFAULT_SOURCE_PATH),
     state: cleanText(args.get('state') || ''),
     limit: Math.max(0, Number(args.get('limit') || 0))
@@ -218,15 +219,29 @@ const loadRows = async (db, table, columns) => {
   return rows || [];
 };
 
-const syncStates = async (db, states) => {
+const deactivateRowsNotInIds = async (db, table, keepIds) => {
+  const ids = [...new Set(Array.from(keepIds || []).map(cleanText).filter(Boolean))];
+  if (!ids.length) return 0;
+  const placeholders = ids.map(() => '?').join(', ');
+  const [result] = await db.execute(
+    `UPDATE \`${table}\` SET is_active = 0 WHERE is_active = 1 AND id NOT IN (${placeholders})`,
+    ids
+  );
+  return result.affectedRows || 0;
+};
+
+const syncStates = async (db, states, { prune = false } = {}) => {
   const existingRows = await loadRows(db, 'master_states', ['id', 'name', 'code', 'is_active']);
   const existingByKey = new Map();
   existingRows.forEach((row) => {
-    const key = locationKey(row.name);
-    if (key && !existingByKey.has(key)) existingByKey.set(key, row);
+    const key = locationKey(canonicalizeStateName(row.name));
+    const existing = existingByKey.get(key);
+    if (!key) return;
+    if (!existing || locationKey(existing.name) !== key) existingByKey.set(key, row);
   });
 
   const idByStateKey = new Map();
+  const keepIds = new Set();
   let inserted = 0;
   let updated = 0;
 
@@ -238,6 +253,7 @@ const syncStates = async (db, states) => {
         [state.name, state.code || '', current.id]
       );
       idByStateKey.set(state.key, current.id);
+      keepIds.add(current.id);
       updated += 1;
       continue;
     }
@@ -249,13 +265,16 @@ const syncStates = async (db, states) => {
     );
     existingByKey.set(state.key, { id, name: state.name });
     idByStateKey.set(state.key, id);
+    keepIds.add(id);
     inserted += 1;
   }
 
-  return { inserted, updated, idByStateKey };
+  const pruned = prune ? await deactivateRowsNotInIds(db, 'master_states', keepIds) : 0;
+
+  return { inserted, updated, pruned, idByStateKey };
 };
 
-const syncDistricts = async (db, districts, idByStateKey) => {
+const syncDistricts = async (db, districts, idByStateKey, { prune = false } = {}) => {
   const existingRows = await loadRows(db, 'master_districts', ['id', 'state_id', 'name', 'is_active']);
   const existingByKey = new Map();
   existingRows.forEach((row) => {
@@ -264,6 +283,7 @@ const syncDistricts = async (db, districts, idByStateKey) => {
   });
 
   const idByDistrictKey = new Map();
+  const keepIds = new Set();
   let inserted = 0;
   let updated = 0;
 
@@ -279,6 +299,7 @@ const syncDistricts = async (db, districts, idByStateKey) => {
         [stateId, district.name, current.id]
       );
       idByDistrictKey.set(district.key, current.id);
+      keepIds.add(current.id);
       updated += 1;
       continue;
     }
@@ -290,13 +311,16 @@ const syncDistricts = async (db, districts, idByStateKey) => {
     );
     existingByKey.set(key, { id, state_id: stateId, name: district.name });
     idByDistrictKey.set(district.key, id);
+    keepIds.add(id);
     inserted += 1;
   }
 
-  return { inserted, updated, idByDistrictKey };
+  const pruned = prune ? await deactivateRowsNotInIds(db, 'master_districts', keepIds) : 0;
+
+  return { inserted, updated, pruned, idByDistrictKey };
 };
 
-const syncCities = async (db, cities, idByStateKey, idByDistrictKey) => {
+const syncCities = async (db, cities, idByStateKey, idByDistrictKey, { prune = false } = {}) => {
   const existingRows = await loadRows(db, 'master_locations', ['id', 'state_id', 'district_id', 'name', 'pincode', 'is_active']);
   const exactByKey = new Map();
   const looseByKey = new Map();
@@ -316,6 +340,7 @@ const syncCities = async (db, cities, idByStateKey, idByDistrictKey) => {
   let inserted = 0;
   let updated = 0;
   let reassigned = 0;
+  const keepIds = new Set();
 
   for (const city of cities) {
     const stateId = idByStateKey.get(city.stateKey);
@@ -330,6 +355,7 @@ const syncCities = async (db, cities, idByStateKey, idByDistrictKey) => {
         'UPDATE master_locations SET state_id = ?, district_id = ?, name = ?, pincode = COALESCE(NULLIF(?, \'\'), pincode), is_active = 1 WHERE id = ?',
         [stateId, districtId, city.name, city.pincode || '', current.id]
       );
+      keepIds.add(current.id);
       updated += 1;
       continue;
     }
@@ -345,6 +371,7 @@ const syncCities = async (db, cities, idByStateKey, idByDistrictKey) => {
       exactByKey.set(exactKey, { ...loose, state_id: stateId, district_id: districtId, name: city.name });
       looseByKey.delete(stateLooseKey);
       looseByKey.delete(globalLooseKey);
+      keepIds.add(loose.id);
       reassigned += 1;
       continue;
     }
@@ -355,13 +382,20 @@ const syncCities = async (db, cities, idByStateKey, idByDistrictKey) => {
       [id, stateId, districtId, city.name, city.pincode || null]
     );
     exactByKey.set(exactKey, { id, state_id: stateId, district_id: districtId, name: city.name });
+    keepIds.add(id);
     inserted += 1;
   }
 
-  return { inserted, updated, reassigned };
+  const pruned = prune ? await deactivateRowsNotInIds(db, 'master_locations', keepIds) : 0;
+
+  return { inserted, updated, reassigned, pruned };
 };
 
 const importCitypopulationLocations = async (options = parseArgs()) => {
+  if (options.prune && options.state) {
+    throw new Error('--prune can only be used for a full import. Remove --state or run without --prune.');
+  }
+
   const content = await fs.readFile(options.sourcePath, 'utf8');
   const rows = parseLocationCsv(content);
   const hierarchy = buildLocationHierarchy(rows, {
@@ -392,8 +426,11 @@ const importCitypopulationLocations = async (options = parseArgs()) => {
   try {
     await db.beginTransaction();
     const stateResult = await syncStates(db, hierarchy.states);
-    const districtResult = await syncDistricts(db, hierarchy.districts, stateResult.idByStateKey);
-    const cityResult = await syncCities(db, hierarchy.cities, stateResult.idByStateKey, districtResult.idByDistrictKey);
+    const districtResult = await syncDistricts(db, hierarchy.districts, stateResult.idByStateKey, { prune: options.prune });
+    const cityResult = await syncCities(db, hierarchy.cities, stateResult.idByStateKey, districtResult.idByDistrictKey, { prune: options.prune });
+    if (options.prune) {
+      stateResult.pruned = await deactivateRowsNotInIds(db, 'master_states', stateResult.idByStateKey.values());
+    }
     await db.commit();
 
     return {
@@ -401,11 +438,13 @@ const importCitypopulationLocations = async (options = parseArgs()) => {
       dryRun: false,
       states: {
         inserted: stateResult.inserted,
-        updated: stateResult.updated
+        updated: stateResult.updated,
+        pruned: stateResult.pruned || 0
       },
       districts: {
         inserted: districtResult.inserted,
-        updated: districtResult.updated
+        updated: districtResult.updated,
+        pruned: districtResult.pruned || 0
       },
       cities: cityResult
     };
