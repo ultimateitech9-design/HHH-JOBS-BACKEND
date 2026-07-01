@@ -289,7 +289,7 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
     masterSectors,
     activeCities,
     allJobCities,
-    masterDistricts,
+    masterCities,
     activePincodes,
     allPincodes,
     masterPincodes,
@@ -388,7 +388,7 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
     `),
     db.execute(`
       SELECT MIN(TRIM(name)) AS name, 0 AS totalCount
-      FROM master_districts
+      FROM master_locations
       WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL
       GROUP BY LOWER(TRIM(name))
       ORDER BY name ASC
@@ -430,7 +430,7 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
       SELECT
         (SELECT COUNT(DISTINCT LOWER(TRIM(name))) FROM master_categories WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS roles,
         (SELECT COUNT(DISTINCT LOWER(TRIM(name))) FROM master_sectors WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS sectors,
-        (SELECT COUNT(DISTINCT LOWER(TRIM(name))) FROM master_districts WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS cities
+        (SELECT COUNT(DISTINCT LOWER(TRIM(name))) FROM master_locations WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS cities
     `)
   ]);
 
@@ -451,7 +451,7 @@ const getHomepageFacets = async ({ roleLimit, sectorLimit, cityLimit, pincodeLim
     }),
     cities: mergeFacetItems({
       activeRows: normalizeFacetRows(activeCities[0]),
-      allRows: [...normalizeFacetRows(allJobCities[0]), ...normalizeFacetRows(masterDistricts[0]).map((row) => ({ ...row, sourceRank: 0 }))],
+      allRows: [...normalizeFacetRows(allJobCities[0]), ...normalizeFacetRows(masterCities[0]).map((row) => ({ ...row, sourceRank: 0 }))],
       fallbackNames: DEFAULT_CITY_NAMES,
       limit: cityLimit,
       kind: 'city'
