@@ -489,6 +489,416 @@ const splitLocalityNames = (value = '') => cleanFacetName(value)
   .filter(Boolean)
   .filter((item, index, list) => list.findIndex((entry) => normalizeLocationTreeKey(entry) === normalizeLocationTreeKey(item)) === index);
 
+const LOCATION_DIRECTORY_LEVELS = new Set(['states', 'districts', 'cities', 'localities']);
+
+const getLocationDirectoryLimit = (value, fallback = 96, maximum = 300) => {
+  const parsed = Number.parseInt(value || fallback, 10);
+  return clamp(Number.isFinite(parsed) ? parsed : fallback, 1, maximum);
+};
+
+const makeLikePattern = (value = '') => `%${cleanFacetName(value)}%`;
+
+const mapDirectoryState = (row = {}) => ({
+  id: String(row.id || ''),
+  name: cleanFacetName(canonicalizeIndianRegionName(row.name) || row.name),
+  code: cleanFacetName(row.code),
+  type: 'state',
+  districtCount: Number(row.districtCount || row.district_count || 0),
+  cityCount: Number(row.cityCount || row.city_count || 0),
+  localityCount: Number(row.localityCount || row.locality_count || 0),
+  pincodeCount: Number(row.pincodeCount || row.pincode_count || 0),
+  jobCount: Number(row.jobCount || row.job_count || 0)
+});
+
+const mapDirectoryDistrict = (row = {}) => ({
+  id: String(row.id || ''),
+  name: cleanFacetName(sanitizeAdministrativeDistrictName({ stateName: row.state_name, districtName: row.name }) || row.name),
+  type: 'district',
+  stateId: String(row.state_id || ''),
+  stateName: cleanFacetName(canonicalizeIndianRegionName(row.state_name) || row.state_name),
+  cityCount: Number(row.cityCount || row.city_count || 0),
+  localityCount: Number(row.localityCount || row.locality_count || 0),
+  pincodeCount: Number(row.pincodeCount || row.pincode_count || 0),
+  jobCount: Number(row.jobCount || row.job_count || 0)
+});
+
+const mapDirectoryCity = (row = {}) => ({
+  id: String(row.id || ''),
+  name: cleanFacetName(row.name),
+  type: 'city',
+  stateId: String(row.state_id || ''),
+  stateName: cleanFacetName(canonicalizeIndianRegionName(row.state_name) || row.state_name),
+  districtId: String(row.district_id || ''),
+  districtName: cleanFacetName(sanitizeAdministrativeDistrictName({ stateName: row.state_name, districtName: row.district_name }) || row.district_name),
+  localityCount: Number(row.localityCount || row.locality_count || 0),
+  pincodeCount: Number(row.pincodeCount || row.pincode_count || 0),
+  pincode: cleanFacetName(row.pincode),
+  jobCount: Number(row.jobCount || row.job_count || 0)
+});
+
+const mapDirectoryLocality = (row = {}) => ({
+  id: String(row.id || makeSyntheticLocationId('locality', row.state_id, row.district_id, row.city_id, row.name, row.pincode)),
+  name: cleanFacetName(row.name || row.locality_name || row.pincode),
+  type: 'locality',
+  pincode: cleanFacetName(row.pincode),
+  stateId: String(row.state_id || ''),
+  stateName: cleanFacetName(canonicalizeIndianRegionName(row.state_name) || row.state_name),
+  districtId: String(row.district_id || ''),
+  districtName: cleanFacetName(sanitizeAdministrativeDistrictName({ stateName: row.state_name, districtName: row.district_name }) || row.district_name),
+  cityId: String(row.city_id || ''),
+  cityName: cleanFacetName(row.city_name),
+  jobCount: Number(row.jobCount || row.job_count || 0)
+});
+
+const getLocationDirectoryTotals = async (db) => {
+  const [rows] = await db.execute(`
+    SELECT
+      (SELECT COUNT(*) FROM master_states WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS states,
+      (SELECT COUNT(*) FROM master_districts WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS districts,
+      (SELECT COUNT(*) FROM master_locations WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS cities,
+      (SELECT COUNT(DISTINCT NULLIF(TRIM(pincode), '')) FROM master_pincodes WHERE is_active = 1 AND NULLIF(TRIM(pincode), '') IS NOT NULL) AS pincodes,
+      (SELECT COUNT(*) FROM jobs ${OPEN_JOBS_WHERE}) AS openJobs
+  `);
+  const row = rows?.[0] || {};
+  return {
+    states: Number(row.states || 0),
+    districts: Number(row.districts || 0),
+    cities: Number(row.cities || 0),
+    localities: 0,
+    pincodes: Number(row.pincodes || 0),
+    openJobs: Number(row.openJobs || 0)
+  };
+};
+
+const getLocationDirectoryStates = async (db, { limit }) => {
+  const [rows] = await db.execute(`
+    SELECT
+      ms.id,
+      ms.name,
+      ms.code,
+      COALESCE(dc.total, 0) AS districtCount,
+      COALESCE(cc.total, 0) AS cityCount,
+      COALESCE(pc.total, 0) AS pincodeCount,
+      COALESCE(jc.total, 0) AS jobCount
+    FROM master_states ms
+    LEFT JOIN (
+      SELECT state_id, COUNT(*) AS total
+      FROM master_districts
+      WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL
+      GROUP BY state_id
+    ) dc ON dc.state_id = ms.id
+    LEFT JOIN (
+      SELECT state_id, COUNT(*) AS total
+      FROM master_locations
+      WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL
+      GROUP BY state_id
+    ) cc ON cc.state_id = ms.id
+    LEFT JOIN (
+      SELECT state_id, COUNT(DISTINCT NULLIF(TRIM(pincode), '')) AS total
+      FROM master_pincodes
+      WHERE is_active = 1 AND NULLIF(TRIM(pincode), '') IS NOT NULL
+      GROUP BY state_id
+    ) pc ON pc.state_id = ms.id
+    LEFT JOIN (
+      SELECT state_id, COUNT(*) AS total
+      FROM jobs
+      ${OPEN_JOBS_WHERE}
+        AND state_id IS NOT NULL
+      GROUP BY state_id
+    ) jc ON jc.state_id = ms.id
+    WHERE ms.is_active = 1
+      AND NULLIF(TRIM(ms.name), '') IS NOT NULL
+    ORDER BY jobCount DESC, ms.name ASC
+    LIMIT ${limit}
+  `);
+
+  return rows.map(mapDirectoryState).filter((item) => item.id && item.name);
+};
+
+const getLocationDirectoryDistricts = async (db, { parentId, limit }) => {
+  const [rows] = await db.execute(`
+    SELECT
+      md.id,
+      md.state_id,
+      md.name,
+      ms.name AS state_name,
+      COALESCE(cc.total, 0) AS cityCount,
+      COALESCE(pc.total, 0) AS pincodeCount,
+      COALESCE(jc.total, 0) AS jobCount
+    FROM master_districts md
+    JOIN master_states ms ON ms.id = md.state_id AND ms.is_active = 1
+    LEFT JOIN (
+      SELECT district_id, COUNT(*) AS total
+      FROM master_locations
+      WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL
+      GROUP BY district_id
+    ) cc ON cc.district_id = md.id
+    LEFT JOIN (
+      SELECT district_id, COUNT(DISTINCT NULLIF(TRIM(pincode), '')) AS total
+      FROM master_pincodes
+      WHERE is_active = 1 AND NULLIF(TRIM(pincode), '') IS NOT NULL
+      GROUP BY district_id
+    ) pc ON pc.district_id = md.id
+    LEFT JOIN (
+      SELECT district_id, COUNT(*) AS total
+      FROM jobs
+      ${OPEN_JOBS_WHERE}
+        AND district_id IS NOT NULL
+      GROUP BY district_id
+    ) jc ON jc.district_id = md.id
+    WHERE md.is_active = 1
+      AND md.state_id = ?
+      AND NULLIF(TRIM(md.name), '') IS NOT NULL
+    ORDER BY jobCount DESC, md.name ASC
+    LIMIT ${limit}
+  `, [parentId]);
+
+  return rows.map(mapDirectoryDistrict).filter((item) => item.id && item.name);
+};
+
+const getLocationDirectoryCities = async (db, { parentId, limit }) => {
+  const [rows] = await db.execute(`
+    SELECT
+      ml.id,
+      ml.state_id,
+      ml.district_id,
+      ml.name,
+      ml.pincode,
+      ms.name AS state_name,
+      md.name AS district_name,
+      COALESCE(pc.total, 0) AS pincodeCount,
+      COALESCE(jc.total, 0) AS jobCount
+    FROM master_locations ml
+    JOIN master_states ms ON ms.id = ml.state_id AND ms.is_active = 1
+    JOIN master_districts md ON md.id = ml.district_id AND md.is_active = 1
+    LEFT JOIN (
+      SELECT city_id, COUNT(DISTINCT NULLIF(TRIM(pincode), '')) AS total
+      FROM master_pincodes
+      WHERE is_active = 1 AND NULLIF(TRIM(pincode), '') IS NOT NULL
+      GROUP BY city_id
+    ) pc ON pc.city_id = ml.id
+    LEFT JOIN (
+      SELECT city_id, COUNT(*) AS total
+      FROM jobs
+      ${OPEN_JOBS_WHERE}
+        AND city_id IS NOT NULL
+      GROUP BY city_id
+    ) jc ON jc.city_id = ml.id
+    WHERE ml.is_active = 1
+      AND ml.district_id = ?
+      AND NULLIF(TRIM(ml.name), '') IS NOT NULL
+    ORDER BY jobCount DESC, ml.name ASC
+    LIMIT ${limit}
+  `, [parentId]);
+
+  return rows.map(mapDirectoryCity).filter((item) => item.id && item.name && !isAddressNoiseLocationName(item.name));
+};
+
+const getLocationDirectoryLocalities = async (db, { parentId, limit }) => {
+  const [rows] = await db.execute(`
+    SELECT
+      mp.id,
+      mp.state_id,
+      mp.district_id,
+      mp.city_id,
+      mp.pincode,
+      mp.locality_name,
+      ms.name AS state_name,
+      md.name AS district_name,
+      ml.name AS city_name,
+      COALESCE(jc.total, 0) AS jobCount
+    FROM master_pincodes mp
+    JOIN master_states ms ON ms.id = mp.state_id AND ms.is_active = 1
+    JOIN master_districts md ON md.id = mp.district_id AND md.is_active = 1
+    JOIN master_locations ml ON ml.id = mp.city_id AND ml.is_active = 1
+    LEFT JOIN (
+      SELECT city_id, pincode, COUNT(*) AS total
+      FROM jobs
+      ${OPEN_JOBS_WHERE}
+        AND city_id IS NOT NULL
+        AND NULLIF(TRIM(pincode), '') IS NOT NULL
+      GROUP BY city_id, pincode
+    ) jc ON jc.city_id = mp.city_id AND jc.pincode = mp.pincode
+    WHERE mp.is_active = 1
+      AND mp.city_id = ?
+      AND (
+        NULLIF(TRIM(mp.pincode), '') IS NOT NULL
+        OR NULLIF(TRIM(mp.locality_name), '') IS NOT NULL
+      )
+    ORDER BY mp.pincode ASC
+    LIMIT ${limit}
+  `, [parentId]);
+
+  const items = [];
+  for (const row of rows) {
+    const localityNames = splitLocalityNames(row.locality_name);
+    if (localityNames.length) {
+      localityNames.forEach((name) => items.push(mapDirectoryLocality({ ...row, id: '', name })));
+    } else {
+      items.push(mapDirectoryLocality({ ...row, name: row.city_name || row.pincode }));
+    }
+  }
+
+  return items
+    .filter((item) => item.name)
+    .slice(0, limit);
+};
+
+const searchLocationDirectory = async (db, { query, limit }) => {
+  const pattern = makeLikePattern(query);
+  const exact = cleanFacetName(query).toLowerCase();
+  const prefix = `${cleanFacetName(query)}%`;
+  const perTypeLimit = Math.max(10, Math.ceil(limit / 3));
+
+  const [stateRows, districtRows, cityRows, pincodeRows] = await Promise.all([
+    db.execute(`
+      SELECT
+        ms.id,
+        ms.name,
+        ms.code,
+        COALESCE(dc.total, 0) AS districtCount,
+        COALESCE(cc.total, 0) AS cityCount
+      FROM master_states ms
+      LEFT JOIN (
+        SELECT state_id, COUNT(*) AS total
+        FROM master_districts
+        WHERE is_active = 1
+        GROUP BY state_id
+      ) dc ON dc.state_id = ms.id
+      LEFT JOIN (
+        SELECT state_id, COUNT(*) AS total
+        FROM master_locations
+        WHERE is_active = 1
+        GROUP BY state_id
+      ) cc ON cc.state_id = ms.id
+      WHERE ms.is_active = 1
+        AND ms.name LIKE ?
+      ORDER BY CASE
+        WHEN LOWER(ms.name) = ? THEN 0
+        WHEN ms.name LIKE ? THEN 1
+        ELSE 2
+      END, ms.name ASC
+      LIMIT ${perTypeLimit}
+    `, [pattern, exact, prefix]),
+    db.execute(`
+      SELECT md.id, md.state_id, md.name, ms.name AS state_name
+      FROM master_districts md
+      JOIN master_states ms ON ms.id = md.state_id AND ms.is_active = 1
+      WHERE md.is_active = 1
+        AND (md.name LIKE ? OR ms.name LIKE ?)
+      ORDER BY CASE
+        WHEN LOWER(md.name) = ? THEN 0
+        WHEN md.name LIKE ? THEN 1
+        ELSE 2
+      END, ms.name ASC, md.name ASC
+      LIMIT ${perTypeLimit}
+    `, [pattern, pattern, exact, prefix]),
+    db.execute(`
+      SELECT
+        ml.id,
+        ml.state_id,
+        ml.district_id,
+        ml.name,
+        ml.pincode,
+        ms.name AS state_name,
+        md.name AS district_name
+      FROM master_locations ml
+      JOIN master_states ms ON ms.id = ml.state_id AND ms.is_active = 1
+      JOIN master_districts md ON md.id = ml.district_id AND md.is_active = 1
+      WHERE ml.is_active = 1
+        AND (
+          ml.name LIKE ?
+          OR md.name LIKE ?
+          OR ms.name LIKE ?
+          OR ml.pincode LIKE ?
+        )
+      ORDER BY CASE
+        WHEN LOWER(ml.name) = ? THEN 0
+        WHEN ml.name LIKE ? THEN 1
+        ELSE 2
+      END, ml.name ASC
+      LIMIT ${perTypeLimit * 2}
+    `, [pattern, pattern, pattern, pattern, exact, prefix]),
+    db.execute(`
+      SELECT
+        mp.id,
+        mp.state_id,
+        mp.district_id,
+        mp.city_id,
+        mp.pincode,
+        mp.locality_name,
+        ms.name AS state_name,
+        md.name AS district_name,
+        ml.name AS city_name
+      FROM master_pincodes mp
+      JOIN master_states ms ON ms.id = mp.state_id AND ms.is_active = 1
+      JOIN master_districts md ON md.id = mp.district_id AND md.is_active = 1
+      JOIN master_locations ml ON ml.id = mp.city_id AND ml.is_active = 1
+      WHERE mp.is_active = 1
+        AND (
+          mp.pincode LIKE ?
+          OR mp.locality_name LIKE ?
+          OR ml.name LIKE ?
+          OR md.name LIKE ?
+          OR ms.name LIKE ?
+        )
+      ORDER BY CASE
+        WHEN mp.pincode = ? THEN 0
+        WHEN mp.pincode LIKE ? THEN 1
+        ELSE 2
+      END, mp.pincode ASC
+      LIMIT ${perTypeLimit}
+    `, [pattern, pattern, pattern, pattern, pattern, query, prefix])
+  ]);
+
+  const items = [
+    ...stateRows[0].map(mapDirectoryState),
+    ...districtRows[0].map(mapDirectoryDistrict),
+    ...cityRows[0].map(mapDirectoryCity).filter((item) => !isAddressNoiseLocationName(item.name)),
+    ...pincodeRows[0].flatMap((row) => {
+      const names = splitLocalityNames(row.locality_name);
+      if (names.length) return names.map((name) => mapDirectoryLocality({ ...row, id: '', name }));
+      return [mapDirectoryLocality({ ...row, name: row.city_name || row.pincode })];
+    })
+  ];
+
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = `${item.type}:${item.id || item.name}:${item.pincode || ''}`;
+    if (!item.name || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, limit);
+};
+
+const getLocationDirectory = async ({ level = 'states', parentId = '', query = '', limit = 96 } = {}) => {
+  const db = getPool();
+  const totalsPromise = getLocationDirectoryTotals(db);
+  const cleanQuery = cleanFacetName(query);
+  const resolvedLevel = LOCATION_DIRECTORY_LEVELS.has(level) ? level : 'states';
+  const resolvedLimit = getLocationDirectoryLimit(limit, cleanQuery ? 120 : 96, cleanQuery ? 180 : 300);
+
+  if (cleanQuery) {
+    const [totals, items] = await Promise.all([
+      totalsPromise,
+      searchLocationDirectory(db, { query: cleanQuery, limit: resolvedLimit })
+    ]);
+    return { level: 'search', query: cleanQuery, parentId: '', items, totals };
+  }
+
+  let items = [];
+  if (resolvedLevel === 'states') {
+    items = await getLocationDirectoryStates(db, { limit: resolvedLimit });
+  } else if (parentId) {
+    if (resolvedLevel === 'districts') items = await getLocationDirectoryDistricts(db, { parentId, limit: resolvedLimit });
+    if (resolvedLevel === 'cities') items = await getLocationDirectoryCities(db, { parentId, limit: resolvedLimit });
+    if (resolvedLevel === 'localities') items = await getLocationDirectoryLocalities(db, { parentId, limit: resolvedLimit });
+  }
+
+  const totals = await totalsPromise;
+  return { level: resolvedLevel, query: '', parentId, items, totals };
+};
+
 const getLocationTree = async () => {
   const db = getPool();
   const [
@@ -1075,6 +1485,32 @@ router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCa
   }
 
   res.send({ status: true, districts: data || [] });
+}));
+
+router.get('/meta/location-directory', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+  if (!Database) {
+    res.send({
+      status: true,
+      locationDirectory: {
+        level: 'states',
+        query: '',
+        parentId: '',
+        items: [],
+        totals: { states: 0, districts: 0, cities: 0, localities: 0, pincodes: 0, openJobs: 0 }
+      }
+    });
+    return;
+  }
+
+  const level = cleanFacetName(req.query.level || 'states').toLowerCase();
+  const parentId = cleanFacetName(req.query.parentId || req.query.parent_id || '');
+  const query = cleanFacetName(req.query.q || req.query.query || '');
+  const limit = getLocationDirectoryLimit(req.query.limit, query ? 120 : 96, query ? 180 : 300);
+
+  res.send({
+    status: true,
+    locationDirectory: await getLocationDirectory({ level, parentId, query, limit })
+  });
 }));
 
 router.get('/meta/location-tree', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (_req, res) => {
