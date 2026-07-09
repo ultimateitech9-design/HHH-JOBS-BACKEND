@@ -21,6 +21,7 @@
     "import:market-sectors": "node scripts/import-market-sectors.js",
     "import:postal-codes": "node scripts/import-statewise-postal-codes.js",
     "import:citypopulation-locations": "node scripts/import-citypopulation-locations.js",
+    "sync:india-locations": "node scripts/import-citypopulation-locations.js --apply --prune",
     "normalize:locations": "node scripts/normalize-location-hierarchy.js",
     "enrich:mapmyindia-locations": "node scripts/enrich-mapmyindia-locations.js",
     "import:resume-xlsx-live": "node scripts/import-resume-xlsx-live-db.js",

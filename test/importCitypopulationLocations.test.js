@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   buildLocationHierarchy,
+  parseArgs,
   parseLocationCsv
 } = require('../scripts/import-citypopulation-locations');
 
@@ -32,4 +33,11 @@ test('filters imported hierarchy by state name', () => {
 
   assert.deepEqual(hierarchy.states.map((state) => state.name), ['Karnataka']);
   assert.deepEqual(hierarchy.districts.map((district) => district.name), ['Bengaluru Urban']);
+});
+
+test('parses apply and prune flags for canonical India location sync', () => {
+  const args = parseArgs(['--apply', '--prune']);
+
+  assert.equal(args.apply, true);
+  assert.equal(args.prune, true);
 });
