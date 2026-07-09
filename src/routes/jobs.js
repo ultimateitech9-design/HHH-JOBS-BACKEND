@@ -490,6 +490,11 @@ const splitLocalityNames = (value = '') => cleanFacetName(value)
   .filter((item, index, list) => list.findIndex((entry) => normalizeLocationTreeKey(entry) === normalizeLocationTreeKey(item)) === index);
 
 const LOCATION_DIRECTORY_LEVELS = new Set(['states', 'districts', 'cities', 'localities']);
+const LOCATION_DIRECTORY_CACHE_TTL_MS = 5 * 60 * 1000;
+const locationDirectoryCache = {
+  totals: { expiresAt: 0, value: null },
+  states: { expiresAt: 0, value: null }
+};
 
 const getLocationDirectoryLimit = (value, fallback = 96, maximum = 300) => {
   const parsed = Number.parseInt(value || fallback, 10);
@@ -551,68 +556,50 @@ const mapDirectoryLocality = (row = {}) => ({
 });
 
 const getLocationDirectoryTotals = async (db) => {
+  if (locationDirectoryCache.totals.value && locationDirectoryCache.totals.expiresAt > Date.now()) {
+    return locationDirectoryCache.totals.value;
+  }
+
   const [rows] = await db.execute(`
     SELECT
       (SELECT COUNT(*) FROM master_states WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS states,
       (SELECT COUNT(*) FROM master_districts WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS districts,
       (SELECT COUNT(*) FROM master_locations WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL) AS cities,
-      (SELECT COUNT(DISTINCT NULLIF(TRIM(pincode), '')) FROM master_pincodes WHERE is_active = 1 AND NULLIF(TRIM(pincode), '') IS NOT NULL) AS pincodes,
-      (SELECT COUNT(*) FROM jobs ${OPEN_JOBS_WHERE}) AS openJobs
+      (SELECT COUNT(*) FROM master_pincodes WHERE is_active = 1 AND NULLIF(TRIM(pincode), '') IS NOT NULL) AS pincodes
   `);
   const row = rows?.[0] || {};
-  return {
+  const totals = {
     states: Number(row.states || 0),
     districts: Number(row.districts || 0),
     cities: Number(row.cities || 0),
     localities: 0,
     pincodes: Number(row.pincodes || 0),
-    openJobs: Number(row.openJobs || 0)
+    openJobs: 0
   };
+  locationDirectoryCache.totals = { value: totals, expiresAt: Date.now() + LOCATION_DIRECTORY_CACHE_TTL_MS };
+  return totals;
 };
 
 const getLocationDirectoryStates = async (db, { limit }) => {
+  if (locationDirectoryCache.states.value && locationDirectoryCache.states.expiresAt > Date.now()) {
+    return locationDirectoryCache.states.value.slice(0, limit);
+  }
+
   const [rows] = await db.execute(`
     SELECT
       ms.id,
       ms.name,
-      ms.code,
-      COALESCE(dc.total, 0) AS districtCount,
-      COALESCE(cc.total, 0) AS cityCount,
-      COALESCE(pc.total, 0) AS pincodeCount,
-      COALESCE(jc.total, 0) AS jobCount
+      ms.code
     FROM master_states ms
-    LEFT JOIN (
-      SELECT state_id, COUNT(*) AS total
-      FROM master_districts
-      WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL
-      GROUP BY state_id
-    ) dc ON dc.state_id = ms.id
-    LEFT JOIN (
-      SELECT state_id, COUNT(*) AS total
-      FROM master_locations
-      WHERE is_active = 1 AND NULLIF(TRIM(name), '') IS NOT NULL
-      GROUP BY state_id
-    ) cc ON cc.state_id = ms.id
-    LEFT JOIN (
-      SELECT state_id, COUNT(DISTINCT NULLIF(TRIM(pincode), '')) AS total
-      FROM master_pincodes
-      WHERE is_active = 1 AND NULLIF(TRIM(pincode), '') IS NOT NULL
-      GROUP BY state_id
-    ) pc ON pc.state_id = ms.id
-    LEFT JOIN (
-      SELECT state_id, COUNT(*) AS total
-      FROM jobs
-      ${OPEN_JOBS_WHERE}
-        AND state_id IS NOT NULL
-      GROUP BY state_id
-    ) jc ON jc.state_id = ms.id
     WHERE ms.is_active = 1
       AND NULLIF(TRIM(ms.name), '') IS NOT NULL
-    ORDER BY jobCount DESC, ms.name ASC
-    LIMIT ${limit}
+    ORDER BY ms.name ASC
+    LIMIT 120
   `);
 
-  return rows.map(mapDirectoryState).filter((item) => item.id && item.name);
+  const items = rows.map(mapDirectoryState).filter((item) => item.id && item.name);
+  locationDirectoryCache.states = { value: items, expiresAt: Date.now() + LOCATION_DIRECTORY_CACHE_TTL_MS };
+  return items.slice(0, limit);
 };
 
 const getLocationDirectoryDistricts = async (db, { parentId, limit }) => {
@@ -871,32 +858,63 @@ const searchLocationDirectory = async (db, { query, limit }) => {
   }).slice(0, limit);
 };
 
-const getLocationDirectory = async ({ level = 'states', parentId = '', query = '', limit = 96 } = {}) => {
+const resolveLocationDirectoryParentId = async (db, { level, parentId = '', parentName = '' } = {}) => {
+  const cleanParentId = cleanFacetName(parentId);
+  if (cleanParentId) return cleanParentId;
+
+  const cleanParentName = cleanFacetName(parentName);
+  if (!cleanParentName || level !== 'districts') return '';
+
+  const canonicalName = canonicalizeIndianRegionName(cleanParentName) || cleanParentName;
+  const [rows] = await db.execute(
+    `
+      SELECT id
+      FROM master_states
+      WHERE is_active = 1
+        AND (
+          LOWER(TRIM(name)) = LOWER(TRIM(?))
+          OR LOWER(TRIM(name)) = LOWER(TRIM(?))
+        )
+      ORDER BY created_at ASC
+      LIMIT 1
+    `,
+    [cleanParentName, canonicalName]
+  );
+
+  return cleanFacetName(rows?.[0]?.id || '');
+};
+
+const getLocationDirectory = async ({ level = 'states', parentId = '', parentName = '', query = '', limit = 96 } = {}) => {
   const db = getPool();
   const totalsPromise = getLocationDirectoryTotals(db);
   const cleanQuery = cleanFacetName(query);
   const resolvedLevel = LOCATION_DIRECTORY_LEVELS.has(level) ? level : 'states';
   const resolvedLimit = getLocationDirectoryLimit(limit, cleanQuery ? 120 : 96, cleanQuery ? 180 : 300);
+  const resolvedParentId = await resolveLocationDirectoryParentId(db, {
+    level: resolvedLevel,
+    parentId,
+    parentName
+  });
 
   if (cleanQuery) {
     const [totals, items] = await Promise.all([
       totalsPromise,
       searchLocationDirectory(db, { query: cleanQuery, limit: resolvedLimit })
     ]);
-    return { level: 'search', query: cleanQuery, parentId: '', items, totals };
+    return { level: 'search', query: cleanQuery, parentId: '', parentName: '', items, totals };
   }
 
   let items = [];
   if (resolvedLevel === 'states') {
     items = await getLocationDirectoryStates(db, { limit: resolvedLimit });
-  } else if (parentId) {
-    if (resolvedLevel === 'districts') items = await getLocationDirectoryDistricts(db, { parentId, limit: resolvedLimit });
-    if (resolvedLevel === 'cities') items = await getLocationDirectoryCities(db, { parentId, limit: resolvedLimit });
-    if (resolvedLevel === 'localities') items = await getLocationDirectoryLocalities(db, { parentId, limit: resolvedLimit });
+  } else if (resolvedParentId) {
+    if (resolvedLevel === 'districts') items = await getLocationDirectoryDistricts(db, { parentId: resolvedParentId, limit: resolvedLimit });
+    if (resolvedLevel === 'cities') items = await getLocationDirectoryCities(db, { parentId: resolvedParentId, limit: resolvedLimit });
+    if (resolvedLevel === 'localities') items = await getLocationDirectoryLocalities(db, { parentId: resolvedParentId, limit: resolvedLimit });
   }
 
   const totals = await totalsPromise;
-  return { level: resolvedLevel, query: '', parentId, items, totals };
+  return { level: resolvedLevel, query: '', parentId: resolvedParentId, parentName: cleanFacetName(parentName), items, totals };
 };
 
 const getLocationTree = async () => {
@@ -1504,12 +1522,13 @@ router.get('/meta/location-directory', automationProtection, publicJobsReadLimit
 
   const level = cleanFacetName(req.query.level || 'states').toLowerCase();
   const parentId = cleanFacetName(req.query.parentId || req.query.parent_id || '');
+  const parentName = cleanFacetName(req.query.parentName || req.query.parent_name || '');
   const query = cleanFacetName(req.query.q || req.query.query || '');
   const limit = getLocationDirectoryLimit(req.query.limit, query ? 120 : 96, query ? 180 : 300);
 
   res.send({
     status: true,
-    locationDirectory: await getLocationDirectory({ level, parentId, query, limit })
+    locationDirectory: await getLocationDirectory({ level, parentId, parentName, query, limit })
   });
 }));
 
