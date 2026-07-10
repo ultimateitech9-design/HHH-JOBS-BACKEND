@@ -20,6 +20,7 @@ const { logAudit, getClientIp } = require('../services/audit');
 const { isStudentPortalRole } = require('../services/accountRoles');
 const { upsertRoleProfile } = require('../services/profileTables');
 const { enqueueCreatedUserWelcomeEmail } = require('../services/createdUserWelcome');
+const { listManagementUsers } = require('../services/managementUsers');
 
 const router = express.Router();
 
@@ -35,21 +36,6 @@ const DEFAULT_ADMIN_SETTINGS = {
   approvalSlaHours: 12,
   paymentAutoReconcile: false
 };
-
-const ADMIN_USER_FILTER_ROLES = new Set([
-  ROLES.ADMIN,
-  ROLES.HR,
-  ROLES.STUDENT,
-  ROLES.RETIRED_EMPLOYEE,
-  ROLES.PLATFORM,
-  ROLES.SALES,
-  ROLES.ACCOUNTS,
-  ROLES.SUPPORT,
-  ROLES.AUDIT,
-  ROLES.DATAENTRY,
-  ROLES.CAMPUS_CONNECT,
-  'company_admin'
-]);
 
 const toOptionalText = (value) => {
   const text = String(value ?? '').trim();
@@ -161,8 +147,8 @@ const buildAdminAnalytics = async () => {
     totalApplications,
     reportStatusCounts
   ] = await Promise.all([
-    countRowsByColumn('users', 'role', [{ column: 'role', operator: '<>', value: ROLES.CAMPUS_CONNECT }]),
-    countRowsByColumn('users', 'status', [{ column: 'role', operator: '<>', value: ROLES.CAMPUS_CONNECT }]),
+    countRowsByColumn('users', 'role'),
+    countRowsByColumn('users', 'status'),
     countRows('users', (q) => q.eq('role', ROLES.HR).eq('is_hr_approved', true)),
     countRowsByColumn('jobs', 'status'),
     countRows('jobs', (q) => q.eq('approval_status', JOB_APPROVAL_STATUSES.PENDING)),
@@ -275,34 +261,22 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/users', asyncHandler(async (req, res) => {
   const role = String(req.query.role || '').toLowerCase();
+  const roleGroup = String(req.query.roleGroup || req.query.role_group || '').toLowerCase();
   const status = String(req.query.status || '').toLowerCase();
   const search = String(req.query.search || '').trim();
   const approved = String(req.query.approved || '').toLowerCase();
-  const { page, limit, offset } = getPaginationFromRequest(req, { defaultLimit: 25, maxLimit: 100 });
-
-  let query = Database
-    .from('users')
-    .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
-
-  if (ADMIN_USER_FILTER_ROLES.has(role)) query = query.eq('role', role);
-  if ([USER_STATUSES.ACTIVE, USER_STATUSES.BLOCKED, USER_STATUSES.BANNED].includes(status)) query = query.eq('status', status);
-  if (approved === 'true') query = query.eq('role', ROLES.HR).eq('is_hr_approved', true);
-  if (approved === 'false') query = query.eq('role', ROLES.HR).or('is_hr_approved.eq.false,is_hr_approved.is.null');
-  if (search) {
-    const safeSearch = search.replace(/[,().]/g, '');
-    query = query.or(`name.ilike.%${safeSearch}%,email.ilike.%${safeSearch}%,mobile.ilike.%${safeSearch}%,role.ilike.%${safeSearch}%,status.ilike.%${safeSearch}%`);
-  }
-
-  const { data, error, count } = await query;
-  if (error) {
-    sendDatabaseError(res, error);
-    return;
-  }
-
-  const users = await enrichAdminUserRows(data || []);
-  res.send({ status: true, users, total: count || 0, page, limit });
+  const { page, limit } = getPaginationFromRequest(req, { defaultLimit: 25, maxLimit: 100 });
+  const result = await listManagementUsers({
+    role,
+    roleGroup,
+    status,
+    approved,
+    search,
+    page,
+    limit
+  });
+  const users = await enrichAdminUserRows(result.users || []);
+  res.send({ status: true, users, total: result.total || 0, page: result.page, limit: result.limit });
 }));
 
 router.patch('/users/:id/status', asyncHandler(async (req, res) => {
@@ -357,8 +331,8 @@ router.patch('/hr/:id/approve', asyncHandler(async (req, res) => {
     sendDatabaseError(res, userErr);
     return;
   }
-  if (!user || user.role !== ROLES.HR) {
-    res.status(404).send({ status: false, message: 'HR user not found' });
+  if (!user || ![ROLES.HR, 'company_admin'].includes(String(user.role || '').toLowerCase())) {
+    res.status(404).send({ status: false, message: 'Employer account not found' });
     return;
   }
 

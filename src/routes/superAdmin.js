@@ -13,6 +13,7 @@ const { processAutoApplyForJob } = require('../services/autoApply');
 const { enqueueCreatedUserWelcomeEmail } = require('../services/createdUserWelcome');
 const { normalizeCompanyKey, toCompanySlug } = require('../services/companyDirectory');
 const { getSuperAdminDashboardMetrics } = require('../services/dashboardMetrics');
+const { listManagementUsers } = require('../services/managementUsers');
 const {
   reorderRowsBySearchIds,
   searchPlatformEntityIds,
@@ -735,60 +736,14 @@ router.post('/role-sync-repair', asyncHandler(async (req, res) => {
 // =============================================
 router.get('/users', asyncHandler(async (req, res) => {
   const role = String(req.query.role || '').toLowerCase();
+  const roleGroup = String(req.query.roleGroup || req.query.role_group || '').toLowerCase();
   const status = String(req.query.status || '').toLowerCase();
   const search = String(req.query.search || '').trim();
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
-  const offset = (page - 1) * limit;
-
-  const indexedResult = search
-    ? await searchPlatformEntityIds({ entity: 'users', filters: { search, role, status }, page, limit })
-    : { skipped: true, reason: 'no-search' };
-
-  if (!indexedResult.skipped) {
-    if (indexedResult.ids.length === 0) {
-      res.send({ status: true, users: [], total: 0, page, limit, search: { engine: 'opensearch' } });
-      return;
-    }
-
-    let indexedQuery = Database
-      .from('users')
-      .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at')
-      .in('id', indexedResult.ids);
-
-    if (role) indexedQuery = indexedQuery.eq('role', role);
-    if ([USER_STATUSES.ACTIVE, USER_STATUSES.BLOCKED, USER_STATUSES.BANNED].includes(status)) indexedQuery = indexedQuery.eq('status', status);
-
-    const { data, error } = await indexedQuery;
-    if (error) { sendDatabaseError(res, error); return; }
-
-    const users = await enrichManagedUsers(reorderRowsBySearchIds(data || [], indexedResult.ids));
-    res.send({
-      status: true,
-      users,
-      total: indexedResult.total || users.length,
-      page,
-      limit,
-      search: { engine: indexedResult.engine }
-    });
-    return;
-  }
-
-  let query = Database
-    .from('users')
-    .select('id, name, email, mobile, role, status, is_hr_approved, is_email_verified, created_at, last_login_at', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
-
-  if (role) query = query.eq('role', role);
-  if ([USER_STATUSES.ACTIVE, USER_STATUSES.BLOCKED, USER_STATUSES.BANNED].includes(status)) query = query.eq('status', status);
-  if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
-
-  const { data, error, count } = await query;
-  if (error) { sendDatabaseError(res, error); return; }
-
-  const users = await enrichManagedUsers(data || []);
-  res.send({ status: true, users, total: count || 0, page, limit });
+  const result = await listManagementUsers({ role, roleGroup, status, search, page, limit });
+  const users = await enrichManagedUsers(result.users || []);
+  res.send({ status: true, users, total: result.total || 0, page: result.page, limit: result.limit, search: { engine: 'mysql' } });
 }));
 
 router.get('/command-search', asyncHandler(async (req, res) => {
