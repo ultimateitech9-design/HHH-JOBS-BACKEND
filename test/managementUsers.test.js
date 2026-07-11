@@ -4,7 +4,9 @@ const assert = require('node:assert/strict');
 const {
   buildWhere,
   getRoleFilterValues,
-  mapUserRow
+  mapUserRow,
+  normalizeSqlParams,
+  toSqlInteger
 } = require('../src/services/managementUsers');
 
 test('management user role groups keep admin and super-admin filters aligned', () => {
@@ -65,4 +67,12 @@ test('management user mapper exposes pending HR without hiding auth status', () 
   });
 
   assert.equal(blockedHr.status, 'blocked');
+});
+
+test('management user SQL helpers keep mysql execute params valid', () => {
+  assert.deepEqual(normalizeSqlParams(['active', undefined, 25]), ['active', null, 25]);
+  assert.equal(toSqlInteger(50), 50);
+  assert.equal(toSqlInteger('75'), 75);
+  assert.equal(toSqlInteger('bad', 25), 25);
+  assert.equal(toSqlInteger(-1, 0), 0);
 });

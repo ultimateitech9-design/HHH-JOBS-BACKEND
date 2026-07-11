@@ -89,7 +89,9 @@ const buildWhereFromFilters = (filters = []) => {
 
 const queryRows = async (sql, params = []) => {
   if (!isConfigured) return [];
-  const [rows] = await getPool().execute(sql, params);
+  const safeParams = (Array.isArray(params) ? params : [])
+    .map((value) => (typeof value === 'undefined' ? null : value));
+  const [rows] = await getPool().execute(sql, safeParams);
   return rows || [];
 };
 

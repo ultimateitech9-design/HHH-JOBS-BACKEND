@@ -195,6 +195,16 @@ const toPositiveInteger = (value, fallback, max = Number.MAX_SAFE_INTEGER) => {
   return Math.min(max, parsed);
 };
 
+const toSqlInteger = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
+const normalizeSqlParams = (params = []) => (
+  (Array.isArray(params) ? params : [])
+    .map((value) => (typeof value === 'undefined' ? null : value))
+);
+
 const normalizeText = (value = '') => String(value || '').trim();
 const normalizeLowerText = (value = '') => normalizeText(value).toLowerCase();
 
@@ -349,8 +359,9 @@ const listManagementUsers = async ({
 } = {}) => {
   const safePage = toPositiveInteger(page, 1);
   const safeLimit = toPositiveInteger(limit, 50, 100);
-  const offset = (safePage - 1) * safeLimit;
+  const offset = toSqlInteger((safePage - 1) * safeLimit);
   const where = buildWhere({ role, roleGroup, status, approved, search });
+  const whereParams = normalizeSqlParams(where.params);
   const usesProfileSearch = Boolean(normalizeLowerText(search));
   const profileJoins = usesProfileSearch ? USER_PROFILE_JOINS : '';
   const selectColumns = usesProfileSearch ? USER_SELECT_COLUMNS : BASE_USER_SELECT_COLUMNS;
@@ -361,7 +372,7 @@ const listManagementUsers = async ({
        FROM users u
        ${profileJoins}
        ${where.sql}`,
-      where.params
+      whereParams
     ),
     queryRows(
       `SELECT ${selectColumns}
@@ -369,8 +380,8 @@ const listManagementUsers = async ({
        ${profileJoins}
        ${where.sql}
        ORDER BY u.created_at DESC, u.id DESC
-       LIMIT ? OFFSET ?`,
-      [...where.params, safeLimit, offset]
+       LIMIT ${toSqlInteger(safeLimit, 50)} OFFSET ${offset}`,
+      whereParams
     )
   ]);
 
@@ -387,6 +398,8 @@ module.exports = {
   getRoleFilterValues,
   listManagementUsers,
   mapUserRow,
+  normalizeSqlParams,
   ROLE_GROUPS,
+  toSqlInteger,
   VALID_ROLES
 };
