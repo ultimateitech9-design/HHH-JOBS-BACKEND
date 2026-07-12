@@ -7,6 +7,19 @@ const pendingRevalidations = new Map();
 const normalizeKey = (key = '') => `${config.redisKeyPrefix}:cache:${String(key || '').trim()}`;
 const nowMs = () => Date.now();
 
+const pruneMemoryCache = () => {
+  const now = nowMs();
+  for (const [key, entry] of memoryCache.entries()) {
+    if (entry.expiresAt <= now) memoryCache.delete(key);
+  }
+
+  while (memoryCache.size >= config.memoryCacheMaxEntries) {
+    const oldestKey = memoryCache.keys().next().value;
+    if (!oldestKey) break;
+    memoryCache.delete(oldestKey);
+  }
+};
+
 const readMemory = (cacheKey) => {
   const entry = memoryCache.get(cacheKey);
   if (!entry) return null;
@@ -18,6 +31,8 @@ const readMemory = (cacheKey) => {
 };
 
 const writeMemory = (cacheKey, value, ttlSeconds) => {
+  pruneMemoryCache();
+  memoryCache.delete(cacheKey);
   memoryCache.set(cacheKey, {
     value,
     expiresAt: nowMs() + Math.max(1, Number(ttlSeconds) || 1) * 1000
@@ -65,6 +80,33 @@ const deleteCacheAside = async (key) => {
   return true;
 };
 
+const deleteCacheAsideByPrefix = async (prefix) => {
+  const cachePrefix = normalizeKey(prefix);
+  let deleted = 0;
+
+  for (const key of memoryCache.keys()) {
+    if (!key.startsWith(cachePrefix)) continue;
+    memoryCache.delete(key);
+    deleted += 1;
+  }
+
+  const client = await getRedisClient();
+  if (!client) return deleted;
+
+  const keys = [];
+  for await (const key of client.scanIterator({ MATCH: `${cachePrefix}*`, COUNT: 100 })) {
+    keys.push(key);
+    if (keys.length < 100) continue;
+    deleted += await client.del(keys.splice(0, keys.length));
+  }
+
+  if (keys.length > 0) {
+    deleted += await client.del(keys);
+  }
+
+  return deleted;
+};
+
 const withCacheAside = async ({
   key,
   ttlSeconds = 60,
@@ -104,6 +146,7 @@ const withCacheAside = async ({
 
 module.exports = {
   deleteCacheAside,
+  deleteCacheAsideByPrefix,
   getCacheAside,
   setCacheAside,
   withCacheAside

@@ -1,10 +1,13 @@
 const express = require('express');
+const config = require('../config');
 const { ROLES, JOB_STATUSES } = require('../constants');
 const { Database, sendDatabaseError } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireApprovedHr, requireRole } = require('../middleware/roles');
 const { createRateLimitMiddleware, resolveRequestKey } = require('../middleware/rateLimit');
 const { createAutomationProtection, createBrowserWriteProtection } = require('../middleware/requestProtection');
+const { createPublicJsonCache } = require('../middleware/publicJsonCache');
+const { deleteCacheAsideByPrefix } = require('../services/cacheAside');
 const { mapJobFromRow } = require('../utils/mappers');
 const { normalizeEmail, clamp, asyncHandler } = require('../utils/helpers');
 const { decodeCursor, makeCreatedAtCursor } = require('../utils/cursorPagination');
@@ -47,6 +50,14 @@ const setCatalogCacheHeaders = (_req, res, next) => {
   res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
   next();
 };
+const publicJobCatalogCache = createPublicJsonCache({
+  namespace: 'jobs:catalog:v2',
+  ttlSeconds: config.publicCatalogCacheTtlSeconds
+});
+const publicJobMetadataCache = createPublicJsonCache({
+  namespace: 'jobs:metadata:v2',
+  ttlSeconds: config.publicMetadataCacheTtlSeconds
+});
 
 const DEFAULT_ROLE_NAMES = [
   'Delivery',
@@ -1316,7 +1327,7 @@ const getLocationTree = async () => {
   };
 };
 
-router.get('/meta/categories', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+router.get('/meta/categories', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, publicJobMetadataCache, asyncHandler(async (req, res) => {
   if (!Database) {
     res.send({ status: true, categories: [] });
     return;
@@ -1336,7 +1347,7 @@ router.get('/meta/categories', automationProtection, publicJobsReadLimiter, setC
   res.send({ status: true, categories: data || [] });
 }));
 
-router.get('/meta/locations', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+router.get('/meta/locations', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, publicJobMetadataCache, asyncHandler(async (req, res) => {
   if (!Database) {
     res.send({ status: true, locations: [] });
     return;
@@ -1356,7 +1367,7 @@ router.get('/meta/locations', automationProtection, publicJobsReadLimiter, setCa
   res.send({ status: true, locations: data || [] });
 }));
 
-router.get('/meta/sectors', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+router.get('/meta/sectors', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, publicJobMetadataCache, asyncHandler(async (req, res) => {
   if (!Database) {
     res.send({ status: true, sectors: [] });
     return;
@@ -1427,6 +1438,9 @@ router.post(
           return;
         }
 
+        deleteCacheAsideByPrefix('jobs:metadata:v2:/jobs/meta/sectors')
+          .catch((cacheError) => console.warn('[SECTOR CACHE INVALIDATION]', cacheError.message || cacheError));
+
         res.send({ status: true, sector: activatedSector || { ...existing, is_active: true }, reused: true });
         return;
       }
@@ -1446,11 +1460,14 @@ router.post(
       return;
     }
 
+    deleteCacheAsideByPrefix('jobs:metadata:v2:/jobs/meta/sectors')
+      .catch((cacheError) => console.warn('[SECTOR CACHE INVALIDATION]', cacheError.message || cacheError));
+
     res.status(201).send({ status: true, sector });
   })
 );
 
-router.get('/meta/states', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+router.get('/meta/states', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, publicJobMetadataCache, asyncHandler(async (req, res) => {
   if (!Database) {
     res.send({ status: true, states: [] });
     return;
@@ -1480,7 +1497,7 @@ router.get('/meta/states', automationProtection, publicJobsReadLimiter, setCatal
   });
 }));
 
-router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, publicJobMetadataCache, asyncHandler(async (req, res) => {
   if (!Database) {
     res.send({ status: true, districts: [] });
     return;
@@ -1505,7 +1522,7 @@ router.get('/meta/districts', automationProtection, publicJobsReadLimiter, setCa
   res.send({ status: true, districts: data || [] });
 }));
 
-router.get('/meta/location-directory', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+router.get('/meta/location-directory', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, publicJobMetadataCache, asyncHandler(async (req, res) => {
   if (!Database) {
     res.send({
       status: true,
@@ -1532,7 +1549,7 @@ router.get('/meta/location-directory', automationProtection, publicJobsReadLimit
   });
 }));
 
-router.get('/meta/location-tree', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (_req, res) => {
+router.get('/meta/location-tree', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, publicJobMetadataCache, asyncHandler(async (_req, res) => {
   if (!Database) {
     res.send({
       status: true,
@@ -1553,7 +1570,7 @@ router.get('/meta/location-tree', automationProtection, publicJobsReadLimiter, s
   res.send({ status: true, locationTree: await getLocationTree() });
 }));
 
-router.get('/meta/homepage-facets', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+router.get('/meta/homepage-facets', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, publicJobCatalogCache, asyncHandler(async (req, res) => {
   if (!Database) {
     res.send({ status: true, roles: [], sectors: [], cities: [], pincodes: [], totals: { openJobs: 0, companies: 0 } });
     return;
@@ -1569,7 +1586,7 @@ router.get('/meta/homepage-facets', automationProtection, publicJobsReadLimiter,
   res.send({ status: true, ...facets });
 }));
 
-router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, asyncHandler(async (req, res) => {
+router.get('/', automationProtection, publicJobsReadLimiter, setCatalogCacheHeaders, publicJobCatalogCache, asyncHandler(async (req, res) => {
   if (!Database) {
     res.status(503).send({
       status: false,

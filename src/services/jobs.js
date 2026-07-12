@@ -33,12 +33,18 @@ const {
 const { getCurrentRolePlanSubscription, getRolePlanBySlug } = require('./commercial');
 const { isRoleSubscriptionUsable } = require('../utils/roleSubscriptionAccess');
 const { normalizeCompanyKey, toCompanySlug } = require('./companyDirectory');
+const { deleteCacheAsideByPrefix } = require('./cacheAside');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
 const MAX_JOB_POSTING_LOCATIONS = 1;
 const JOB_DESCRIPTION_MIN_WORDS = 500;
 const JOB_DESCRIPTION_MAX_WORDS = 1500;
 const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
+
+const invalidatePublicJobCatalog = () => {
+  deleteCacheAsideByPrefix('jobs:catalog:v2')
+    .catch((error) => console.warn('[JOB CACHE INVALIDATION]', error.message || error));
+};
 
 const countDescriptionWords = (value = '') =>
   String(value || '')
@@ -1085,6 +1091,8 @@ const createHrJob = async (req, res) => {
       });
     }
 
+    invalidatePublicJobCatalog();
+
     res.status(201).send({
       status: true,
       acknowledged: true,
@@ -1282,6 +1290,8 @@ const updateHrJob = async (req, res) => {
     return;
   }
 
+  invalidatePublicJobCatalog();
+
   res.send({
     status: true,
     acknowledged: true,
@@ -1306,6 +1316,8 @@ const deleteHrJob = async (req, res) => {
     sendDatabaseError(res, error);
     return;
   }
+
+  invalidatePublicJobCatalog();
 
   res.send({
     status: true,

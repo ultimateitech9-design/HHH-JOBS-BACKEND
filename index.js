@@ -14,6 +14,7 @@ const { readMaintenanceMode, requireNotInMaintenance } = require('./src/middlewa
 const errorHandler = require('./src/middleware/errorHandler');
 const { createRateLimitMiddleware } = require('./src/middleware/rateLimit');
 const { createAutomationProtection, createBrowserWriteProtection } = require('./src/middleware/requestProtection');
+const { createPublicJsonCache } = require('./src/middleware/publicJsonCache');
 const { ROLES, JOB_STATUSES } = require('./src/constants');
 const { createHrJob, updateHrJob, deleteHrJob, getJobByIdAndOptionallyTrackView, applyJobFilters } = require('./src/services/jobs');
 const { applyToJob } = require('./src/services/applications');
@@ -68,6 +69,11 @@ const setGovtJobsCacheHeaders = (req, res, next) => {
 
   setCatalogCacheHeaders(req, res, next);
 };
+const publicGovtJobsCache = createPublicJsonCache({
+  namespace: 'govt-jobs:public:v2',
+  ttlSeconds: config.publicCatalogCacheTtlSeconds,
+  skip: (req) => Boolean(req.user?.id)
+});
 const captureRawBody = (req, _res, buffer) => {
   if (buffer?.length) {
     req.rawBody = buffer.toString('utf8');
@@ -235,7 +241,7 @@ if (authRoutes) {
 }
 app.use(optionalAuth, requireNotInMaintenance);
 
-app.get('/public/govt-jobs', automationProtection, publicCatalogRateLimiter, setGovtJobsCacheHeaders, asyncHandler(async (req, res) => {
+app.get('/public/govt-jobs', automationProtection, publicCatalogRateLimiter, setGovtJobsCacheHeaders, publicGovtJobsCache, asyncHandler(async (req, res) => {
   if (!ensureDatabaseConfig(res)) return;
 
   const canTrackGovtJobs = req.user?.role === ROLES.STUDENT;
@@ -261,7 +267,7 @@ app.get('/public/govt-jobs', automationProtection, publicCatalogRateLimiter, set
   });
 }));
 
-app.get('/public/govt-jobs/:jobId', automationProtection, publicCatalogRateLimiter, setGovtJobsCacheHeaders, asyncHandler(async (req, res) => {
+app.get('/public/govt-jobs/:jobId', automationProtection, publicCatalogRateLimiter, setGovtJobsCacheHeaders, publicGovtJobsCache, asyncHandler(async (req, res) => {
   if (!ensureDatabaseConfig(res)) return;
 
   const canTrackGovtJobs = req.user?.role === ROLES.STUDENT;

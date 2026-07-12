@@ -1,11 +1,13 @@
 const express = require('express');
 
+const config = require('../config');
 const { Database, sendDatabaseError } = require('../db');
 const { asyncHandler } = require('../utils/helpers');
 const { JOB_APPROVAL_STATUSES, JOB_STATUSES, ROLES, USER_STATUSES } = require('../constants');
 const { requireAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
 const { mapJobFromRow } = require('../utils/mappers');
+const { withCacheAside } = require('../services/cacheAside');
 const { buildCompanyBrandIndex, buildDomainLogoUrl, resolveCompanyBrand } = require('../services/companyBranding');
 const {
   getCompanySubscriptionStatus,
@@ -22,6 +24,8 @@ const {
 } = require('../services/companyDirectory');
 
 const router = express.Router();
+const PUBLIC_COMPANY_DIRECTORY_CACHE_KEY = 'public:company-directory:v2';
+const PUBLIC_COMPANY_PAGE_SIZE = 50;
 
 const companySubscriptionAuth = [
   requireAuth,
@@ -317,6 +321,47 @@ const buildDirectoryFromSourceData = ({ companyProfilesResp, sponsorsResp, profi
 const isMainDirectoryCompany = (company = {}) =>
   Boolean(company.portalProfile || Number(company.totalJobs || 0) > 0);
 
+const sortMainDirectoryCompanies = (companies = []) => [...companies].sort((left, right) => {
+  const portalDelta = Number(Boolean(right.portalProfile || Number(right.portalJobs || 0) > 0))
+    - Number(Boolean(left.portalProfile || Number(left.portalJobs || 0) > 0));
+  if (portalDelta !== 0) return portalDelta;
+
+  const jobsDelta = Number(right.totalJobs || 0) - Number(left.totalJobs || 0);
+  if (jobsDelta !== 0) return jobsDelta;
+
+  return String(left.name || '').localeCompare(String(right.name || ''));
+});
+
+const getDirectorySourceError = (sourceData = {}) => [
+  sourceData.companyProfilesResp?.error,
+  sourceData.sponsorsResp?.error,
+  sourceData.profilesResp?.error,
+  sourceData.portalJobsResp?.error,
+  sourceData.externalJobsResp?.error
+].find(Boolean) || null;
+
+const loadPublicCompanyDirectory = async () => {
+  const sourceData = await getDirectorySourceData();
+  const sourceError = getDirectorySourceError(sourceData);
+  if (sourceError) throw sourceError;
+
+  const companies = sortMainDirectoryCompanies(
+    buildDirectoryFromSourceData(sourceData).filter(isMainDirectoryCompany)
+  );
+
+  return {
+    companies,
+    summary: buildCompanyDirectorySummary(companies)
+  };
+};
+
+const getPublicCompanyDirectory = () => withCacheAside({
+  key: PUBLIC_COMPANY_DIRECTORY_CACHE_KEY,
+  ttlSeconds: config.publicCatalogCacheTtlSeconds,
+  staleSeconds: Math.min(config.dashboardCacheSwrSeconds, 300),
+  loader: loadPublicCompanyDirectory
+});
+
 const mapExternalCompanyJob = (job, brandIndex) => {
   const brand = resolveCompanyBrand(brandIndex, job.company_name, {
     logoUrl: job.company_logo,
@@ -355,41 +400,18 @@ router.get('/', asyncHandler(async (req, res) => {
   }
 
   const search = String(req.query.search || '').trim().toLowerCase();
+  const requestedPage = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(PUBLIC_COMPANY_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.limit, 10) || PUBLIC_COMPANY_PAGE_SIZE));
+  let directory;
 
-  const { companyProfilesResp, sponsorsResp, profilesResp, portalJobsResp, externalJobsResp } = await getDirectorySourceData();
-
-  if (companyProfilesResp.error) {
-    sendDatabaseError(res, companyProfilesResp.error);
+  try {
+    directory = await getPublicCompanyDirectory();
+  } catch (error) {
+    sendDatabaseError(res, error);
     return;
   }
 
-  if (sponsorsResp.error) {
-    sendDatabaseError(res, sponsorsResp.error);
-    return;
-  }
-
-  if (profilesResp.error) {
-    sendDatabaseError(res, profilesResp.error);
-    return;
-  }
-
-  if (portalJobsResp.error) {
-    sendDatabaseError(res, portalJobsResp.error);
-    return;
-  }
-
-  if (externalJobsResp.error) {
-    sendDatabaseError(res, externalJobsResp.error);
-    return;
-  }
-
-  const listedCompanies = buildDirectoryFromSourceData({
-    companyProfilesResp,
-    sponsorsResp,
-    profilesResp,
-    portalJobsResp,
-    externalJobsResp
-  }).filter(isMainDirectoryCompany);
+  const listedCompanies = directory.value.companies;
 
   const filteredCompanies = search
     ? listedCompanies.filter((company) => {
@@ -407,10 +429,22 @@ router.get('/', asyncHandler(async (req, res) => {
     })
     : listedCompanies;
 
+  const totalItems = filteredCompanies.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+  const page = Math.min(requestedPage, totalPages);
+  const offset = (page - 1) * limit;
+
   res.send({
     status: true,
-    companies: filteredCompanies,
-    summary: buildCompanyDirectorySummary(listedCompanies)
+    companies: filteredCompanies.slice(offset, offset + limit),
+    summary: directory.value.summary,
+    pagination: {
+      page,
+      limit,
+      totalItems,
+      totalPages
+    },
+    cache: directory.cache
   });
 }));
 
