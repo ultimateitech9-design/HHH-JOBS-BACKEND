@@ -17,7 +17,7 @@ const CHUNKS_OUTPUT_PATH = path.resolve(path.dirname(OUTPUT_PATH), 'sitemaps');
 const main = async () => {
   try {
     const db = getPool();
-    const manifest = await buildSitemapManifest(db);
+    const manifest = await buildSitemapManifest(db, { childUrlMode: 'path' });
     const xml = renderSitemapIndex(manifest.sitemaps);
 
     await fs.mkdir(path.dirname(OUTPUT_PATH), { recursive: true });

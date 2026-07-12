@@ -47,24 +47,11 @@ const setXmlHeaders = (res, { generatedAt, lastmod = '', count = 0, totalCount =
   if (lastmod) res.setHeader('Last-Modified', new Date(lastmod).toUTCString());
 };
 
-router.get('/sitemap.xml', asyncHandler(async (req, res) => {
+const serveChunk = async (req, res, sectionValue, pageValue) => {
   const refresh = String(req.query.refresh || '').trim() === '1';
-  const manifest = await getManifest({ refresh });
-  const xml = renderSitemapIndex(manifest.sitemaps);
-
-  setXmlHeaders(res, {
-    generatedAt: manifest.generatedAt,
-    count: manifest.sitemaps.length,
-    totalCount: manifest.totalUrls,
-    section: 'index'
-  });
-  res.send(xml);
-}));
-
-router.get('/sitemaps/:section/:page.xml', asyncHandler(async (req, res) => {
-  const refresh = String(req.query.refresh || '').trim() === '1';
-  const section = String(req.params.section || '').trim().toLowerCase();
-  const page = Math.max(1, Math.floor(Number(req.params.page || 1)));
+  const section = String(sectionValue || '').trim().toLowerCase();
+  const parsedPage = Number(pageValue || 1);
+  const page = Number.isFinite(parsedPage) ? Math.max(1, Math.floor(parsedPage)) : 1;
   const cacheKey = `${section}:${page}`;
   const ttlMs = getCacheTtlMs();
   const cached = chunkCache.get(cacheKey);
@@ -90,6 +77,29 @@ router.get('/sitemaps/:section/:page.xml', asyncHandler(async (req, res) => {
 
   setXmlHeaders(res, result);
   res.send(result.xml);
+};
+
+router.get('/sitemap.xml', asyncHandler(async (req, res) => {
+  if (req.query.section) {
+    await serveChunk(req, res, req.query.section, req.query.page);
+    return;
+  }
+
+  const refresh = String(req.query.refresh || '').trim() === '1';
+  const manifest = await getManifest({ refresh });
+  const xml = renderSitemapIndex(manifest.sitemaps);
+
+  setXmlHeaders(res, {
+    generatedAt: manifest.generatedAt,
+    count: manifest.sitemaps.length,
+    totalCount: manifest.totalUrls,
+    section: 'index'
+  });
+  res.send(xml);
+}));
+
+router.get('/sitemaps/:section/:page.xml', asyncHandler(async (req, res) => {
+  await serveChunk(req, res, req.params.section, req.params.page);
 }));
 
 module.exports = router;

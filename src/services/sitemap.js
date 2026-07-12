@@ -569,6 +569,7 @@ const prepareSections = async (db) => {
 const buildSitemapManifest = async (db, options = {}) => {
   const baseUrl = String(options.baseUrl || getBaseUrl()).replace(/\/+$/, '');
   const chunkSize = getChunkSize(options.chunkSize);
+  const childUrlMode = String(options.childUrlMode || process.env.SITEMAP_CHILD_URL_MODE || 'query').toLowerCase();
   const staticEntries = buildStaticEntries(baseUrl);
   const dynamicSections = await prepareSections(db);
   const sections = [
@@ -589,7 +590,9 @@ const buildSitemapManifest = async (db, options = {}) => {
         section: section.id,
         page,
         count: Math.min(chunkSize, section.count - ((page - 1) * chunkSize)),
-        loc: buildUrl(`/sitemaps/${section.id}/${page}.xml`, null, baseUrl),
+        loc: childUrlMode === 'path'
+          ? buildUrl(`/sitemaps/${section.id}/${page}.xml`, null, baseUrl)
+          : buildUrl('/sitemap.xml', { section: section.id, page }, baseUrl),
         // A section-wide MAX date is exact only when that section has one child file.
         lastmod: pageCount === 1 ? section.lastmod : ''
       });
