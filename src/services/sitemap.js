@@ -1,8 +1,10 @@
 const { buildSeoSlug } = require('../utils/helpers');
 const { toCompanySlug } = require('./companyDirectory');
 
-const DEFAULT_MAX_ROWS = 60000;
-const HARD_MAX_ROWS = 200000;
+const DEFAULT_CHUNK_SIZE = 25000;
+const MAX_CHUNK_SIZE = 50000;
+const MAX_SITEMAPS_PER_INDEX = 50000;
+const SCHEMA_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const STATIC_ROUTES = [
   '/',
@@ -37,48 +39,11 @@ const STATIC_ROUTES = [
   '/summons-notices'
 ];
 
-const HIGH_INTENT_JOB_QUERIES = [
-  { location: 'Delhi' },
-  { location: 'Noida' },
-  { location: 'Gurugram' },
-  { location: 'Mumbai' },
-  { location: 'Pune' },
-  { location: 'Bengaluru' },
-  { location: 'Hyderabad' },
-  { location: 'Chennai' },
-  { location: 'Kolkata' },
-  { location: 'Patna' },
-  { location: 'Lucknow' },
-  { location: 'Jaipur' },
-  { category: 'Fresher Jobs' },
-  { category: 'Entry Level Jobs' },
-  { category: 'Work From Home Jobs' },
-  { category: 'Part Time Jobs' },
-  { category: 'Full Time Jobs' },
-  { sector: 'Information Technology' },
-  { sector: 'Sales' },
-  { sector: 'Marketing' },
-  { sector: 'Human Resources' },
-  { sector: 'Accounts and Finance' },
-  { sector: 'Healthcare' },
-  { sector: 'Education' },
-  { sector: 'Manufacturing' },
-  { sector: 'Retail' },
-  { sector: 'Logistics' }
-];
+// Kept for backwards-compatible imports. Dynamic facet sections now cover these URLs.
+const HIGH_INTENT_JOB_QUERIES = [];
+const HIGH_INTENT_GOVT_JOB_QUERIES = [];
 
-const HIGH_INTENT_GOVT_JOB_QUERIES = [
-  { state: 'Delhi' },
-  { state: 'Uttar Pradesh' },
-  { state: 'Bihar' },
-  { state: 'Rajasthan' },
-  { state: 'Maharashtra' },
-  { state: 'Karnataka' },
-  { state: 'Tamil Nadu' },
-  { state: 'Telangana' },
-  { state: 'West Bengal' },
-  { state: 'Madhya Pradesh' }
-];
+const schemaCache = new WeakMap();
 
 const getBaseUrl = () => String(
   process.env.SITEMAP_BASE_URL
@@ -86,23 +51,22 @@ const getBaseUrl = () => String(
   || 'https://hhh-jobs.com'
 ).replace(/\/+$/, '');
 
-const getMaxRows = () => Math.max(
-  1000,
-  Math.min(Number(process.env.SITEMAP_MAX_DYNAMIC_ROWS || DEFAULT_MAX_ROWS), HARD_MAX_ROWS)
-);
+const getChunkSize = (value = process.env.SITEMAP_CHUNK_SIZE) => {
+  const parsed = Number(value || DEFAULT_CHUNK_SIZE);
+  if (!Number.isFinite(parsed)) return DEFAULT_CHUNK_SIZE;
+  return Math.max(100, Math.min(Math.floor(parsed), MAX_CHUNK_SIZE));
+};
 
-const today = () => new Date().toISOString().slice(0, 10);
+const normalizePage = (value) => {
+  const parsed = Number(value || 1);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.floor(parsed));
+};
 
-const clampText = (value, max = 180) => String(value || '').trim().slice(0, max);
-
-const normalizeUrlSlug = (value = '') => String(value || '')
-  .trim()
-  .toLowerCase()
-  .replace(/[^a-z0-9]+/g, '-')
-  .replace(/^-+|-+$/g, '')
-  .replace(/-+/g, '-')
-  .slice(0, 96)
-  .replace(/-+$/g, '');
+const calculateChunkCount = (count, chunkSize = getChunkSize()) => {
+  const safeCount = Math.max(0, Number(count || 0));
+  return safeCount === 0 ? 0 : Math.ceil(safeCount / getChunkSize(chunkSize));
+};
 
 const xmlEscape = (value) => String(value || '')
   .replace(/&/g, '&amp;')
@@ -111,35 +75,62 @@ const xmlEscape = (value) => String(value || '')
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&apos;');
 
-const dateOnly = (value) => {
-  if (!value) return today();
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return today();
-  return date.toISOString().slice(0, 10);
+const normalizeLastmod = (value) => {
+  if (!value) return '';
+  const rawValue = String(value).trim();
+  const mysqlDateTime = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/.test(rawValue)
+    ? `${rawValue.replace(' ', 'T')}Z`
+    : rawValue;
+  const date = value instanceof Date ? value : new Date(mysqlDateTime);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString();
 };
 
 const buildUrl = (pathname, query = null, baseUrl = getBaseUrl()) => {
-  const url = new URL(pathname.startsWith('http') ? pathname : `${baseUrl}${pathname.startsWith('/') ? pathname : `/${pathname}`}`);
-  if (query) {
-    Object.entries(query).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && String(value).trim()) {
-        url.searchParams.set(key, String(value).trim());
-      }
-    });
-  }
+  const normalizedPath = pathname.startsWith('/') ? pathname : `/${pathname}`;
+  const url = new URL(`${String(baseUrl).replace(/\/+$/, '')}${normalizedPath}`);
+  Object.entries(query || {}).forEach(([key, value]) => {
+    const normalizedValue = String(value ?? '').trim();
+    if (normalizedValue) url.searchParams.set(key, normalizedValue);
+  });
   return url.toString();
 };
 
-const addUrl = (urls, seen, pathname, options = {}) => {
-  const loc = buildUrl(pathname, options.query, options.baseUrl);
-  if (seen.has(loc)) return;
-  seen.add(loc);
-  urls.push({
-    loc,
-    lastmod: dateOnly(options.lastmod),
-    changefreq: options.changefreq || 'weekly',
-    priority: options.priority || '0.7'
+const renderUrlSet = (entries = []) => `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${entries.map((entry) => {
+    const lastmod = normalizeLastmod(entry.lastmod);
+    return `  <url>
+    <loc>${xmlEscape(entry.loc)}</loc>${lastmod ? `\n    <lastmod>${xmlEscape(lastmod)}</lastmod>` : ''}
+  </url>`;
+  }).join('\n')}
+</urlset>
+`;
+
+const renderSitemapIndex = (sitemaps = []) => `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${sitemaps.map((sitemap) => {
+    const lastmod = normalizeLastmod(sitemap.lastmod);
+    return `  <sitemap>
+    <loc>${xmlEscape(sitemap.loc)}</loc>${lastmod ? `\n    <lastmod>${xmlEscape(lastmod)}</lastmod>` : ''}
+  </sitemap>`;
+  }).join('\n')}
+</sitemapindex>
+`;
+
+const dedupeEntries = (entries = []) => {
+  const seen = new Set();
+  return entries.filter((entry) => {
+    if (!entry?.loc || seen.has(entry.loc)) return false;
+    seen.add(entry.loc);
+    return true;
   });
+};
+
+const quoteId = (value) => {
+  const normalized = String(value || '');
+  if (!/^[A-Za-z0-9_]+$/.test(normalized)) throw new Error(`Unsafe SQL identifier: ${normalized}`);
+  return `\`${normalized}\``;
 };
 
 const tableExists = async (db, table) => {
@@ -147,296 +138,536 @@ const tableExists = async (db, table) => {
     'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
     [table]
   );
-  return Number(rows[0]?.count || 0) > 0;
+  return Number(rows?.[0]?.count || 0) > 0;
 };
 
 const getColumns = async (db, table) => {
-  if (!(await tableExists(db, table))) return new Set();
-  const [rows] = await db.query(`SHOW COLUMNS FROM \`${table}\``);
-  return new Set(rows.map((row) => row.Field));
+  let cache = schemaCache.get(db);
+  if (!cache) {
+    cache = new Map();
+    schemaCache.set(db, cache);
+  }
+
+  const cached = cache.get(table);
+  if (cached && cached.expiresAt > Date.now()) return cached.columns;
+
+  if (!(await tableExists(db, table))) {
+    const columns = new Set();
+    cache.set(table, { columns, expiresAt: Date.now() + SCHEMA_CACHE_TTL_MS });
+    return columns;
+  }
+
+  const [rows] = await db.query(`SHOW COLUMNS FROM ${quoteId(table)}`);
+  const columns = new Set(rows.map((row) => row.Field));
+  cache.set(table, { columns, expiresAt: Date.now() + SCHEMA_CACHE_TTL_MS });
+  return columns;
 };
 
 const pickColumn = (columns, candidates) => candidates.find((column) => columns.has(column));
 
-const selectList = (columns, mapping) => Object.entries(mapping)
-  .map(([alias, candidates]) => {
-    const column = pickColumn(columns, candidates);
-    return column ? `\`${column}\` AS \`${alias}\`` : `NULL AS \`${alias}\``;
-  })
-  .join(', ');
+const columnRef = (column, alias = '') => `${alias ? `${alias}.` : ''}${quoteId(column)}`;
 
-const activeWhere = (columns) => {
+const timestampExpression = (columns, alias = '') => {
+  const updated = pickColumn(columns, ['updated_at', 'published_at']);
+  const created = pickColumn(columns, ['created_at', 'posted_at']);
+  if (updated && created) return `COALESCE(${columnRef(updated, alias)}, ${columnRef(created, alias)})`;
+  if (updated) return columnRef(updated, alias);
+  if (created) return columnRef(created, alias);
+  return 'NULL';
+};
+
+const activeWhere = (columns, alias = '') => {
   const parts = [];
+  const ref = (column) => columnRef(column, alias);
+
   if (columns.has('status')) {
-    parts.push("LOWER(COALESCE(`status`, 'open')) NOT IN ('closed','inactive','rejected','blocked','deleted')");
+    parts.push(`LOWER(COALESCE(${ref('status')}, 'open')) NOT IN ('closed','inactive','rejected','blocked','deleted','draft','expired','filled')`);
   }
   if (columns.has('approval_status')) {
-    parts.push("LOWER(COALESCE(`approval_status`, 'approved')) NOT IN ('rejected','blocked','deleted')");
+    parts.push(`LOWER(COALESCE(${ref('approval_status')}, 'approved')) NOT IN ('pending','rejected','blocked','deleted','draft')`);
   }
   if (columns.has('review_status')) {
-    parts.push("LOWER(COALESCE(`review_status`, 'approved')) NOT IN ('rejected','blocked','deleted')");
+    parts.push(`LOWER(COALESCE(${ref('review_status')}, 'approved')) NOT IN ('pending','rejected','blocked','deleted','draft')`);
   }
-  if (columns.has('is_active')) {
-    parts.push('COALESCE(`is_active`, 1) = 1');
-  }
+  if (columns.has('is_active')) parts.push(`COALESCE(${ref('is_active')}, 1) = 1`);
   return parts;
 };
 
-const orderBy = (columns) => {
-  if (columns.has('updated_at') && columns.has('created_at')) return 'ORDER BY COALESCE(`updated_at`, `created_at`) DESC';
-  if (columns.has('updated_at')) return 'ORDER BY `updated_at` DESC';
-  if (columns.has('created_at')) return 'ORDER BY `created_at` DESC';
-  return '';
-};
+const nonEmptyCondition = (column, alias = '') => `NULLIF(TRIM(${columnRef(column, alias)}), '') IS NOT NULL`;
 
-const nonEmptyTextWhere = (columns, candidates) => {
-  const column = pickColumn(columns, candidates);
-  return column ? `TRIM(COALESCE(\`${column}\`, '')) <> ''` : '';
-};
-
-const fetchRows = async (db, table, mapping, extraWhere = '') => {
-  const columns = await getColumns(db, table);
-  if (columns.size === 0) return [];
-  const where = [...activeWhere(columns), extraWhere].filter(Boolean).join(' AND ');
-  const sql = `
-    SELECT ${selectList(columns, mapping)}
-    FROM \`${table}\`
-    ${where ? `WHERE ${where}` : ''}
-    ${orderBy(columns)}
-    LIMIT ${getMaxRows()}
-  `;
-  const [rows] = await db.query(sql);
-  return rows;
-};
-
-const fetchDistinctValues = async (db, table, candidateColumns) => {
-  const columns = await getColumns(db, table);
-  if (columns.size === 0) return [];
-
-  const existingColumns = candidateColumns.filter((column) => columns.has(column));
-  const filters = activeWhere(columns);
-  const values = new Set();
-
-  for (const column of existingColumns) {
-    const where = [
-      `\`${column}\` IS NOT NULL`,
-      `TRIM(\`${column}\`) <> ''`,
-      ...filters
-    ].join(' AND ');
-    const [rows] = await db.query(`
-      SELECT DISTINCT \`${column}\` AS value
-      FROM \`${table}\`
-      WHERE ${where}
-      LIMIT ${getMaxRows()}
-    `);
-    rows.forEach((row) => {
-      const value = clampText(row.value, 120);
-      if (value && !/^[0-9a-f-]{24,}$/i.test(value)) values.add(value);
-    });
-  }
-
-  return [...values];
-};
-
-const addStaticUrls = (urls, seen, baseUrl) => {
-  STATIC_ROUTES.forEach((route) => {
-    addUrl(urls, seen, route, {
-      baseUrl,
-      changefreq: route === '/' ? 'daily' : 'weekly',
-      priority: route === '/' ? '1.0' : '0.8'
-    });
-  });
-
-  HIGH_INTENT_JOB_QUERIES.forEach((query) => {
-    addUrl(urls, seen, '/jobs', {
-      baseUrl,
-      query,
-      changefreq: 'daily',
-      priority: '0.74'
-    });
-  });
-
-  HIGH_INTENT_GOVT_JOB_QUERIES.forEach((query) => {
-    addUrl(urls, seen, '/govt-jobs', {
-      baseUrl,
-      query,
-      changefreq: 'weekly',
-      priority: '0.7'
-    });
-  });
-};
-
-const addJobUrls = async (db, urls, seen, baseUrl) => {
-  const jobs = await fetchRows(db, 'jobs', {
-    id: ['id', 'job_id', 'uid'],
-    seoSlug: ['seo_slug', 'slug'],
-    title: ['job_title', 'title', 'role_title'],
-    company: ['company_name', 'company'],
-    city: ['city_name', 'district_name', 'job_location', 'location'],
-    updatedAt: ['updated_at', 'created_at']
-  });
-
-  jobs.forEach((job) => {
-    const slug = buildSeoSlug(job.seoSlug) || buildSeoSlug(job.title, job.company, job.city);
-    if (!slug) return;
-    addUrl(urls, seen, `/jobs/${slug}`, {
-      baseUrl,
-      lastmod: job.updatedAt,
-      changefreq: 'daily',
-      priority: '0.85'
-    });
-  });
-};
-
-const addGovtJobUrls = async (db, urls, seen, baseUrl) => {
-  const jobs = await fetchRows(db, 'govt_jobs', {
-    id: ['id', 'job_id', 'uid'],
-    seoSlug: ['seo_slug', 'slug'],
-    title: ['title', 'job_title'],
-    organization: ['organization', 'department'],
-    category: ['category'],
-    state: ['state', 'state_name'],
-    updatedAt: ['updated_at', 'created_at']
-  });
-
-  jobs.forEach((job) => {
-    const slug = buildSeoSlug(job.seoSlug) || buildSeoSlug(job.title, job.organization, job.category, job.state);
-    if (!slug) return;
-    addUrl(urls, seen, `/govt-jobs/${slug}`, {
-      baseUrl,
-      lastmod: job.updatedAt,
-      changefreq: 'daily',
-      priority: '0.82'
-    });
-  });
-};
-
-const addCompanyRows = (rows, urls, seen, baseUrl) => {
-  rows.forEach((company) => {
-    const slugs = [
-      normalizeUrlSlug(company.slug),
-      toCompanySlug(company.name)
-    ].filter(Boolean);
-
-    [...new Set(slugs)].forEach((slug) => {
-      addUrl(urls, seen, `/companies/${slug}`, {
-        baseUrl,
-        lastmod: company.updatedAt,
-        changefreq: 'weekly',
-        priority: '0.78'
-      });
-    });
-  });
-};
-
-const addCompanyUrls = async (db, urls, seen, baseUrl) => {
-  const companiesColumns = await getColumns(db, 'companies');
-  const hrProfileColumns = await getColumns(db, 'hr_profiles');
-  const jobsColumns = await getColumns(db, 'jobs');
-
-  const [companies, hrProfiles, jobCompanies] = await Promise.all([
-    companiesColumns.size === 0 ? [] : fetchRows(db, 'companies', {
-      slug: ['company_slug', 'slug'],
-      name: ['company_name', 'name'],
-      updatedAt: ['updated_at', 'created_at']
-    }, nonEmptyTextWhere(companiesColumns, ['company_name', 'name'])),
-    hrProfileColumns.size === 0 ? [] : fetchRows(db, 'hr_profiles', {
-      slug: ['company_slug', 'slug'],
-      name: ['company_name', 'name'],
-      updatedAt: ['updated_at', 'created_at']
-    }, nonEmptyTextWhere(hrProfileColumns, ['company_name', 'name'])),
-    jobsColumns.size === 0 ? [] : fetchRows(db, 'jobs', {
-      slug: ['company_slug'],
-      name: ['company_name', 'company'],
-      updatedAt: ['updated_at', 'created_at']
-    }, nonEmptyTextWhere(jobsColumns, ['company_name', 'company']))
-  ]);
-
-  addCompanyRows(companies, urls, seen, baseUrl);
-  addCompanyRows(hrProfiles, urls, seen, baseUrl);
-  addCompanyRows(jobCompanies, urls, seen, baseUrl);
-};
-
-const addListingUrls = async (db, urls, seen, baseUrl) => {
-  const [cities, categories, sectors, masterSectors, states] = await Promise.all([
-    fetchDistinctValues(db, 'jobs', ['city_name', 'district_name', 'job_location', 'location']),
-    fetchDistinctValues(db, 'jobs', ['category', 'job_category']),
-    fetchDistinctValues(db, 'jobs', ['sector_name', 'sector']),
-    fetchDistinctValues(db, 'master_sectors', ['name', 'sector_name']),
-    fetchDistinctValues(db, 'master_states', ['name', 'state_name'])
-  ]);
-
-  cities.forEach((city) => {
-    addUrl(urls, seen, '/jobs', {
-      baseUrl,
-      query: { location: city },
-      changefreq: 'daily',
-      priority: '0.72'
-    });
-  });
-
-  categories.forEach((category) => {
-    addUrl(urls, seen, '/jobs', {
-      baseUrl,
-      query: { category },
-      changefreq: 'daily',
-      priority: '0.72'
-    });
-  });
-
-  [...new Set([...sectors, ...masterSectors])].forEach((sector) => {
-    addUrl(urls, seen, '/jobs', {
-      baseUrl,
-      query: { sector },
-      changefreq: 'daily',
-      priority: '0.72'
-    });
-  });
-
-  states.forEach((state) => {
-    addUrl(urls, seen, '/govt-jobs', {
-      baseUrl,
-      query: { state },
-      changefreq: 'weekly',
-      priority: '0.68'
-    });
-  });
-};
-
-const renderXml = (urls) => `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map((url) => `  <url>
-    <loc>${xmlEscape(url.loc)}</loc>
-    <lastmod>${xmlEscape(url.lastmod)}</lastmod>
-    <changefreq>${xmlEscape(url.changefreq)}</changefreq>
-    <priority>${xmlEscape(url.priority)}</priority>
-  </url>`).join('\n')}
-</urlset>
-`;
-
-const buildSitemapXml = async (db, options = {}) => {
-  const baseUrl = String(options.baseUrl || getBaseUrl()).replace(/\/+$/, '');
-  const urls = [];
-  const seen = new Set();
-
-  addStaticUrls(urls, seen, baseUrl);
-  await addJobUrls(db, urls, seen, baseUrl);
-  await addGovtJobUrls(db, urls, seen, baseUrl);
-  await addCompanyUrls(db, urls, seen, baseUrl);
-  await addListingUrls(db, urls, seen, baseUrl);
-
+const buildTableStats = async (db, table, columns, whereParts = []) => {
+  if (!columns.size) return { count: 0, lastmod: '' };
+  const where = whereParts.filter(Boolean);
+  const [rows] = await db.query(`
+    SELECT COUNT(*) AS total, MAX(${timestampExpression(columns)}) AS lastmod
+    FROM ${quoteId(table)}
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+  `);
   return {
-    xml: renderXml(urls),
-    count: urls.length,
-    generatedAt: new Date().toISOString(),
-    baseUrl
+    count: Number(rows?.[0]?.total || 0),
+    lastmod: normalizeLastmod(rows?.[0]?.lastmod)
   };
 };
 
+const buildStaticEntries = (baseUrl) => {
+  const lastmod = normalizeLastmod(process.env.SITEMAP_STATIC_LASTMOD);
+  return STATIC_ROUTES.map((pathname) => ({
+    loc: buildUrl(pathname, null, baseUrl),
+    lastmod
+  }));
+};
+
+const chooseShortestSlug = (...values) => {
+  const slugs = [...new Set(values.map((value) => buildSeoSlug(value)).filter(Boolean))];
+  return slugs.sort((left, right) => left.length - right.length)[0] || '';
+};
+
+const createEntitySection = ({ id, table, mapping, buildPath, priority = 100 }) => ({
+  id,
+  priority,
+  async prepare(db) {
+    const columns = await getColumns(db, table);
+    if (!columns.size) return null;
+
+    const resolved = Object.fromEntries(
+      Object.entries(mapping).map(([alias, candidates]) => [alias, pickColumn(columns, candidates)])
+    );
+    const contentColumns = Object.values(resolved).filter(Boolean);
+    const where = [
+      ...activeWhere(columns),
+      contentColumns.length
+        ? `(${contentColumns.map((column) => nonEmptyCondition(column)).join(' OR ')})`
+        : '1 = 0'
+    ];
+    const stats = await buildTableStats(db, table, columns, where);
+
+    return {
+      id,
+      priority,
+      ...stats,
+      async load({ limit, offset, baseUrl }) {
+        const select = Object.entries(resolved)
+          .map(([alias, column]) => column ? `${columnRef(column)} AS ${quoteId(alias)}` : `NULL AS ${quoteId(alias)}`)
+          .join(', ');
+        const orderColumn = pickColumn(columns, ['id', 'seo_slug', 'slug', 'created_at']);
+        const [rows] = await db.query(`
+          SELECT ${select}, ${timestampExpression(columns)} AS lastmod
+          FROM ${quoteId(table)}
+          WHERE ${where.join(' AND ')}
+          ${orderColumn ? `ORDER BY ${columnRef(orderColumn)} ASC` : ''}
+          LIMIT ${Math.max(1, limit)} OFFSET ${Math.max(0, offset)}
+        `);
+
+        return dedupeEntries(rows.map((row) => {
+          const path = buildPath(row);
+          return path ? { loc: buildUrl(path, null, baseUrl), lastmod: row.lastmod } : null;
+        }).filter(Boolean));
+      }
+    };
+  }
+});
+
+const buildFacetUnionSql = async (db, sources) => {
+  const selects = [];
+
+  for (const source of sources) {
+    const columns = await getColumns(db, source.table);
+    const valueColumn = pickColumn(columns, source.valueColumns);
+    if (!valueColumn) continue;
+    const where = [...activeWhere(columns), nonEmptyCondition(valueColumn)];
+    selects.push(`
+      SELECT TRIM(${columnRef(valueColumn)}) AS name, ${timestampExpression(columns)} AS changed_at
+      FROM ${quoteId(source.table)}
+      WHERE ${where.join(' AND ')}
+    `);
+  }
+
+  if (!selects.length) return '';
+  return `
+    SELECT MIN(name) AS name, MAX(changed_at) AS lastmod
+    FROM (${selects.join(' UNION ALL ')}) raw_facets
+    WHERE NULLIF(TRIM(name), '') IS NOT NULL
+    GROUP BY LOWER(TRIM(name))
+  `;
+};
+
+const createFacetSection = ({ id, sources, queryKey, priority = 200 }) => ({
+  id,
+  priority,
+  async prepare(db) {
+    const groupedSql = await buildFacetUnionSql(db, sources);
+    if (!groupedSql) return null;
+    const [statsRows] = await db.query(`
+      SELECT COUNT(*) AS total, MAX(lastmod) AS lastmod
+      FROM (${groupedSql}) grouped_facets
+    `);
+    const count = Number(statsRows?.[0]?.total || 0);
+    if (!count) return null;
+
+    return {
+      id,
+      priority,
+      count,
+      lastmod: normalizeLastmod(statsRows?.[0]?.lastmod),
+      async load({ limit, offset, baseUrl }) {
+        const [rows] = await db.query(`
+          SELECT name, lastmod
+          FROM (${groupedSql}) grouped_facets
+          ORDER BY LOWER(name) ASC
+          LIMIT ${Math.max(1, limit)} OFFSET ${Math.max(0, offset)}
+        `);
+        return rows.map((row) => ({
+          loc: buildUrl('/jobs', { [queryKey]: row.name }, baseUrl),
+          lastmod: row.lastmod
+        }));
+      }
+    };
+  }
+});
+
+const createGovtFacetSection = ({ id, valueColumns, queryKey, priority = 300 }) => ({
+  id,
+  priority,
+  async prepare(db) {
+    const columns = await getColumns(db, 'govt_jobs');
+    const valueColumn = pickColumn(columns, valueColumns);
+    if (!valueColumn) return null;
+    const where = [...activeWhere(columns), nonEmptyCondition(valueColumn)];
+    const groupedSql = `
+      SELECT MIN(TRIM(${columnRef(valueColumn)})) AS name,
+             MAX(${timestampExpression(columns)}) AS lastmod
+      FROM ${quoteId('govt_jobs')}
+      WHERE ${where.join(' AND ')}
+      GROUP BY LOWER(TRIM(${columnRef(valueColumn)}))
+    `;
+    const [statsRows] = await db.query(`SELECT COUNT(*) AS total, MAX(lastmod) AS lastmod FROM (${groupedSql}) facets`);
+    const count = Number(statsRows?.[0]?.total || 0);
+    if (!count) return null;
+
+    return {
+      id,
+      priority,
+      count,
+      lastmod: normalizeLastmod(statsRows?.[0]?.lastmod),
+      async load({ limit, offset, baseUrl }) {
+        const [rows] = await db.query(`
+          SELECT name, lastmod FROM (${groupedSql}) facets
+          ORDER BY LOWER(name) ASC
+          LIMIT ${Math.max(1, limit)} OFFSET ${Math.max(0, offset)}
+        `);
+        return rows.map((row) => ({
+          loc: buildUrl('/govt-jobs', { [queryKey]: row.name }, baseUrl),
+          lastmod: row.lastmod
+        }));
+      }
+    };
+  }
+});
+
+const prepareLocationSection = async (db, level) => {
+  const stateColumns = await getColumns(db, 'master_states');
+  if (!stateColumns.size) return null;
+  const stateDate = timestampExpression(stateColumns, 'ms');
+  const stateActive = activeWhere(stateColumns, 'ms');
+  let id = 'job-states';
+  let from = `${quoteId('master_states')} ms`;
+  let select = `ms.name AS state_name, NULL AS district_name, NULL AS city_name, NULL AS locality_name, NULL AS pincode`;
+  let where = [...stateActive, nonEmptyCondition('name', 'ms')];
+  let order = 'LOWER(ms.name), ms.id';
+  let changedAt = stateDate;
+
+  if (level === 'districts') {
+    const districtColumns = await getColumns(db, 'master_districts');
+    if (!districtColumns.size) return null;
+    id = 'job-districts';
+    from = `${quoteId('master_districts')} md JOIN ${quoteId('master_states')} ms ON ms.id = md.state_id`;
+    select = `ms.name AS state_name, md.name AS district_name, NULL AS city_name, NULL AS locality_name, NULL AS pincode`;
+    where = [...stateActive, ...activeWhere(districtColumns, 'md'), nonEmptyCondition('name', 'ms'), nonEmptyCondition('name', 'md')];
+    order = 'LOWER(ms.name), LOWER(md.name), md.id';
+    changedAt = `COALESCE(${timestampExpression(districtColumns, 'md')}, ${stateDate})`;
+  }
+
+  if (level === 'cities') {
+    const districtColumns = await getColumns(db, 'master_districts');
+    const cityColumns = await getColumns(db, 'master_locations');
+    if (!districtColumns.size || !cityColumns.size) return null;
+    id = 'job-cities';
+    from = `${quoteId('master_locations')} ml
+      JOIN ${quoteId('master_states')} ms ON ms.id = ml.state_id
+      JOIN ${quoteId('master_districts')} md ON md.id = ml.district_id`;
+    select = `ms.name AS state_name, md.name AS district_name, ml.name AS city_name, NULL AS locality_name, ml.pincode AS pincode`;
+    where = [
+      ...stateActive,
+      ...activeWhere(districtColumns, 'md'),
+      ...activeWhere(cityColumns, 'ml'),
+      nonEmptyCondition('name', 'ms'),
+      nonEmptyCondition('name', 'md'),
+      nonEmptyCondition('name', 'ml'),
+      'CHAR_LENGTH(TRIM(ml.name)) BETWEEN 2 AND 120'
+    ];
+    order = 'LOWER(ms.name), LOWER(md.name), LOWER(ml.name), ml.id';
+    changedAt = `COALESCE(${timestampExpression(cityColumns, 'ml')}, ${timestampExpression(districtColumns, 'md')}, ${stateDate})`;
+  }
+
+  if (level === 'pincodes') {
+    const districtColumns = await getColumns(db, 'master_districts');
+    const cityColumns = await getColumns(db, 'master_locations');
+    const pincodeColumns = await getColumns(db, 'master_pincodes');
+    if (!districtColumns.size || !cityColumns.size || !pincodeColumns.size) return null;
+    id = 'job-pincodes';
+    from = `${quoteId('master_pincodes')} mp
+      JOIN ${quoteId('master_states')} ms ON ms.id = mp.state_id
+      JOIN ${quoteId('master_districts')} md ON md.id = mp.district_id
+      JOIN ${quoteId('master_locations')} ml ON ml.id = mp.city_id`;
+    select = `ms.name AS state_name, md.name AS district_name, ml.name AS city_name, mp.locality_name AS locality_name, mp.pincode AS pincode`;
+    where = [
+      ...stateActive,
+      ...activeWhere(districtColumns, 'md'),
+      ...activeWhere(cityColumns, 'ml'),
+      ...activeWhere(pincodeColumns, 'mp'),
+      nonEmptyCondition('name', 'ms'),
+      nonEmptyCondition('name', 'md'),
+      nonEmptyCondition('name', 'ml'),
+      nonEmptyCondition('pincode', 'mp')
+    ];
+    order = 'mp.pincode, mp.id';
+    changedAt = `COALESCE(${timestampExpression(pincodeColumns, 'mp')}, ${timestampExpression(cityColumns, 'ml')}, ${stateDate})`;
+  }
+
+  const [statsRows] = await db.query(`
+    SELECT COUNT(*) AS total, MAX(${changedAt}) AS lastmod
+    FROM ${from}
+    WHERE ${where.join(' AND ')}
+  `);
+  const count = Number(statsRows?.[0]?.total || 0);
+  if (!count) return null;
+
+  return {
+    id,
+    priority: 220,
+    count,
+    lastmod: normalizeLastmod(statsRows?.[0]?.lastmod),
+    async load({ limit, offset, baseUrl }) {
+      const [rows] = await db.query(`
+        SELECT ${select}, ${changedAt} AS lastmod
+        FROM ${from}
+        WHERE ${where.join(' AND ')}
+        ORDER BY ${order}
+        LIMIT ${Math.max(1, limit)} OFFSET ${Math.max(0, offset)}
+      `);
+
+      return dedupeEntries(rows.map((row) => {
+        const location = row.locality_name || row.city_name || row.district_name || row.state_name;
+        return {
+          loc: buildUrl('/jobs', {
+            stateName: row.state_name,
+            districtName: row.district_name,
+            cityName: row.city_name,
+            location,
+            pincode: row.pincode
+          }, baseUrl),
+          lastmod: row.lastmod
+        };
+      }));
+    }
+  };
+};
+
+const sectionFactories = [
+  createEntitySection({
+    id: 'private-jobs',
+    table: 'jobs',
+    mapping: {
+      seoSlug: ['seo_slug', 'slug'],
+      title: ['job_title', 'title', 'role_title'],
+      company: ['company_name', 'company'],
+      city: ['city_name', 'district_name', 'job_location', 'location']
+    },
+    buildPath: (row) => {
+      const slug = chooseShortestSlug(
+        buildSeoSlug(row.title, row.company, row.city),
+        row.seoSlug
+      );
+      return slug ? `/jobs/${slug}` : '';
+    },
+    priority: 10
+  }),
+  createEntitySection({
+    id: 'government-jobs',
+    table: 'govt_jobs',
+    mapping: {
+      seoSlug: ['seo_slug', 'slug'],
+      title: ['title', 'job_title'],
+      organization: ['organization', 'department'],
+      category: ['category'],
+      state: ['state', 'state_name']
+    },
+    buildPath: (row) => {
+      const slug = buildSeoSlug(row.seoSlug) || buildSeoSlug(row.title, row.organization, row.state || row.category);
+      return slug ? `/govt-jobs/${slug}` : '';
+    },
+    priority: 20
+  }),
+  createEntitySection({
+    id: 'companies',
+    table: 'companies',
+    mapping: {
+      slug: ['company_slug', 'slug'],
+      name: ['company_name', 'name']
+    },
+    buildPath: (row) => {
+      const slug = buildSeoSlug(row.slug) || toCompanySlug(row.name);
+      return slug ? `/companies/${slug}` : '';
+    },
+    priority: 30
+  }),
+  createEntitySection({
+    id: 'blog-articles',
+    table: 'blog_articles',
+    mapping: { slug: ['slug'] },
+    buildPath: (row) => buildSeoSlug(row.slug) ? `/blog/${buildSeoSlug(row.slug)}` : '',
+    priority: 40
+  }),
+  { id: 'job-states', priority: 220, prepare: (db) => prepareLocationSection(db, 'states') },
+  { id: 'job-districts', priority: 221, prepare: (db) => prepareLocationSection(db, 'districts') },
+  { id: 'job-cities', priority: 222, prepare: (db) => prepareLocationSection(db, 'cities') },
+  { id: 'job-pincodes', priority: 223, prepare: (db) => prepareLocationSection(db, 'pincodes') },
+  createFacetSection({
+    id: 'job-categories',
+    queryKey: 'category',
+    sources: [
+      { table: 'master_categories', valueColumns: ['name', 'category_name'] },
+      { table: 'jobs', valueColumns: ['category', 'job_category'] }
+    ],
+    priority: 230
+  }),
+  createFacetSection({
+    id: 'job-sectors',
+    queryKey: 'sector',
+    sources: [
+      { table: 'master_sectors', valueColumns: ['name', 'sector_name'] },
+      { table: 'jobs', valueColumns: ['sector_name', 'sector'] }
+    ],
+    priority: 231
+  }),
+  createGovtFacetSection({ id: 'government-job-states', valueColumns: ['state', 'state_name'], queryKey: 'state', priority: 310 }),
+  createGovtFacetSection({ id: 'government-job-categories', valueColumns: ['category'], queryKey: 'category', priority: 311 })
+];
+
+const prepareSections = async (db) => {
+  const settled = await Promise.all(sectionFactories.map(async (factory) => {
+    try {
+      return await factory.prepare(db);
+    } catch (error) {
+      console.warn(`[SITEMAP] Skipping ${factory.id}: ${error.message}`);
+      return null;
+    }
+  }));
+  return settled.filter((section) => section?.count > 0).sort((left, right) => left.priority - right.priority);
+};
+
+const buildSitemapManifest = async (db, options = {}) => {
+  const baseUrl = String(options.baseUrl || getBaseUrl()).replace(/\/+$/, '');
+  const chunkSize = getChunkSize(options.chunkSize);
+  const staticEntries = buildStaticEntries(baseUrl);
+  const dynamicSections = await prepareSections(db);
+  const sections = [
+    {
+      id: 'static',
+      count: staticEntries.length,
+      lastmod: normalizeLastmod(process.env.SITEMAP_STATIC_LASTMOD),
+      load: async () => staticEntries
+    },
+    ...dynamicSections
+  ];
+
+  const sitemaps = [];
+  sections.forEach((section) => {
+    const pageCount = calculateChunkCount(section.count, chunkSize);
+    for (let page = 1; page <= pageCount; page += 1) {
+      sitemaps.push({
+        section: section.id,
+        page,
+        count: Math.min(chunkSize, section.count - ((page - 1) * chunkSize)),
+        loc: buildUrl(`/sitemaps/${section.id}/${page}.xml`, null, baseUrl),
+        // A section-wide MAX date is exact only when that section has one child file.
+        lastmod: pageCount === 1 ? section.lastmod : ''
+      });
+    }
+  });
+
+  if (sitemaps.length > MAX_SITEMAPS_PER_INDEX) {
+    throw new Error(`Sitemap index needs ${sitemaps.length} child files; maximum is ${MAX_SITEMAPS_PER_INDEX}`);
+  }
+
+  return {
+    baseUrl,
+    chunkSize,
+    sections,
+    sitemaps,
+    totalUrls: sections.reduce((sum, section) => sum + Number(section.count || 0), 0),
+    generatedAt: new Date().toISOString()
+  };
+};
+
+const buildSitemapIndexXml = async (db, options = {}) => {
+  const manifest = await buildSitemapManifest(db, options);
+  return {
+    xml: renderSitemapIndex(manifest.sitemaps),
+    count: manifest.sitemaps.length,
+    urlCount: manifest.totalUrls,
+    generatedAt: manifest.generatedAt,
+    baseUrl: manifest.baseUrl,
+    manifest
+  };
+};
+
+const buildSitemapChunkXml = async (db, sectionId, pageValue, options = {}) => {
+  const manifest = options.manifest || await buildSitemapManifest(db, options);
+  const page = normalizePage(pageValue);
+  const section = manifest.sections.find((candidate) => candidate.id === sectionId);
+  if (!section) return null;
+
+  const pageCount = calculateChunkCount(section.count, manifest.chunkSize);
+  if (page > pageCount) return null;
+  const offset = (page - 1) * manifest.chunkSize;
+  const entries = dedupeEntries(await section.load({
+    limit: manifest.chunkSize,
+    offset,
+    baseUrl: manifest.baseUrl
+  }));
+
+  return {
+    xml: renderUrlSet(entries),
+    count: entries.length,
+    section: section.id,
+    page,
+    pageCount,
+    totalCount: section.count,
+    lastmod: section.lastmod,
+    generatedAt: new Date().toISOString(),
+    baseUrl: manifest.baseUrl
+  };
+};
+
+// Previous callers used buildSitemapXml for the single sitemap. It now returns the index.
+const buildSitemapXml = buildSitemapIndexXml;
+const renderXml = renderUrlSet;
+
 module.exports = {
   buildSitemapXml,
+  buildSitemapIndexXml,
+  buildSitemapChunkXml,
+  buildSitemapManifest,
   renderXml,
+  renderUrlSet,
+  renderSitemapIndex,
+  calculateChunkCount,
+  getChunkSize,
+  normalizeLastmod,
+  xmlEscape,
   STATIC_ROUTES,
   HIGH_INTENT_JOB_QUERIES,
-  HIGH_INTENT_GOVT_JOB_QUERIES
+  HIGH_INTENT_GOVT_JOB_QUERIES,
+  MAX_CHUNK_SIZE
 };

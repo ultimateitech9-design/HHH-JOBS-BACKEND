@@ -39,6 +39,7 @@ uploads/
 .uploads
 temp_hash.txt
 data/location-normalization/*.json
+generated-sitemaps/
 
 # Editor directories and OS files
 .vscode/*
