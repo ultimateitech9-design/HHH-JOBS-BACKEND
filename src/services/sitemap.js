@@ -43,6 +43,22 @@ const STATIC_ROUTES = [
 const HIGH_INTENT_JOB_QUERIES = [];
 const HIGH_INTENT_GOVT_JOB_QUERIES = [];
 
+const JOB_LOCATION_SCOPES = [
+  { id: 'states', target: 'state', fields: ['state'] },
+  { id: 'districts', target: 'district', fields: ['state', 'district'] },
+  { id: 'cities', target: 'city', fields: ['state', 'district', 'city'] },
+  { id: 'localities', target: 'locality', fields: ['state', 'district', 'city', 'locality'] },
+  { id: 'pincodes', target: 'pincode', fields: ['state', 'district', 'city', 'locality', 'pincode'] }
+];
+
+const LOCATION_QUERY_KEYS = {
+  state: 'stateName',
+  district: 'districtName',
+  city: 'cityName',
+  locality: 'localityName',
+  pincode: 'pincode'
+};
+
 const schemaCache = new WeakMap();
 
 const getBaseUrl = () => String(
@@ -94,6 +110,19 @@ const buildUrl = (pathname, query = null, baseUrl = getBaseUrl()) => {
     if (normalizedValue) url.searchParams.set(key, normalizedValue);
   });
   return url.toString();
+};
+
+const buildJobSearchQuery = ({ intentKey = '', intentValue = '', location = {} } = {}) => {
+  const query = {};
+  const normalizedIntentKey = String(intentKey || '').trim();
+  const normalizedIntentValue = String(intentValue || '').trim();
+  if (normalizedIntentKey && normalizedIntentValue) query[normalizedIntentKey] = normalizedIntentValue;
+
+  Object.entries(LOCATION_QUERY_KEYS).forEach(([field, queryKey]) => {
+    const value = String(location?.[field] || '').trim();
+    if (value) query[queryKey] = value;
+  });
+  return query;
 };
 
 const renderUrlSet = (entries = []) => `<?xml version="1.0" encoding="UTF-8"?>
@@ -194,6 +223,9 @@ const activeWhere = (columns, alias = '') => {
 };
 
 const nonEmptyCondition = (column, alias = '') => `NULLIF(TRIM(${columnRef(column, alias)}), '') IS NOT NULL`;
+const normalizedTextExpression = (column, alias = '') => (
+  `NULLIF(TRIM(REGEXP_REPLACE(COALESCE(${columnRef(column, alias)}, ''), '[[:space:]]+', ' ')), '')`
+);
 
 const buildTableStats = async (db, table, columns, whereParts = []) => {
   if (!columns.size) return { count: 0, lastmod: '' };
@@ -276,7 +308,7 @@ const buildFacetUnionSql = async (db, sources) => {
     if (!valueColumn) continue;
     const where = [...activeWhere(columns), nonEmptyCondition(valueColumn)];
     selects.push(`
-      SELECT TRIM(${columnRef(valueColumn)}) AS name, ${timestampExpression(columns)} AS changed_at
+      SELECT ${normalizedTextExpression(valueColumn)} AS name, ${timestampExpression(columns)} AS changed_at
       FROM ${quoteId(source.table)}
       WHERE ${where.join(' AND ')}
     `);
@@ -334,11 +366,11 @@ const createGovtFacetSection = ({ id, valueColumns, queryKey, priority = 300 }) 
     if (!valueColumn) return null;
     const where = [...activeWhere(columns), nonEmptyCondition(valueColumn)];
     const groupedSql = `
-      SELECT MIN(TRIM(${columnRef(valueColumn)})) AS name,
+      SELECT MIN(${normalizedTextExpression(valueColumn)}) AS name,
              MAX(${timestampExpression(columns)}) AS lastmod
       FROM ${quoteId('govt_jobs')}
       WHERE ${where.join(' AND ')}
-      GROUP BY LOWER(TRIM(${columnRef(valueColumn)}))
+      GROUP BY LOWER(${normalizedTextExpression(valueColumn)})
     `;
     const [statsRows] = await db.query(`SELECT COUNT(*) AS total, MAX(lastmod) AS lastmod FROM (${groupedSql}) facets`);
     const count = Number(statsRows?.[0]?.total || 0);
@@ -357,6 +389,143 @@ const createGovtFacetSection = ({ id, valueColumns, queryKey, priority = 300 }) 
         `);
         return rows.map((row) => ({
           loc: buildUrl('/govt-jobs', { [queryKey]: row.name }, baseUrl),
+          lastmod: row.lastmod
+        }));
+      }
+    };
+  }
+});
+
+const createJobIntentLocationSection = ({
+  id,
+  intentColumns,
+  intentQueryKey,
+  scope,
+  priority = 250
+}) => ({
+  id,
+  priority,
+  async prepare(db) {
+    const columns = await getColumns(db, 'jobs');
+    const intentColumn = pickColumn(columns, intentColumns);
+    const locationColumns = {
+      state: pickColumn(columns, ['state_name', 'state']),
+      district: pickColumn(columns, ['district_name', 'district']),
+      city: pickColumn(columns, ['city_name', 'city']),
+      locality: pickColumn(columns, ['locality_name', 'locality']),
+      pincode: pickColumn(columns, ['pincode', 'pin_code', 'postal_code'])
+    };
+    const targetColumn = locationColumns[scope.target];
+    if (!intentColumn || !targetColumn) return null;
+
+    const selectedFields = scope.fields.filter((field) => locationColumns[field]);
+    const where = [
+      ...activeWhere(columns),
+      nonEmptyCondition(intentColumn),
+      nonEmptyCondition(targetColumn),
+      `CHAR_LENGTH(TRIM(${columnRef(intentColumn)})) BETWEEN 2 AND 160`,
+      scope.target === 'pincode'
+        ? `TRIM(${columnRef(targetColumn)}) REGEXP '^[1-9][0-9]{5}$'`
+        : `CHAR_LENGTH(TRIM(${columnRef(targetColumn)})) BETWEEN 2 AND 160`
+    ];
+    const fieldProjection = selectedFields
+      .map((field) => `MIN(${normalizedTextExpression(locationColumns[field])}) AS ${quoteId(field)}`)
+      .join(', ');
+    const fieldGroups = selectedFields
+      .map((field) => `LOWER(${normalizedTextExpression(locationColumns[field])})`)
+      .join(', ');
+    const groupedSql = `
+      SELECT MIN(${normalizedTextExpression(intentColumn)}) AS intent_name,
+             ${fieldProjection},
+             MAX(${timestampExpression(columns)}) AS lastmod
+      FROM ${quoteId('jobs')}
+      WHERE ${where.join(' AND ')}
+      GROUP BY LOWER(${normalizedTextExpression(intentColumn)}), ${fieldGroups}
+    `;
+    const [statsRows] = await db.query(`
+      SELECT COUNT(*) AS total, MAX(lastmod) AS lastmod
+      FROM (${groupedSql}) job_intent_locations
+    `);
+    const count = Number(statsRows?.[0]?.total || 0);
+    if (!count) return null;
+
+    return {
+      id,
+      priority,
+      count,
+      lastmod: normalizeLastmod(statsRows?.[0]?.lastmod),
+      async load({ limit, offset, baseUrl }) {
+        const [rows] = await db.query(`
+          SELECT * FROM (${groupedSql}) job_intent_locations
+          ORDER BY LOWER(intent_name) ASC${selectedFields.map((field) => `, LOWER(${quoteId(field)}) ASC`).join('')}
+          LIMIT ${Math.max(1, limit)} OFFSET ${Math.max(0, offset)}
+        `);
+        return dedupeEntries(rows.map((row) => ({
+          loc: buildUrl('/jobs', buildJobSearchQuery({
+            intentKey: intentQueryKey,
+            intentValue: row.intent_name,
+            location: Object.fromEntries(selectedFields.map((field) => [field, row[field]]))
+          }), baseUrl),
+          lastmod: row.lastmod
+        })));
+      }
+    };
+  }
+});
+
+const createFacetPairSection = ({
+  id,
+  table,
+  leftColumns,
+  leftQueryKey,
+  rightColumns,
+  rightQueryKey,
+  pathname,
+  priority = 320
+}) => ({
+  id,
+  priority,
+  async prepare(db) {
+    const columns = await getColumns(db, table);
+    const leftColumn = pickColumn(columns, leftColumns);
+    const rightColumn = pickColumn(columns, rightColumns);
+    if (!leftColumn || !rightColumn) return null;
+    const where = [
+      ...activeWhere(columns),
+      nonEmptyCondition(leftColumn),
+      nonEmptyCondition(rightColumn),
+      `CHAR_LENGTH(TRIM(${columnRef(leftColumn)})) BETWEEN 2 AND 160`,
+      `CHAR_LENGTH(TRIM(${columnRef(rightColumn)})) BETWEEN 2 AND 160`
+    ];
+    const groupedSql = `
+      SELECT MIN(${normalizedTextExpression(leftColumn)}) AS left_value,
+             MIN(${normalizedTextExpression(rightColumn)}) AS right_value,
+             MAX(${timestampExpression(columns)}) AS lastmod
+      FROM ${quoteId(table)}
+      WHERE ${where.join(' AND ')}
+      GROUP BY LOWER(${normalizedTextExpression(leftColumn)}), LOWER(${normalizedTextExpression(rightColumn)})
+    `;
+    const [statsRows] = await db.query(`SELECT COUNT(*) AS total, MAX(lastmod) AS lastmod FROM (${groupedSql}) facet_pairs`);
+    const count = Number(statsRows?.[0]?.total || 0);
+    if (!count) return null;
+
+    return {
+      id,
+      priority,
+      count,
+      lastmod: normalizeLastmod(statsRows?.[0]?.lastmod),
+      async load({ limit, offset, baseUrl }) {
+        const [rows] = await db.query(`
+          SELECT left_value, right_value, lastmod
+          FROM (${groupedSql}) facet_pairs
+          ORDER BY LOWER(left_value) ASC, LOWER(right_value) ASC
+          LIMIT ${Math.max(1, limit)} OFFSET ${Math.max(0, offset)}
+        `);
+        return rows.map((row) => ({
+          loc: buildUrl(pathname, {
+            [leftQueryKey]: row.left_value,
+            [rightQueryKey]: row.right_value
+          }, baseUrl),
           lastmod: row.lastmod
         }));
       }
@@ -395,7 +564,7 @@ const prepareLocationSection = async (db, level) => {
     from = `${quoteId('master_locations')} ml
       JOIN ${quoteId('master_states')} ms ON ms.id = ml.state_id
       JOIN ${quoteId('master_districts')} md ON md.id = ml.district_id`;
-    select = `ms.name AS state_name, md.name AS district_name, ml.name AS city_name, NULL AS locality_name, ml.pincode AS pincode`;
+    select = `ms.name AS state_name, md.name AS district_name, ml.name AS city_name, NULL AS locality_name, NULL AS pincode`;
     where = [
       ...stateActive,
       ...activeWhere(districtColumns, 'md'),
@@ -457,21 +626,49 @@ const prepareLocationSection = async (db, level) => {
       `);
 
       return dedupeEntries(rows.map((row) => {
-        const location = row.locality_name || row.city_name || row.district_name || row.state_name;
         return {
-          loc: buildUrl('/jobs', {
-            stateName: row.state_name,
-            districtName: row.district_name,
-            cityName: row.city_name,
-            location,
-            pincode: row.pincode
-          }, baseUrl),
+          loc: buildUrl('/jobs', buildJobSearchQuery({
+            location: {
+              state: row.state_name,
+              district: row.district_name,
+              city: row.city_name,
+              locality: row.locality_name,
+              pincode: row.pincode
+            }
+          }), baseUrl),
           lastmod: row.lastmod
         };
       }));
     }
   };
 };
+
+const jobIntentLocationFactories = [
+  {
+    idPrefix: 'job-role',
+    intentColumns: ['job_title', 'title', 'role_title'],
+    intentQueryKey: 'search',
+    priority: 250
+  },
+  {
+    idPrefix: 'job-category',
+    intentColumns: ['category', 'job_category', 'sector_name', 'sector'],
+    intentQueryKey: 'category',
+    priority: 260
+  },
+  {
+    idPrefix: 'job-company',
+    intentColumns: ['company_name', 'company'],
+    intentQueryKey: 'company',
+    priority: 270
+  }
+].flatMap((intent) => JOB_LOCATION_SCOPES.map((scope, index) => createJobIntentLocationSection({
+  id: `${intent.idPrefix}-${scope.id}`,
+  intentColumns: intent.intentColumns,
+  intentQueryKey: intent.intentQueryKey,
+  scope,
+  priority: intent.priority + index
+})));
 
 const sectionFactories = [
   createEntitySection({
@@ -550,8 +747,57 @@ const sectionFactories = [
     ],
     priority: 231
   }),
+  createFacetSection({
+    id: 'job-roles',
+    queryKey: 'search',
+    sources: [
+      { table: 'jobs', valueColumns: ['job_title', 'title', 'role_title'] }
+    ],
+    priority: 232
+  }),
+  createFacetSection({
+    id: 'job-companies',
+    queryKey: 'company',
+    sources: [
+      { table: 'jobs', valueColumns: ['company_name', 'company'] }
+    ],
+    priority: 233
+  }),
+  ...jobIntentLocationFactories,
+  createGovtFacetSection({ id: 'government-job-roles', valueColumns: ['title', 'job_title'], queryKey: 'search', priority: 308 }),
+  createGovtFacetSection({ id: 'government-job-organizations', valueColumns: ['organization', 'department'], queryKey: 'search', priority: 309 }),
   createGovtFacetSection({ id: 'government-job-states', valueColumns: ['state', 'state_name'], queryKey: 'state', priority: 310 }),
-  createGovtFacetSection({ id: 'government-job-categories', valueColumns: ['category'], queryKey: 'category', priority: 311 })
+  createGovtFacetSection({ id: 'government-job-categories', valueColumns: ['category'], queryKey: 'category', priority: 311 }),
+  createFacetPairSection({
+    id: 'government-job-role-states',
+    table: 'govt_jobs',
+    leftColumns: ['title', 'job_title'],
+    leftQueryKey: 'search',
+    rightColumns: ['state', 'state_name'],
+    rightQueryKey: 'state',
+    pathname: '/govt-jobs',
+    priority: 312
+  }),
+  createFacetPairSection({
+    id: 'government-job-category-states',
+    table: 'govt_jobs',
+    leftColumns: ['category'],
+    leftQueryKey: 'category',
+    rightColumns: ['state', 'state_name'],
+    rightQueryKey: 'state',
+    pathname: '/govt-jobs',
+    priority: 313
+  }),
+  createFacetPairSection({
+    id: 'government-job-organization-states',
+    table: 'govt_jobs',
+    leftColumns: ['organization', 'department'],
+    leftQueryKey: 'search',
+    rightColumns: ['state', 'state_name'],
+    rightQueryKey: 'state',
+    pathname: '/govt-jobs',
+    priority: 314
+  })
 ];
 
 const prepareSections = async (db) => {
@@ -569,7 +815,7 @@ const prepareSections = async (db) => {
 const buildSitemapManifest = async (db, options = {}) => {
   const baseUrl = String(options.baseUrl || getBaseUrl()).replace(/\/+$/, '');
   const chunkSize = getChunkSize(options.chunkSize);
-  const childUrlMode = String(options.childUrlMode || process.env.SITEMAP_CHILD_URL_MODE || 'query').toLowerCase();
+  const childUrlMode = String(options.childUrlMode || process.env.SITEMAP_CHILD_URL_MODE || 'path').toLowerCase();
   const staticEntries = buildStaticEntries(baseUrl);
   const dynamicSections = await prepareSections(db);
   const sections = [
@@ -669,6 +915,8 @@ module.exports = {
   getChunkSize,
   normalizeLastmod,
   xmlEscape,
+  buildUrl,
+  buildJobSearchQuery,
   STATIC_ROUTES,
   HIGH_INTENT_JOB_QUERIES,
   HIGH_INTENT_GOVT_JOB_QUERIES,

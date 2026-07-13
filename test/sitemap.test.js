@@ -3,12 +3,51 @@ const assert = require('node:assert/strict');
 
 const {
   calculateChunkCount,
+  buildJobSearchQuery,
+  buildSitemapManifest,
   getChunkSize,
   normalizeLastmod,
   renderSitemapIndex,
   renderUrlSet,
   xmlEscape
 } = require('../src/services/sitemap');
+
+test('job search sitemap queries preserve the mapped location hierarchy', () => {
+  assert.deepEqual(buildJobSearchQuery({
+    intentKey: 'company',
+    intentValue: 'HHH Jobs',
+    location: {
+      state: 'Delhi',
+      district: 'South West Delhi',
+      city: 'New Delhi',
+      locality: 'Ghitorni',
+      pincode: '110030'
+    }
+  }), {
+    company: 'HHH Jobs',
+    stateName: 'Delhi',
+    districtName: 'South West Delhi',
+    cityName: 'New Delhi',
+    localityName: 'Ghitorni',
+    pincode: '110030'
+  });
+});
+
+test('sitemap manifest supports path-based child chunks for frontend proxying', async () => {
+  const emptyDb = {
+    execute: async () => [[{ count: 0 }]],
+    query: async () => {
+      throw new Error('No table query expected for an empty schema');
+    }
+  };
+  const manifest = await buildSitemapManifest(emptyDb, {
+    baseUrl: 'https://hhh-jobs.com',
+    childUrlMode: 'path'
+  });
+
+  assert.equal(manifest.sitemaps.length, 1);
+  assert.equal(manifest.sitemaps[0].loc, 'https://hhh-jobs.com/sitemaps/static/1.xml');
+});
 
 test('sitemap chunk size stays inside the protocol URL limit', () => {
   assert.equal(getChunkSize(25000), 25000);

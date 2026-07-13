@@ -879,6 +879,8 @@ const applyJobFilters = (query, filters = {}) => {
     districtName,
     city,
     cityName,
+    locality,
+    localityName,
     pincode,
     companyLocation,
     employmentType,
@@ -906,6 +908,9 @@ const applyJobFilters = (query, filters = {}) => {
   }
   if (city || cityName) {
     query = applyIlikeAny(query, ['city_name', 'locality_name', 'district_name', 'job_location'], cityName || city);
+  }
+  if (locality || localityName) {
+    query = applyIlikeAny(query, ['locality_name', 'city_name', 'job_location'], localityName || locality);
   }
   if (pincode) {
     query = applyIlikeAny(query, ['pincode', 'job_location'], pincode);

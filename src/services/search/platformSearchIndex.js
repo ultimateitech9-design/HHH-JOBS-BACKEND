@@ -203,31 +203,27 @@ const addExactFilters = ({ filter, filters = {}, exactFilters = {} }) => {
 };
 
 const addLocationFilters = ({ must, filters = {} }) => {
-  const location = normalizeText(
-    filters.location
-    || filters.companyLocation
-    || filters.company_location
-    || filters.city
-    || filters.cityName
-    || filters.city_name
-    || filters.locality
-    || filters.localityName
-    || filters.locality_name
-    || filters.district
-    || filters.districtName
-    || filters.district_name
-    || filters.state
-    || filters.stateName
-    || filters.state_name
-    || filters.pincode
-  );
+  const structuredLocations = [
+    filters.locality || filters.localityName || filters.locality_name,
+    filters.city || filters.cityName || filters.city_name,
+    filters.district || filters.districtName || filters.district_name,
+    filters.state || filters.stateName || filters.state_name,
+    filters.pincode
+  ].map(normalizeText).filter(Boolean);
+  const fallbackLocation = normalizeText(filters.location || filters.companyLocation || filters.company_location);
+  const locations = [...new Map(
+    (structuredLocations.length ? structuredLocations : [fallbackLocation])
+      .filter(Boolean)
+      .map((value) => [normalizeLowerText(value), value])
+  ).values()];
 
-  if (!location) return;
-  must.push(buildPhraseMatch({
-    query: location,
-    fields: ['location^5', 'localityName^5', 'cityName^4', 'districtName^4', 'stateName^4', 'city^4', 'state^4', 'pincode^5', 'searchText'],
-    boost: 1.4
-  }));
+  locations.forEach((location) => {
+    must.push(buildPhraseMatch({
+      query: location,
+      fields: ['location^5', 'localityName^5', 'cityName^4', 'districtName^4', 'stateName^4', 'city^4', 'state^4', 'pincode^5', 'searchText'],
+      boost: 1.4
+    }));
+  });
 };
 
 const buildPlatformSearchBody = ({ entity, filters = {}, page = 1, limit = 50 } = {}) => {

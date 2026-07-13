@@ -46,3 +46,18 @@ test('applyJobFilters can include expired open jobs when requested', () => {
     true
   );
 });
+
+test('applyJobFilters applies a mapped locality filter to searchable location fields', () => {
+  const query = createQueryStub();
+
+  applyJobFilters(query, { localityName: 'Ghitorni' });
+
+  assert.equal(
+    query.calls.some((call) => (
+      call.method === 'or'
+      && String(call.expression).includes('locality_name.ilike.%Ghitorni%')
+      && String(call.expression).includes('job_location.ilike.%Ghitorni%')
+    )),
+    true
+  );
+});
