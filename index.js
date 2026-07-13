@@ -1,4 +1,5 @@
 const express = require('express');
+const compression = require('compression');
 const cors = require('cors');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const path = require('path');
@@ -82,6 +83,7 @@ const captureRawBody = (req, _res, buffer) => {
 
 app.disable('x-powered-by');
 
+app.use(compression({ threshold: 1024 }));
 app.use(express.json({ limit: '10mb', verify: captureRawBody }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
