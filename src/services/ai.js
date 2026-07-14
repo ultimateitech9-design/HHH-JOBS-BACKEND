@@ -32,6 +32,40 @@ const extractMessageContent = (payload) => {
   return '';
 };
 
+const getAiProviderStatus = () => {
+  const preferredProvider = String(config.aiProvider || 'auto').trim().toLowerCase();
+
+  if (preferredProvider === 'openai') {
+    return {
+      configured: Boolean(config.openaiApiKey),
+      provider: 'openai',
+      model: config.openaiModel || null
+    };
+  }
+
+  if (preferredProvider === 'xai') {
+    return {
+      configured: Boolean(config.xaiApiKey),
+      provider: 'xai',
+      model: config.xaiModel || null
+    };
+  }
+
+  if (config.openaiApiKey) {
+    return { configured: true, provider: 'openai', model: config.openaiModel || null };
+  }
+
+  if (config.xaiApiKey) {
+    return { configured: true, provider: 'xai', model: config.xaiModel || null };
+  }
+
+  return {
+    configured: false,
+    provider: null,
+    model: null
+  };
+};
+
 const resolveAiProvider = () => {
   const preferredProvider = String(config.aiProvider || 'auto').trim().toLowerCase();
 
@@ -108,9 +142,16 @@ const buildPayloadMessages = ({ systemPrompt, userPrompt, messages, providerName
 const buildProviderPayload = ({ provider, payloadMessages, temperature, maxTokens }) => {
   const basePayload = {
     model: provider.model,
-    messages: payloadMessages,
-    temperature
+    messages: payloadMessages
   };
+
+  const normalizedModel = String(provider.model || '').trim().toLowerCase();
+  const isOpenAiReasoningModel = provider.name === 'openai'
+    && (/^gpt-5(?:[.-]|$)/.test(normalizedModel) || /^o\d(?:[.-]|$)/.test(normalizedModel));
+
+  if (!isOpenAiReasoningModel && Number.isFinite(Number(temperature))) {
+    basePayload.temperature = Number(temperature);
+  }
 
   if (provider.name === 'openai') {
     return {
@@ -146,14 +187,31 @@ const askAi = async ({
     maxTokens
   });
 
-  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${provider.apiKey}`
-    },
-    body: JSON.stringify(requestBody)
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.aiRequestTimeoutMs);
+  let response;
+
+  try {
+    response = await fetch(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${provider.apiKey}`
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+  } catch (error) {
+    const err = new Error(
+      error?.name === 'AbortError'
+        ? 'AI provider request timed out'
+        : 'Unable to connect to the AI provider'
+    );
+    err.statusCode = error?.name === 'AbortError' ? 504 : 502;
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   let payload = {};
   try {
@@ -221,5 +279,6 @@ const logAiInteraction = async ({
 module.exports = {
   askAi,
   logAiInteraction,
-  buildProviderPayload
+  buildProviderPayload,
+  getAiProviderStatus
 };

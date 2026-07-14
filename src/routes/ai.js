@@ -2,8 +2,15 @@ const express = require('express');
 const { ROLES } = require('../constants');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
 const { requireActiveUser, requireRole } = require('../middleware/roles');
-const { askAi, logAiInteraction } = require('../services/ai');
+const { askAi, getAiProviderStatus, logAiInteraction } = require('../services/ai');
 const { buildChatbotKnowledgeContext } = require('../services/chatbotKnowledge');
+const {
+  MAX_JOB_DESCRIPTION_WORDS,
+  MIN_JOB_DESCRIPTION_WORDS,
+  buildFallbackJobDescription,
+  clampTargetWords,
+  isJobDescriptionWithinLimits
+} = require('../services/jobDescriptionGenerator');
 const {
   buildHrCandidateFitRanking,
   buildPlacementAnalytics,
@@ -81,7 +88,17 @@ const getRoleGuidance = (role = 'guest') => {
 const requireAiUser = [requireAuth, requireActiveUser];
 
 router.get('/health', (req, res) => {
-  res.send({ status: true, message: 'AI routes are reachable' });
+  const provider = getAiProviderStatus();
+  res.send({
+    status: true,
+    routesReachable: true,
+    providerConfigured: provider.configured,
+    provider: provider.provider,
+    model: provider.model,
+    message: provider.configured
+      ? 'AI routes are reachable and a provider credential is present. Credential validity is checked during generation.'
+      : 'AI routes are reachable, but no provider credential is configured.'
+  });
 });
 
 router.get('/student/career-copilot', requireAiUser, requireRole(ROLES.STUDENT, ROLES.RETIRED_EMPLOYEE, ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
@@ -433,7 +450,7 @@ router.post('/hr/job-assistant', requireAiUser, requireRole(ROLES.HR, ROLES.ADMI
   }
 }));
 
-router.post('/hr/job-description', requireAiUser, requireRole(ROLES.HR, ROLES.ADMIN), asyncHandler(async (req, res) => {
+router.post('/hr/job-description', requireAiUser, requireRole(ROLES.HR, ROLES.ADMIN, ROLES.SUPER_ADMIN), asyncHandler(async (req, res) => {
   const jobTitle = String(req.body?.jobTitle || '').trim();
   const companyName = String(req.body?.companyName || '').trim();
   const experienceLevel = String(req.body?.experienceLevel || '').trim();
@@ -447,7 +464,7 @@ router.post('/hr/job-description', requireAiUser, requireRole(ROLES.HR, ROLES.AD
     ? req.body.skills.map((item) => String(item || '').trim()).filter(Boolean)
     : String(req.body?.skills || '').split(',').map((item) => item.trim()).filter(Boolean);
   const prompt = String(req.body?.prompt || req.body?.extraContext || '').trim();
-  const targetWordCount = clampNumber(req.body?.targetWordCount, 500, 1500, 800);
+  const targetWordCount = clampTargetWords(req.body?.targetWordCount);
 
   if (!jobTitle) {
     res.status(400).send({ status: false, message: 'jobTitle is required for job description generation.' });
@@ -479,6 +496,10 @@ router.post('/hr/job-description', requireAiUser, requireRole(ROLES.HR, ROLES.AD
     prompt ? `HR instruction:\n${prompt}` : ''
   ].join('\n');
 
+  let description = '';
+  let generationMode = 'ai';
+  let providerWarning = '';
+
   try {
     const answer = await askAi({
       systemPrompt,
@@ -487,28 +508,85 @@ router.post('/hr/job-description', requireAiUser, requireRole(ROLES.HR, ROLES.AD
       maxTokens: 2800
     });
 
-    const description = String(answer || '').trim();
-    const wordCount = countWords(description);
-
-    await logAiInteraction({
-      userId: req.user.id,
-      role: req.user.role,
-      featureKey: 'hr_job_description',
-      promptText: userPrompt,
-      responseText: description,
-      meta: { jobTitle, companyName, targetWordCount, wordCount }
-    });
-
-    res.send({
-      status: true,
-      description,
-      wordCount,
-      minWords: 500,
-      maxWords: 1500
-    });
+    description = String(answer || '').trim();
+    if (!isJobDescriptionWithinLimits(description)) {
+      generationMode = 'smart_template';
+      providerWarning = 'The AI draft did not meet the 500-1500 word publishing standard, so a structured draft was generated instead.';
+      description = buildFallbackJobDescription({
+        ...req.body,
+        jobTitle,
+        companyName,
+        experienceLevel,
+        employmentType,
+        sectorName,
+        location,
+        salaryType,
+        minPrice,
+        maxPrice,
+        skills,
+        prompt,
+        targetWordCount
+      });
+    }
   } catch (error) {
-    sendAiError(res, error);
+    generationMode = 'smart_template';
+    if (error?.statusCode === 401 || error?.statusCode === 403) {
+      providerWarning = 'The AI provider credential needs attention. A structured draft was generated so your work can continue.';
+    } else if (error?.statusCode === 429) {
+      providerWarning = 'The AI provider is currently busy. A structured draft was generated so your work can continue.';
+    } else if (error?.statusCode === 504) {
+      providerWarning = 'The AI provider took too long to respond. A structured draft was generated so your work can continue.';
+    } else {
+      providerWarning = 'The AI provider is temporarily unavailable. A structured draft was generated so your work can continue.';
+    }
+
+    console.warn('HR job description provider fallback:', error?.message || error);
+    description = buildFallbackJobDescription({
+      ...req.body,
+      jobTitle,
+      companyName,
+      experienceLevel,
+      employmentType,
+      sectorName,
+      location,
+      salaryType,
+      minPrice,
+      maxPrice,
+      skills,
+      prompt,
+      targetWordCount
+    });
   }
+
+  const wordCount = countWords(description);
+  const provider = getAiProviderStatus();
+
+  await logAiInteraction({
+    userId: req.user.id,
+    role: req.user.role,
+    featureKey: 'hr_job_description',
+    promptText: userPrompt,
+    responseText: description,
+    meta: {
+      jobTitle,
+      companyName,
+      targetWordCount,
+      wordCount,
+      generationMode,
+      provider: provider.provider
+    }
+  });
+
+  res.send({
+    status: true,
+    description,
+    wordCount,
+    minWords: MIN_JOB_DESCRIPTION_WORDS,
+    maxWords: MAX_JOB_DESCRIPTION_WORDS,
+    generationMode,
+    provider: generationMode === 'ai' ? provider.provider : null,
+    providerWarning
+  });
 }));
 
 router.post('/hr/candidate-summary', requireAiUser, requireRole(ROLES.HR, ROLES.ADMIN), asyncHandler(async (req, res) => {

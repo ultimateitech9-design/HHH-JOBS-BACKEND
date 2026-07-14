@@ -182,7 +182,10 @@ const config = {
     process.env.OPENAI_API_KEY
     || process.env.OPENAI_KEY,
   openaiBaseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, ''),
-  openaiModel: normalizeText(process.env.OPENAI_MODEL) || 'gpt-5.4-mini',
+  openaiModel: normalizeText(process.env.OPENAI_MODEL) || 'gpt-5-mini',
+  aiRequestTimeoutMs: Number(process.env.AI_REQUEST_TIMEOUT_MS) > 0
+    ? Math.min(120000, Math.max(5000, Number(process.env.AI_REQUEST_TIMEOUT_MS)))
+    : 45000,
   xaiApiKey:
     process.env.XAI_API_KEY
     || process.env.GROK_API_KEY
