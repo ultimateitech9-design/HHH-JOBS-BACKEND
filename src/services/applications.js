@@ -6,6 +6,7 @@ const { createNotification } = require('./notifications');
 const { notifyUser } = require('./notificationOrchestrator');
 const { autoCloseExpiredJob, resolveJobIdentifier, buildHrJobApplicantsPath } = require('./jobs');
 const { isJobExpiredByApplications } = require('../modules/pricing/engine');
+const { canApplyInternally } = require('../utils/jobApplication');
 
 const buildApplicationError = (statusCode, message, code = '') => {
   const error = new Error(message);
@@ -32,6 +33,14 @@ const loadOpenJobForApplication = async (jobId) => {
 
   if (job.approval_status === JOB_APPROVAL_STATUSES.REJECTED) {
     throw buildApplicationError(403, 'Job is unavailable for applications');
+  }
+
+  if (!canApplyInternally(job)) {
+    throw buildApplicationError(
+      409,
+      'This job accepts applications only on the company website.',
+      'EXTERNAL_APPLICATION_ONLY'
+    );
   }
 
   if (isJobExpiredByApplications(job)) {

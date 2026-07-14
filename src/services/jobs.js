@@ -34,6 +34,7 @@ const { getCurrentRolePlanSubscription, getRolePlanBySlug } = require('./commerc
 const { isRoleSubscriptionUsable } = require('../utils/roleSubscriptionAccess');
 const { normalizeCompanyKey, toCompanySlug } = require('./companyDirectory');
 const { deleteCacheAsideByPrefix } = require('./cacheAside');
+const { resolveJobApplicationConfig } = require('../utils/jobApplication');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
 const MAX_JOB_POSTING_LOCATIONS = 1;
@@ -557,6 +558,8 @@ const buildJobPayload = async (body = {}, { userId = null } = {}) => {
     city_name: cityName,
     locality_name: localityName,
     pincode,
+    application_mode: body.applicationMode ?? body.application_mode,
+    external_apply_url: body.externalApplyUrl ?? body.external_apply_url,
     is_featured: body.isFeatured ?? body.is_featured,
     description: body.description,
     status: body.status ?? undefined,
@@ -954,6 +957,21 @@ const createHrJob = async (req, res) => {
     return;
   }
 
+  const applicationConfig = resolveJobApplicationConfig(payload);
+  if (applicationConfig.errors.length > 0) {
+    res.status(400).send({
+      status: false,
+      message: applicationConfig.errors.join(' '),
+      errors: applicationConfig.errors
+    });
+    return;
+  }
+  payload = {
+    ...payload,
+    application_mode: applicationConfig.mode,
+    external_apply_url: applicationConfig.externalApplyUrl
+  };
+
   const missing = validateNewJobPayload(payload);
   const manualValidationErrors = validateManualJobPostingRules(payload);
 
@@ -1140,6 +1158,21 @@ const updateHrJob = async (req, res) => {
     res.status(error.statusCode || 500).send({ status: false, message: error.message || 'Unable to load HR company profile' });
     return;
   }
+
+  const applicationConfig = resolveJobApplicationConfig(payload, existingJob);
+  if (applicationConfig.errors.length > 0) {
+    res.status(400).send({
+      status: false,
+      message: applicationConfig.errors.join(' '),
+      errors: applicationConfig.errors
+    });
+    return;
+  }
+  payload = {
+    ...payload,
+    application_mode: applicationConfig.mode,
+    external_apply_url: applicationConfig.externalApplyUrl
+  };
 
   const manualValidationErrors = validateManualJobPostingRules({
     ...existingJob,

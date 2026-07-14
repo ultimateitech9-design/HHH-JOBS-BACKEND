@@ -355,11 +355,15 @@ test('mappers preserve the API contract shape', () => {
     employment_type: 'full-time',
     description: 'Build things',
     posted_by: 'alice@example.com',
+    application_mode: 'both',
+    external_apply_url: 'https://careers.example.com/jobs/frontend-developer',
     status: JOB_STATUSES.OPEN
   });
 
   assert.equal(job.id, 'job-1');
   assert.deepEqual(job.jobLocations, ['Remote', 'Pune']);
+  assert.equal(job.applicationMode, 'both');
+  assert.equal(job.externalApplyUrl, 'https://careers.example.com/jobs/frontend-developer');
   assert.equal(job.status, JOB_STATUSES.OPEN);
 
   const application = mapApplicationFromRow({

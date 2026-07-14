@@ -77,6 +77,21 @@ test('jobMatchesAutoApplyCriteria accepts aligned jobs and rejects agencies when
   assert.equal(excludedResult.reason, 'agency_excluded');
 });
 
+test('auto apply skips jobs that only accept company-site applications', () => {
+  const result = jobMatchesAutoApplyCriteria({
+    job: {
+      application_mode: 'external',
+      external_apply_url: 'https://careers.example.com/jobs/123',
+      job_title: 'Frontend Developer'
+    },
+    preference: {
+      targetRoles: ['Frontend Developer']
+    }
+  });
+
+  assert.deepEqual(result, { matches: false, reason: 'external_application_only' });
+});
+
 test('premium job helper and fallback cover letter stay deterministic', () => {
   assert.equal(isPremiumAutoApplyJob({ is_paid: true }), true);
   assert.equal(isPremiumAutoApplyJob({ is_featured: true }), true);

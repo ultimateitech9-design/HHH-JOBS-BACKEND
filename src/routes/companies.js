@@ -24,7 +24,7 @@ const {
 } = require('../services/companyDirectory');
 
 const router = express.Router();
-const PUBLIC_COMPANY_DIRECTORY_CACHE_KEY = 'public:company-directory:v2';
+const PUBLIC_COMPANY_DIRECTORY_CACHE_KEY = 'public:company-directory:v3';
 const PUBLIC_COMPANY_PAGE_SIZE = 50;
 
 const companySubscriptionAuth = [
@@ -100,6 +100,8 @@ const PORTAL_JOB_SELECT = `
   category,
   sector_id,
   sector_name,
+  application_mode,
+  external_apply_url,
   is_featured,
   applications_count,
   valid_till,

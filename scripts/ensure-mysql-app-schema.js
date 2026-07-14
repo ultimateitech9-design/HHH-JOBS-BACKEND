@@ -446,6 +446,16 @@ const ensureJobFacetSchema = async (db) => {
   await addColumnIfMissing(db, 'jobs', 'company_id', 'CHAR(36) NULL');
   await addColumnIfMissing(db, 'jobs', 'company_key', 'VARCHAR(191) NULL');
   await addColumnIfMissing(db, 'jobs', 'company_slug', 'VARCHAR(191) NULL');
+  await addColumnIfMissing(db, 'jobs', 'application_mode', "VARCHAR(16) NOT NULL DEFAULT 'internal'");
+  await addColumnIfMissing(db, 'jobs', 'external_apply_url', 'LONGTEXT NULL');
+
+  await db.execute(`
+    UPDATE ${tableName('jobs')}
+    SET ${columnName('application_mode')} = 'internal', ${columnName('external_apply_url')} = NULL
+    WHERE ${columnName('application_mode')} IS NULL
+      OR ${columnName('application_mode')} = ''
+      OR ${columnName('application_mode')} NOT IN ('internal', 'external', 'both')
+  `);
 
   await db.execute(`UPDATE ${tableName('jobs')} SET company_key = LEFT(company_key, 191) WHERE company_key IS NOT NULL`);
   await db.execute(`UPDATE ${tableName('jobs')} SET company_slug = LEFT(company_slug, 191) WHERE company_slug IS NOT NULL`);

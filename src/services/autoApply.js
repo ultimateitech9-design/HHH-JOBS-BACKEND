@@ -7,6 +7,7 @@ const { createNotification } = require('./notifications');
 const { submitApplicationForUser } = require('./applications');
 const { JOB_STATUSES, JOB_APPROVAL_STATUSES } = require('../constants');
 const { enqueueAutoApplyDigest } = require('./sideEffectQueue');
+const { canApplyInternally } = require('../utils/jobApplication');
 
 const AUTO_APPLY_STATUSES = {
   APPLIED: 'applied',
@@ -196,6 +197,10 @@ const jobMatchesAutoApplyCriteria = ({
   hrProfile = {},
   preference = DEFAULT_AUTO_APPLY_PREFERENCE
 }) => {
+  if (!canApplyInternally(job)) {
+    return { matches: false, reason: 'external_application_only' };
+  }
+
   const haystack = [
     job.job_title,
     job.description,
