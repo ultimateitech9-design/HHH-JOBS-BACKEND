@@ -448,6 +448,7 @@ const ensureJobFacetSchema = async (db) => {
   await addColumnIfMissing(db, 'jobs', 'company_slug', 'VARCHAR(191) NULL');
   await addColumnIfMissing(db, 'jobs', 'application_mode', "VARCHAR(16) NOT NULL DEFAULT 'internal'");
   await addColumnIfMissing(db, 'jobs', 'external_apply_url', 'LONGTEXT NULL');
+  await addColumnIfMissing(db, 'jobs', 'salary_disclosed', 'BOOLEAN NOT NULL DEFAULT TRUE');
 
   await db.execute(`
     UPDATE ${tableName('jobs')}
@@ -456,6 +457,13 @@ const ensureJobFacetSchema = async (db) => {
       OR ${columnName('application_mode')} = ''
       OR ${columnName('application_mode')} NOT IN ('internal', 'external', 'both')
   `);
+
+  await db.execute(`
+    UPDATE ${tableName('jobs')}
+    SET ${columnName('salary_disclosed')} = TRUE
+    WHERE ${columnName('salary_disclosed')} IS NULL
+  `);
+  await modifyColumnIfExists(db, 'jobs', 'salary_disclosed', 'BOOLEAN NOT NULL DEFAULT TRUE');
 
   await db.execute(`UPDATE ${tableName('jobs')} SET company_key = LEFT(company_key, 191) WHERE company_key IS NOT NULL`);
   await db.execute(`UPDATE ${tableName('jobs')} SET company_slug = LEFT(company_slug, 191) WHERE company_slug IS NOT NULL`);

@@ -51,7 +51,7 @@ const setCatalogCacheHeaders = (_req, res, next) => {
   next();
 };
 const publicJobCatalogCache = createPublicJsonCache({
-  namespace: 'jobs:catalog:v2',
+  namespace: 'jobs:catalog:v3',
   ttlSeconds: config.publicCatalogCacheTtlSeconds
 });
 const publicJobMetadataCache = createPublicJsonCache({

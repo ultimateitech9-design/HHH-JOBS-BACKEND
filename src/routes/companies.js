@@ -24,7 +24,7 @@ const {
 } = require('../services/companyDirectory');
 
 const router = express.Router();
-const PUBLIC_COMPANY_DIRECTORY_CACHE_KEY = 'public:company-directory:v3';
+const PUBLIC_COMPANY_DIRECTORY_CACHE_KEY = 'public:company-directory:v4';
 const PUBLIC_COMPANY_PAGE_SIZE = 50;
 
 const companySubscriptionAuth = [
@@ -83,6 +83,7 @@ const PORTAL_JOB_SELECT = `
   min_price,
   max_price,
   salary_type,
+  salary_disclosed,
   job_location,
   job_locations,
   state_id,

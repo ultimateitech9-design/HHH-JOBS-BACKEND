@@ -35,6 +35,7 @@ const { isRoleSubscriptionUsable } = require('../utils/roleSubscriptionAccess');
 const { normalizeCompanyKey, toCompanySlug } = require('./companyDirectory');
 const { deleteCacheAsideByPrefix } = require('./cacheAside');
 const { resolveJobApplicationConfig } = require('../utils/jobApplication');
+const { resolveJobSalaryConfig } = require('../utils/jobSalary');
 
 const normalizePlanSlug = (value = '') => String(value || '').trim().toLowerCase();
 const MAX_JOB_POSTING_LOCATIONS = 1;
@@ -43,7 +44,7 @@ const JOB_DESCRIPTION_MAX_WORDS = 1500;
 const ACTIVE_ROLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);
 
 const invalidatePublicJobCatalog = () => {
-  deleteCacheAsideByPrefix('jobs:catalog:v2')
+  deleteCacheAsideByPrefix('jobs:catalog:v3')
     .catch((error) => console.warn('[JOB CACHE INVALIDATION]', error.message || error));
 };
 
@@ -540,6 +541,7 @@ const buildJobPayload = async (body = {}, { userId = null } = {}) => {
     min_price: body.minPrice ?? body.min_price,
     max_price: body.maxPrice ?? body.max_price,
     salary_type: body.salaryType ?? body.salary_type,
+    salary_disclosed: body.salaryDisclosed ?? body.salary_disclosed,
     job_location: primaryLocation,
     job_locations: primaryLocation ? [primaryLocation] : undefined,
     posting_date: body.postingDate ?? body.posting_date ?? null,
@@ -593,8 +595,6 @@ const validateNewJobPayload = (payload) => {
   const requiredFields = [
     'job_title',
     'company_name',
-    'max_price',
-    'salary_type',
     'experience_level',
     'employment_type',
     'description'
@@ -972,6 +972,23 @@ const createHrJob = async (req, res) => {
     external_apply_url: applicationConfig.externalApplyUrl
   };
 
+  const salaryConfig = resolveJobSalaryConfig(payload);
+  if (salaryConfig.errors.length > 0) {
+    res.status(400).send({
+      status: false,
+      message: salaryConfig.errors.join(' '),
+      errors: salaryConfig.errors
+    });
+    return;
+  }
+  payload = {
+    ...payload,
+    salary_disclosed: salaryConfig.salaryDisclosed,
+    min_price: salaryConfig.minPrice,
+    max_price: salaryConfig.maxPrice,
+    salary_type: salaryConfig.salaryType
+  };
+
   const missing = validateNewJobPayload(payload);
   const manualValidationErrors = validateManualJobPostingRules(payload);
 
@@ -1172,6 +1189,23 @@ const updateHrJob = async (req, res) => {
     ...payload,
     application_mode: applicationConfig.mode,
     external_apply_url: applicationConfig.externalApplyUrl
+  };
+
+  const salaryConfig = resolveJobSalaryConfig(payload, existingJob);
+  if (salaryConfig.errors.length > 0) {
+    res.status(400).send({
+      status: false,
+      message: salaryConfig.errors.join(' '),
+      errors: salaryConfig.errors
+    });
+    return;
+  }
+  payload = {
+    ...payload,
+    salary_disclosed: salaryConfig.salaryDisclosed,
+    min_price: salaryConfig.minPrice,
+    max_price: salaryConfig.maxPrice,
+    salary_type: salaryConfig.salaryType
   };
 
   const manualValidationErrors = validateManualJobPostingRules({
