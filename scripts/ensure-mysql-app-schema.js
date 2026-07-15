@@ -434,6 +434,127 @@ const ensureMissingFeatureTables = async (db) => {
       UNIQUE KEY whatsapp_preferences_user_uidx (user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  await createTable(db, `
+    CREATE TABLE IF NOT EXISTS ${tableName('consultancy_cases')} (
+      id CHAR(36) NOT NULL,
+      reference_code VARCHAR(64) NOT NULL,
+      sales_lead_id CHAR(36) NULL,
+      company_user_id CHAR(36) NULL,
+      company_name VARCHAR(255) NOT NULL,
+      contact_name VARCHAR(255) NOT NULL,
+      contact_email VARCHAR(255) NOT NULL,
+      contact_phone VARCHAR(64) NULL,
+      website_url LONGTEXT NULL,
+      industry VARCHAR(191) NULL,
+      company_size VARCHAR(64) NULL,
+      hiring_volume INT NOT NULL DEFAULT 0,
+      hiring_locations LONGTEXT NULL,
+      service_types JSON NULL,
+      message LONGTEXT NULL,
+      status VARCHAR(48) NOT NULL DEFAULT 'new',
+      meeting_at DATETIME(3) NULL,
+      meeting_mode VARCHAR(48) NULL,
+      meeting_link LONGTEXT NULL,
+      meeting_notes LONGTEXT NULL,
+      assigned_to CHAR(36) NULL,
+      assigned_name VARCHAR(255) NULL,
+      quotation_number VARCHAR(64) NULL,
+      quotation_items JSON NULL,
+      quotation_subtotal DECIMAL(20,6) NOT NULL DEFAULT 0,
+      quotation_tax DECIMAL(20,6) NOT NULL DEFAULT 0,
+      quotation_total DECIMAL(20,6) NOT NULL DEFAULT 0,
+      quotation_currency VARCHAR(16) NOT NULL DEFAULT 'INR',
+      quotation_valid_until DATETIME(3) NULL,
+      quotation_notes LONGTEXT NULL,
+      quotation_sent_at DATETIME(3) NULL,
+      partnership_started_at DATETIME(3) NULL,
+      onboarding_completed_at DATETIME(3) NULL,
+      source VARCHAR(64) NOT NULL DEFAULT 'consultancy_landing',
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY consultancy_cases_reference_uidx (reference_code),
+      KEY consultancy_cases_email_idx (contact_email, created_at),
+      KEY consultancy_cases_company_user_idx (company_user_id, updated_at),
+      KEY consultancy_cases_status_idx (status, updated_at),
+      KEY consultancy_cases_assignee_idx (assigned_to, status, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await createTable(db, `
+    CREATE TABLE IF NOT EXISTS ${tableName('consultancy_requirements')} (
+      id CHAR(36) NOT NULL,
+      case_id CHAR(36) NOT NULL,
+      company_user_id CHAR(36) NULL,
+      created_by CHAR(36) NULL,
+      assigned_to CHAR(36) NULL,
+      title VARCHAR(255) NOT NULL,
+      department VARCHAR(191) NULL,
+      openings INT NOT NULL DEFAULT 1,
+      location LONGTEXT NULL,
+      employment_type VARCHAR(64) NULL,
+      experience_min DECIMAL(8,2) NOT NULL DEFAULT 0,
+      experience_max DECIMAL(8,2) NOT NULL DEFAULT 0,
+      skills JSON NULL,
+      budget_amount DECIMAL(20,6) NOT NULL DEFAULT 0,
+      target_date DATETIME(3) NULL,
+      description LONGTEXT NULL,
+      status VARCHAR(48) NOT NULL DEFAULT 'submitted',
+      candidates_submitted INT NOT NULL DEFAULT 0,
+      candidates_shortlisted INT NOT NULL DEFAULT 0,
+      candidates_interviewed INT NOT NULL DEFAULT 0,
+      candidates_hired INT NOT NULL DEFAULT 0,
+      progress_notes LONGTEXT NULL,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NULL,
+      PRIMARY KEY (id),
+      KEY consultancy_requirements_case_idx (case_id, created_at),
+      KEY consultancy_requirements_company_idx (company_user_id, status, updated_at),
+      KEY consultancy_requirements_assignee_idx (assigned_to, status, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await createTable(db, `
+    CREATE TABLE IF NOT EXISTS ${tableName('consultancy_activities')} (
+      id CHAR(36) NOT NULL,
+      case_id CHAR(36) NOT NULL,
+      requirement_id CHAR(36) NULL,
+      activity_type VARCHAR(64) NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      notes LONGTEXT NULL,
+      actor_id CHAR(36) NULL,
+      actor_name VARCHAR(255) NULL,
+      actor_role VARCHAR(64) NULL,
+      visibility VARCHAR(16) NOT NULL DEFAULT 'internal',
+      metadata JSON NULL,
+      occurred_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      KEY consultancy_activities_case_idx (case_id, occurred_at),
+      KEY consultancy_activities_requirement_idx (requirement_id, occurred_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+};
+
+const ensureConsultancySchema = async (db) => {
+  if (await tableExists(db, 'consultancy_activities')) {
+    await addColumnIfMissing(db, 'consultancy_activities', 'visibility', "VARCHAR(16) NOT NULL DEFAULT 'internal'");
+  }
+  if (await tableExists(db, 'accounts_invoices')) {
+    await addColumnIfMissing(db, 'accounts_invoices', 'consultancy_case_id', 'CHAR(36) NULL');
+    await addColumnIfMissing(db, 'accounts_invoices', 'consultancy_requirement_id', 'CHAR(36) NULL');
+    await addColumnIfMissing(db, 'accounts_invoices', 'currency', "VARCHAR(16) NOT NULL DEFAULT 'INR'");
+    await addColumnIfMissing(db, 'accounts_invoices', 'sent_at', 'DATETIME(3) NULL');
+    await addColumnIfMissing(db, 'accounts_invoices', 'created_by', 'CHAR(36) NULL');
+    await addIndexIfColumnsExist(
+      db,
+      'accounts_invoices',
+      'accounts_invoices_consultancy_case_idx',
+      '(`consultancy_case_id`, `created_at`)',
+      ['consultancy_case_id', 'created_at']
+    );
+  }
 };
 
 const ensureJobFacetSchema = async (db) => {
@@ -1352,6 +1473,7 @@ const ensureMySqlAppSchema = async () => {
 
   try {
     await ensureMissingFeatureTables(db);
+    await ensureConsultancySchema(db);
     await ensureJobFacetSchema(db);
     await ensureCandidateProfileLocationSchema(db);
     await ensureHrProfilePrefillSchema(db);

@@ -301,6 +301,7 @@ mountRoute('/super-admin', safeRequireRoute('./src/routes/superAdmin', 'superAdm
 mountRoute('/support', safeRequireRoute('./src/routes/support', 'support'));
 mountRoute('/sales', safeRequireRoute('./src/routes/sales', 'sales'));
 mountRoute('/accounts', safeRequireRoute('./src/routes/accounts', 'accounts'));
+mountRoute('/consultancy', safeRequireRoute('./src/routes/consultancy', 'consultancy'));
 mountRoute('/dataentry', safeRequireRoute('./src/routes/dataentry', 'dataentry'));
 mountRoute('/campus-connect', safeRequireRoute('./src/routes/campusConnect', 'campusConnect'));
 mountRoute('/ops', safeRequireRoute('./src/routes/ops', 'ops'));

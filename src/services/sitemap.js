@@ -14,6 +14,7 @@ const STATIC_ROUTES = [
   '/about-us',
   '/blog',
   '/contact-us',
+  '/consultancy',
   '/services',
   '/ats',
   '/emp-verify',
