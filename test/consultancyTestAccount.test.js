@@ -5,6 +5,7 @@ const {
   buildTestAccountConfig,
   parseBoolean
 } = require('../scripts/create-consultancy-test-account');
+const { createDatabaseAdminClient } = require('../scripts/create-super-admin');
 
 test('builds a consultancy QA account with safe defaults', () => {
   const config = buildTestAccountConfig({});
@@ -59,4 +60,11 @@ test('parses boolean CLI values consistently', () => {
   assert.equal(parseBoolean('yes', false), true);
   assert.equal(parseBoolean('0', true), false);
   assert.equal(parseBoolean('off', true), false);
+});
+
+test('creates the one-off MySQL bootstrap client without requiring JWT', () => {
+  const Database = createDatabaseAdminClient();
+
+  assert.equal(typeof Database.from, 'function');
+  assert.equal(typeof Database.auth?.admin?.createUser, 'function');
 });

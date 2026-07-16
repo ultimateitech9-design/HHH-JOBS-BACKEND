@@ -6,7 +6,9 @@ const dotenv = require('dotenv');
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
 const { ROLES, USER_STATUSES } = require('../src/constants');
+const config = require('../src/config');
 const { Database } = require('../src/db');
+const { createMySqlDatabaseClient } = require('../src/mysqlDatabaseAdapter');
 const { ensureRoleProfile } = require('../src/services/profileTables');
 
 const DEFAULT_EMAIL = 'superadmin@hhh-jobs.com';
@@ -38,11 +40,16 @@ const isEnumRoleError = (error) => {
 };
 
 const createDatabaseAdminClient = () => {
-  if (!Database) {
-    throw new Error('Missing MySQL/JWT configuration in backend .env');
-  }
+  if (Database) return Database;
 
-  return Database;
+  const hasMysqlConnection = Boolean(
+    config.isMysqlProvider
+      && (config.mysqlUrl || (config.mysqlHost && config.mysqlDatabase))
+  );
+
+  if (hasMysqlConnection) return createMySqlDatabaseClient();
+
+  throw new Error('Missing MySQL configuration. Set MYSQL_URL or MYSQL_HOST/MYSQL_DATABASE in backend .env.');
 };
 
 const findAuthUserByEmail = async (Database, email) => {
