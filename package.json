@@ -16,6 +16,7 @@
     "export:mysql-schema": "node scripts/export-mysql-schema.js",
     "ensure:support-chat-schema": "node scripts/ensure-support-chat-mysql-schema.js",
     "create:super-admin": "node scripts/create-super-admin.js",
+    "create:consultancy-test-account": "node scripts/create-consultancy-test-account.js",
     "sync:eimager-user": "node scripts/replay-eimager-sync.js",
     "import:resume-candidates": "node scripts/resume-bulk-onboard.js",
     "import:market-sectors": "node scripts/import-market-sectors.js",

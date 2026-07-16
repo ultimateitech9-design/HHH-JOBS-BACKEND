@@ -88,13 +88,13 @@ const ensureAuthUser = async ({ Database, email, password, name, role }) => {
   return { user: data.user, created: true };
 };
 
-const upsertDatabaseUser = async ({ Database, userId, name, email, password, role }) => {
+const upsertDatabaseUser = async ({ Database, userId, name, email, password, role, mobile = '' }) => {
   const passwordHash = await bcrypt.hash(password, 12);
   const payload = {
     id: userId,
     name,
     email,
-    mobile: '',
+    mobile,
     password_hash: passwordHash,
     role,
     status: USER_STATUSES.ACTIVE,
@@ -218,7 +218,17 @@ const main = async () => {
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
 };
 
-main().catch((error) => {
-  process.stderr.write(`${error?.message || error}\n`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error?.message || error}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  parseArgs,
+  generatePassword,
+  createDatabaseAdminClient,
+  ensureAuthUser,
+  upsertDatabaseUser
+};
