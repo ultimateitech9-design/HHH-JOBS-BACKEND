@@ -1403,7 +1403,9 @@ router.get('/command-search', asyncHandler(async (req, res) => {
       company: row.company_name || matchedCompany || allRelatedCompanies[0] || row.campus_name || row.employee_department || '-',
       companyRelations: hasCompanyRelation ? {
         matchedCompany: matchedCompany || '',
-        companies: allRelatedCompanies.slice(0, 8),
+        companies: allRelatedCompanies,
+        managedCompanies,
+        postedCompanies: jobCompanies,
         managedCompanyCount: Number(row.total_managed_companies || managedCompanies.length || 0),
         postedCompanyCount: jobCompanies.length,
         jobCount: Number(row.total_company_jobs || row.total_jobs || 0),
