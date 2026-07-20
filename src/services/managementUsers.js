@@ -1,5 +1,5 @@
 const { queryRows } = require('../db');
-const { ROLES, USER_STATUSES } = require('../constants');
+const { JOB_STATUSES, ROLES, USER_STATUSES } = require('../constants');
 
 const BASE_USER_SELECT_COLUMNS = `
   u.id,
@@ -235,6 +235,181 @@ const getFirstText = (row = {}, keys = []) => {
   return '';
 };
 
+const splitAggregatedText = (value = '') => (
+  String(value || '')
+    .split('||')
+    .map((item) => normalizeText(item))
+    .filter(Boolean)
+);
+
+const uniqueTextValues = (values = []) => {
+  const seen = new Set();
+
+  return values.reduce((result, value) => {
+    const text = normalizeText(value);
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) return result;
+    seen.add(key);
+    result.push(text);
+    return result;
+  }, []);
+};
+
+const getCompanyRelations = (row = {}) => {
+  const profileCompany = normalizeText(row.hr_company_name);
+  const managedCompanies = uniqueTextValues(splitAggregatedText(row.managed_companies));
+  const postedCompanies = uniqueTextValues(splitAggregatedText(row.job_companies));
+  const companies = uniqueTextValues([profileCompany, ...managedCompanies, ...postedCompanies]);
+  const managedCompanyCount = Math.max(Number(row.total_managed_companies || 0), managedCompanies.length);
+  const postedCompanyCount = Math.max(Number(row.total_posted_companies || 0), postedCompanies.length);
+  const jobCount = Number(row.total_company_jobs || row.total_jobs || 0);
+
+  return {
+    company: profileCompany || managedCompanies[0] || postedCompanies[0] || '',
+    companies,
+    managedCompanies,
+    postedCompanies,
+    managedCompanyCount,
+    postedCompanyCount,
+    linkedCompanyCount: companies.length,
+    jobCount
+  };
+};
+
+const mapRowsByUserId = (rows = []) => new Map(
+  rows
+    .filter((row) => row?.user_id)
+    .map((row) => [String(row.user_id), row])
+);
+
+const mapCompanyRowsByUserId = (rows = [], countField = '') => {
+  const grouped = new Map();
+
+  rows.forEach((row) => {
+    const userId = normalizeText(row?.user_id);
+    const companyName = normalizeText(row?.company_name);
+    if (!userId || !companyName) return;
+
+    const current = grouped.get(userId) || { companies: [], count: 0 };
+    current.companies = uniqueTextValues([...current.companies, companyName]);
+    current.count += countField ? Number(row[countField] || 0) : 0;
+    grouped.set(userId, current);
+  });
+
+  return grouped;
+};
+
+const enrichManagementUserRows = async (rows = []) => {
+  if (!rows.length) return rows;
+
+  const hrUserIds = uniqueTextValues(rows
+    .filter((row) => [ROLES.HR, 'company_admin'].includes(normalizeLowerText(row.role)))
+    .map((row) => row.id));
+  const campusUserIds = uniqueTextValues(rows
+    .filter((row) => normalizeLowerText(row.role) === ROLES.CAMPUS_CONNECT)
+    .map((row) => row.id));
+  const hrPlaceholders = hrUserIds.map(() => '?').join(', ');
+  const campusPlaceholders = campusUserIds.map(() => '?').join(', ');
+
+  const [hrProfiles, campusProfiles, managedCompanies, jobCompanies] = await Promise.all([
+    hrUserIds.length
+      ? queryRows(
+        `SELECT
+           user_id,
+           MAX(NULLIF(TRIM(company_name), '')) AS company_name,
+           MAX(NULLIF(TRIM(contact_email), '')) AS contact_email,
+           MAX(NULLIF(TRIM(contact_phone), '')) AS contact_phone,
+           MAX(NULLIF(TRIM(location), '')) AS location,
+           MAX(NULLIF(TRIM(state_name), '')) AS state_name,
+           MAX(NULLIF(TRIM(district_name), '')) AS district_name,
+           MAX(NULLIF(TRIM(city_name), '')) AS city_name
+         FROM hr_profiles
+         WHERE user_id IN (${hrPlaceholders})
+         GROUP BY user_id`,
+        hrUserIds
+      )
+      : Promise.resolve([]),
+    campusUserIds.length
+      ? queryRows(
+        `SELECT
+           user_id,
+           MAX(NULLIF(TRIM(name), '')) AS name,
+           MAX(NULLIF(TRIM(contact_email), '')) AS contact_email,
+           MAX(NULLIF(TRIM(contact_phone), '')) AS contact_phone,
+           MAX(NULLIF(TRIM(city), '')) AS city,
+           MAX(NULLIF(TRIM(state), '')) AS state
+         FROM colleges
+         WHERE user_id IN (${campusPlaceholders})
+         GROUP BY user_id`,
+        campusUserIds
+      )
+      : Promise.resolve([]),
+    hrUserIds.length
+      ? queryRows(
+        `SELECT
+           hr_user_id AS user_id,
+           MAX(NULLIF(TRIM(company_name), '')) AS company_name
+         FROM companies
+         WHERE hr_user_id IN (${hrPlaceholders})
+           AND COALESCE(is_active, 1) = 1
+           AND NULLIF(TRIM(company_name), '') IS NOT NULL
+         GROUP BY hr_user_id, LOWER(TRIM(company_name))
+         ORDER BY company_name`,
+        hrUserIds
+      )
+      : Promise.resolve([]),
+    hrUserIds.length
+      ? queryRows(
+        `SELECT
+           created_by AS user_id,
+           MAX(NULLIF(TRIM(company_name), '')) AS company_name,
+           COUNT(*) AS company_job_count
+         FROM jobs
+         WHERE created_by IN (${hrPlaceholders})
+           AND COALESCE(status, '') <> ?
+           AND NULLIF(TRIM(company_name), '') IS NOT NULL
+         GROUP BY created_by, LOWER(TRIM(company_name))
+         ORDER BY company_name`,
+        [...hrUserIds, JOB_STATUSES.DELETED]
+      )
+      : Promise.resolve([])
+  ]);
+
+  const hrProfilesByUser = mapRowsByUserId(hrProfiles);
+  const campusProfilesByUser = mapRowsByUserId(campusProfiles);
+  const managedCompaniesByUser = mapCompanyRowsByUserId(managedCompanies);
+  const jobCompaniesByUser = mapCompanyRowsByUserId(jobCompanies, 'company_job_count');
+
+  return rows.map((row) => {
+    const userId = String(row.id || '');
+    const hrProfile = hrProfilesByUser.get(userId) || {};
+    const campusProfile = campusProfilesByUser.get(userId) || {};
+    const managedCompany = managedCompaniesByUser.get(userId) || {};
+    const jobCompany = jobCompaniesByUser.get(userId) || {};
+
+    return {
+      ...row,
+      hr_company_name: row.hr_company_name || hrProfile.company_name || '',
+      hr_contact_email: row.hr_contact_email || hrProfile.contact_email || '',
+      hr_contact_phone: row.hr_contact_phone || hrProfile.contact_phone || '',
+      hr_location: row.hr_location || hrProfile.location || '',
+      hr_state_name: row.hr_state_name || hrProfile.state_name || '',
+      hr_district_name: row.hr_district_name || hrProfile.district_name || '',
+      hr_city_name: row.hr_city_name || hrProfile.city_name || '',
+      campus_name: row.campus_name || campusProfile.name || '',
+      campus_contact_email: row.campus_contact_email || campusProfile.contact_email || '',
+      campus_contact_phone: row.campus_contact_phone || campusProfile.contact_phone || '',
+      campus_city: row.campus_city || campusProfile.city || '',
+      campus_state: row.campus_state || campusProfile.state || '',
+      managed_companies: (managedCompany.companies || []).join('||'),
+      total_managed_companies: (managedCompany.companies || []).length,
+      job_companies: (jobCompany.companies || []).join('||'),
+      total_posted_companies: (jobCompany.companies || []).length,
+      total_company_jobs: jobCompany.count || 0
+    };
+  });
+};
+
 const buildPendingHrClause = () => ({
   sql: `(LOWER(COALESCE(u.role, '')) IN (?, ?) AND (u.is_hr_approved = 0 OR u.is_hr_approved IS NULL))`,
   params: [ROLES.HR, 'company_admin']
@@ -280,8 +455,25 @@ const buildWhere = ({ role = '', roleGroup = '', status = '', approved = '', sea
 
   if (normalizedSearch) {
     const like = `%${normalizedSearch}%`;
-    clauses.push(`(${SEARCH_FIELDS.map((field) => `LOWER(COALESCE(CAST(${field} AS CHAR), '')) LIKE ?`).join(' OR ')})`);
-    params.push(...SEARCH_FIELDS.map(() => like));
+    const profilePredicates = SEARCH_FIELDS.map((field) => `LOWER(COALESCE(CAST(${field} AS CHAR), '')) LIKE ?`);
+    const managedCompanyPredicate = `EXISTS (
+      SELECT 1
+      FROM companies management_company_search
+      WHERE management_company_search.hr_user_id = u.id
+        AND LOWER(COALESCE(CAST(management_company_search.company_name AS CHAR), '')) LIKE ?
+    )`;
+    const postedCompanyPredicate = `EXISTS (
+      SELECT 1
+      FROM jobs management_job_search
+      WHERE management_job_search.created_by = u.id
+        AND COALESCE(management_job_search.status, '') <> ?
+        AND (
+          LOWER(COALESCE(CAST(management_job_search.company_name AS CHAR), '')) LIKE ?
+          OR LOWER(COALESCE(CAST(management_job_search.job_title AS CHAR), '')) LIKE ?
+        )
+    )`;
+    clauses.push(`(${[...profilePredicates, managedCompanyPredicate, postedCompanyPredicate].join(' OR ')})`);
+    params.push(...SEARCH_FIELDS.map(() => like), like, JOB_STATUSES.DELETED, like, like);
   }
 
   return {
@@ -299,12 +491,14 @@ const mapUserRow = (row = {}) => {
     : (isHrPending ? 'pending' : rawStatus);
   const contactNumber = getFirstText(row, ['hr_contact_phone', 'campus_contact_phone', 'mobile']);
   const contactEmail = getFirstText(row, ['hr_contact_email', 'campus_contact_email', 'employee_work_email', 'email']);
+  const companyRelations = getCompanyRelations(row);
   const company = getFirstText(row, [
+    'company',
     'hr_company_name',
     'campus_name',
     'employee_department',
     'student_headline'
-  ]);
+  ]) || companyRelations.company;
 
   return {
     id: row.id,
@@ -329,6 +523,12 @@ const mapUserRow = (row = {}) => {
     contactEmail,
     contact_email: contactEmail,
     company: company || (role === ROLES.HR || role === 'company_admin' ? 'Employer' : 'HHH Jobs'),
+    companyNames: companyRelations.companies,
+    company_names: companyRelations.companies,
+    companyRelations,
+    company_relations: companyRelations,
+    postedJobCount: companyRelations.jobCount,
+    posted_job_count: companyRelations.jobCount,
     employeeCode: row.employee_code || '',
     employee_code: row.employee_code || '',
     department: row.employee_department || '',
@@ -337,6 +537,8 @@ const mapUserRow = (row = {}) => {
       hrCompanyName: row.hr_company_name || '',
       campusName: row.campus_name || '',
       studentHeadline: row.student_headline || '',
+      companyNames: companyRelations.companies,
+      postedJobCount: companyRelations.jobCount,
       location: getFirstText(row, [
         'hr_location',
         'hr_city_name',
@@ -385,8 +587,10 @@ const listManagementUsers = async ({
     )
   ]);
 
+  const enrichedRows = await enrichManagementUserRows(rows);
+
   return {
-    users: rows.map(mapUserRow),
+    users: enrichedRows.map(mapUserRow),
     total: Number(countRows?.[0]?.total || 0),
     page: safePage,
     limit: safeLimit
@@ -395,6 +599,8 @@ const listManagementUsers = async ({
 
 module.exports = {
   buildWhere,
+  enrichManagementUserRows,
+  getCompanyRelations,
   getRoleFilterValues,
   listManagementUsers,
   mapUserRow,
